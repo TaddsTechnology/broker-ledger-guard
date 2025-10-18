@@ -104,6 +104,33 @@ All colors MUST be HSL.
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
+  /* Enhanced focus visibility for keyboard navigation */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-background;
+  }
+
+  /* Custom focus for buttons */
+  button:focus-visible {
+    @apply ring-2 ring-primary ring-offset-2;
+  }
+
+  /* Table row focus */
+  tr:focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-0;
+  }
+
+  /* Input focus enhancement */
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    @apply ring-2 ring-primary border-primary;
+  }
+
+  /* Keyboard hint styling */
+  kbd {
+    @apply inline-flex items-center justify-center rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs font-semibold text-muted-foreground shadow-sm;
+  }
+
   /* Scrollbar styling */
   ::-webkit-scrollbar {
     width: 8px;

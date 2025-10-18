@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
+import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import {
   Table,
   TableBody,
@@ -43,7 +44,9 @@ const PartyMaster = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingParty, setEditingParty] = useState<Party | null>(null);
+  const [selectedRowIndex, setSelectedRowIndex] = useState<number>(0);
   const { toast } = useToast();
+  const firstInputRef = useRef<HTMLInputElement>(null);
 
   const [formData, setFormData] = useState({
     party_code: "",
@@ -60,6 +63,62 @@ const PartyMaster = () => {
   useEffect(() => {
     fetchParties();
   }, []);
+
+  // Focus first input when dialog opens
+  useEffect(() => {
+    if (dialogOpen && firstInputRef.current) {
+      setTimeout(() => firstInputRef.current?.focus(), 100);
+    }
+  }, [dialogOpen]);
+
+  // Keyboard shortcuts for table navigation
+  useKeyboardShortcuts([
+    {
+      key: "n",
+      alt: true,
+      action: () => {
+        resetForm();
+        setDialogOpen(true);
+      },
+      description: "Add new party",
+    },
+    {
+      key: "ArrowDown",
+      action: () => {
+        if (!dialogOpen && parties.length > 0) {
+          setSelectedRowIndex((prev) => Math.min(prev + 1, parties.length - 1));
+        }
+      },
+      description: "Navigate down",
+    },
+    {
+      key: "ArrowUp",
+      action: () => {
+        if (!dialogOpen && parties.length > 0) {
+          setSelectedRowIndex((prev) => Math.max(prev - 1, 0));
+        }
+      },
+      description: "Navigate up",
+    },
+    {
+      key: "e",
+      action: () => {
+        if (!dialogOpen && parties[selectedRowIndex]) {
+          handleEdit(parties[selectedRowIndex]);
+        }
+      },
+      description: "Edit selected party",
+    },
+    {
+      key: "Delete",
+      action: () => {
+        if (!dialogOpen && parties[selectedRowIndex]) {
+          handleDelete(parties[selectedRowIndex].id);
+        }
+      },
+      description: "Delete selected party",
+    },
+  ]);
 
   const fetchParties = async () => {
     setIsLoading(true);
@@ -95,8 +154,8 @@ const PartyMaster = () => {
     setEditingParty(null);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
 
     const partyData = {
       party_code: formData.party_code,
@@ -190,10 +249,13 @@ const PartyMaster = () => {
               resetForm();
               setDialogOpen(true);
             }}
-            className="bg-primary hover:bg-primary-hover"
+            className="bg-primary hover:bg-primary-hover group relative"
           >
             <Plus className="w-4 h-4 mr-2" />
             Add Party
+            <kbd className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]">
+              Alt+N
+            </kbd>
           </Button>
         }
       />
@@ -227,8 +289,19 @@ const PartyMaster = () => {
                   </TableCell>
                 </TableRow>
               ) : (
-                parties.map((party) => (
-                  <TableRow key={party.id} className="hover:bg-muted/30">
+                parties.map((party, index) => (
+                  <TableRow 
+                    key={party.id} 
+                    className={`hover:bg-muted/30 cursor-pointer transition-colors ${
+                      index === selectedRowIndex ? "bg-primary/10 ring-2 ring-primary/20" : ""
+                    }`}
+                    onClick={() => setSelectedRowIndex(index)}
+                    onDoubleClick={() => handleEdit(party)}
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleEdit(party);
+                    }}
+                  >
                     <TableCell className="font-mono text-sm">{party.party_code}</TableCell>
                     <TableCell className="font-mono text-sm">{party.nse_code || "-"}</TableCell>
                     <TableCell className="font-medium">{party.name}</TableCell>
@@ -278,11 +351,18 @@ const PartyMaster = () => {
                 <div className="space-y-2">
                   <Label htmlFor="party_code">Party Code *</Label>
                   <Input
+                    ref={firstInputRef}
                     id="party_code"
                     value={formData.party_code}
                     onChange={(e) => setFormData({ ...formData, party_code: e.target.value })}
                     required
                     className="bg-secondary"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        document.getElementById("nse_code")?.focus();
+                      }
+                    }}
                   />
                 </div>
                 <div className="space-y-2">
@@ -368,11 +448,25 @@ const PartyMaster = () => {
                   setDialogOpen(false);
                   resetForm();
                 }}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    setDialogOpen(false);
+                    resetForm();
+                  }
+                }}
               >
-                Cancel
+                Cancel <kbd className="ml-2 text-xs opacity-50">Esc</kbd>
               </Button>
-              <Button type="submit" className="bg-primary hover:bg-primary-hover">
-                {editingParty ? "Update" : "Create"} Party
+              <Button 
+                type="submit" 
+                className="bg-primary hover:bg-primary-hover"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleSubmit();
+                  }
+                }}
+              >
+                {editingParty ? "Update" : "Create"} Party <kbd className="ml-2 text-xs opacity-50">Enter</kbd>
               </Button>
             </DialogFooter>
           </form>
