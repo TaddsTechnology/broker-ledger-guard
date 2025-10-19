@@ -8,89 +8,103 @@ All colors MUST be HSL.
 
 @layer base {
   :root {
-    /* Dark fintech theme - Base colors */
-    --background: 222 47% 11%;
-    --foreground: 210 40% 98%;
+    /* Light business theme - White with light blue accents */
+    --background: 0 0% 100%;
+    --foreground: 215 25% 27%;
 
-    --card: 215 25% 17%;
-    --card-foreground: 210 40% 98%;
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 27%;
 
-    --popover: 215 25% 17%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 27%;
 
-    /* Primary: Deep professional blue */
-    --primary: 224 76% 48%;
-    --primary-foreground: 210 40% 98%;
-    --primary-hover: 224 76% 58%;
+    /* Primary: Professional light blue */
+    --primary: 210 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --primary-hover: 210 100% 45%;
 
-    /* Secondary: Darker slate for surfaces */
-    --secondary: 217 33% 17%;
-    --secondary-foreground: 210 40% 98%;
+    /* Secondary: Very light blue/gray for form fields */
+    --secondary: 210 40% 95%;
+    --secondary-foreground: 215 25% 27%;
 
-    /* Muted: Subtle backgrounds */
-    --muted: 215 25% 20%;
-    --muted-foreground: 215 20% 65%;
+    /* Muted: Light gray backgrounds */
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
 
-    /* Accent: Cyan for highlights */
-    --accent: 187 85% 43%;
-    --accent-foreground: 210 40% 98%;
-    --accent-hover: 187 85% 53%;
+    /* Accent: Medium blue for highlights */
+    --accent: 210 100% 60%;
+    --accent-foreground: 0 0% 100%;
+    --accent-hover: 210 100% 55%;
 
-    /* Destructive */
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 210 40% 98%;
+    /* Destructive - Red */
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
 
-    /* Success */
-    --success: 142 71% 45%;
-    --success-foreground: 210 40% 98%;
+    /* Success - Green */
+    --success: 142 76% 36%;
+    --success-foreground: 0 0% 100%;
 
-    /* Borders and inputs */
-    --border: 215 25% 25%;
-    --input: 215 25% 25%;
-    --ring: 224 76% 48%;
+    /* Warning - Orange */
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    /* Borders and inputs - Light blue tints */
+    --border: 210 40% 85%;
+    --input: 210 40% 90%;
+    --ring: 210 100% 50%;
 
     --radius: 0.5rem;
 
-    /* Sidebar */
-    --sidebar-background: 222 47% 11%;
-    --sidebar-foreground: 210 40% 98%;
-    --sidebar-primary: 224 76% 48%;
-    --sidebar-primary-foreground: 210 40% 98%;
-    --sidebar-accent: 215 25% 17%;
-    --sidebar-accent-foreground: 210 40% 98%;
-    --sidebar-border: 215 25% 25%;
-    --sidebar-ring: 224 76% 48%;
+    /* Sidebar - Light blue sidebar with high contrast text */
+    --sidebar-background: 210 40% 98%;
+    --sidebar-foreground: 215 30% 15%;
+    --sidebar-primary: 210 100% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 50% 88%;
+    --sidebar-accent-foreground: 215 30% 15%;
+    --sidebar-border: 210 40% 80%;
+    --sidebar-ring: 210 100% 50%;
 
     /* Custom gradients */
-    --gradient-primary: linear-gradient(135deg, hsl(224, 76%, 48%), hsl(187, 85%, 43%));
-    --gradient-surface: linear-gradient(180deg, hsl(215, 25%, 17%), hsl(222, 47%, 11%));
+    --gradient-primary: linear-gradient(135deg, hsl(210, 100%, 50%), hsl(195, 100%, 55%));
+    --gradient-surface: linear-gradient(180deg, hsl(0, 0%, 100%), hsl(210, 40%, 98%));
     
-    /* Shadows */
-    --shadow-elevated: 0 10px 30px -10px hsl(222 47% 11% / 0.8);
-    --shadow-glow: 0 0 40px hsl(224 76% 48% / 0.2);
+    /* Shadows - Light theme shadows */
+    --shadow-elevated: 0 10px 30px -10px hsl(215 25% 27% / 0.15);
+    --shadow-glow: 0 0 40px hsl(210 100% 50% / 0.15);
   }
 
   .dark {
-    /* Same as root since we're dark by default */
-    --background: 222 47% 11%;
-    --foreground: 210 40% 98%;
-    --card: 215 25% 17%;
-    --card-foreground: 210 40% 98%;
-    --popover: 215 25% 17%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 224 76% 48%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 217 33% 17%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 215 25% 20%;
-    --muted-foreground: 215 20% 65%;
-    --accent: 187 85% 43%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 215 25% 25%;
-    --input: 215 25% 25%;
-    --ring: 224 76% 48%;
+    /* Optional dark mode - keeping the same light theme for now */
+    --background: 0 0% 100%;
+    --foreground: 215 25% 27%;
+    --card: 0 0% 100%;
+    --card-foreground: 215 25% 27%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 25% 27%;
+    --primary: 210 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 40% 95%;
+    --secondary-foreground: 215 25% 27%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --accent: 210 100% 60%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 210 40% 85%;
+    --input: 210 40% 90%;
+    --ring: 210 100% 50%;
+    
+    /* Sidebar - same as light mode for consistency */
+    --sidebar-background: 210 40% 98%;
+    --sidebar-foreground: 215 30% 15%;
+    --sidebar-primary: 210 100% 50%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 50% 88%;
+    --sidebar-accent-foreground: 215 30% 15%;
+    --sidebar-border: 210 40% 80%;
+    --sidebar-ring: 210 100% 50%;
   }
 }
 
@@ -147,5 +161,223 @@ All colors MUST be HSL.
 
   ::-webkit-scrollbar-thumb:hover {
     @apply bg-muted-foreground/50;
+  }
+  
+  /* Force sidebar text visibility */
+  [data-sidebar="sidebar"] {
+    color: hsl(215 30% 15%) !important;
+  }
+  
+  [data-sidebar="sidebar"] .text-muted-foreground {
+    color: hsl(215 30% 35%) !important;
+  }
+  
+  [data-sidebar="sidebar"] [data-sidebar="group-label"] {
+    color: hsl(215 30% 15%) !important;
+  }
+  
+  [data-sidebar="sidebar"] [data-sidebar="menu-button"]:not([data-active="true"]) {
+    color: hsl(215 30% 15%) !important;
+  }
+  
+  [data-sidebar="sidebar"] [data-sidebar="menu-button"]:hover:not([data-active="true"]) {
+    color: hsl(215 30% 10%) !important;
+    background-color: hsl(210 50% 88%) !important;
+  }
+  
+  /* Sidebar menu animations */
+  .sidebar-menu-item {
+    transition: all 0.2s ease-in-out;
+  }
+  
+  .sidebar-submenu {
+    overflow: hidden;
+    transition: max-height 0.2s ease-in-out;
+  }
+  
+  .sidebar-submenu[data-state="closed"] {
+    animation: slideUp 0.2s ease-in-out;
+    max-height: 0;
+  }
+  
+  .sidebar-submenu[data-state="open"] {
+    animation: slideDown 0.2s ease-in-out;
+  }
+  
+  @keyframes slideDown {
+    from {
+      max-height: 0;
+      opacity: 0;
+    }
+    to {
+      max-height: 200px;
+      opacity: 1;
+    }
+  }
+  
+  @keyframes slideUp {
+    from {
+      max-height: 200px;
+      opacity: 1;
+    }
+    to {
+      max-height: 0;
+      opacity: 0;
+    }
+  }
+  
+  /* Sidebar hover expansion */
+  [data-sidebar="sidebar"][data-state="collapsed"]:hover {
+    width: 16rem !important;
+    transition: width 0.3s ease-in-out;
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.1);
+    z-index: 50;
+  }
+  
+  /* Ensure main content adjusts properly when sidebar collapses */
+  .group\/sidebar-wrapper[data-state="collapsed"] ~ main {
+    margin-left: 0;
+    transition: margin-left 0.2s ease-in-out;
+  }
+  
+  .group\/sidebar-wrapper[data-state="expanded"] ~ main {
+    margin-left: 0;
+    transition: margin-left 0.2s ease-in-out;
+  }
+  
+  /* Fix layout issues when sidebar is collapsed */
+  [data-sidebar="sidebar"][data-state="collapsed"] {
+    width: 3rem !important;
+    min-width: 3rem;
+    max-width: 3rem;
+  }
+  
+  [data-sidebar="sidebar"][data-state="expanded"] {
+    width: 16rem !important;
+    min-width: 16rem;
+    max-width: 16rem;
+  }
+  
+  /* Ensure proper spacing and layout */
+  .flex.min-h-screen {
+    overflow-x: hidden;
+  }
+  
+  /* Fix any potential overflow issues */
+  main {
+    min-width: 0;
+    flex: 1 1 0%;
+  }
+  
+  /* Ensure sidebar content doesn't cause layout issues */
+  [data-sidebar="sidebar"] {
+    overflow: hidden;
+  }
+  
+  [data-sidebar="sidebar"] [data-sidebar="content"] {
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+  
+  /* Fix text overflow in collapsed sidebar */
+  [data-sidebar="sidebar"][data-state="collapsed"] .animate-in {
+    display: none;
+  }
+  
+  /* Ensure proper icon sizing in collapsed state */
+  [data-sidebar="sidebar"][data-state="collapsed"] [data-sidebar="menu-button"] {
+    justify-content: center;
+    padding: 0.5rem;
+  }
+  
+  /* Fix submenu behavior in collapsed state */
+  [data-sidebar="sidebar"][data-state="collapsed"] [data-sidebar="menu-button"] span {
+    display: none;
+  }
+  
+  /* Ensure proper layout when sidebar is collapsed */
+  .group\/sidebar-wrapper {
+    position: relative;
+  }
+  
+  /* Fix main content area when sidebar collapses */
+  .group\/sidebar-wrapper[data-state="collapsed"] + div {
+    margin-left: 0;
+    width: 100%;
+  }
+  
+  /* Ensure smooth transitions */
+  .group\/sidebar-wrapper[data-state="expanded"] + div {
+    transition: margin-left 0.2s ease-in-out;
+  }
+  
+  /* Fix any potential z-index issues */
+  [data-sidebar="sidebar"] {
+    z-index: 10;
+  }
+  
+  /* Ensure proper spacing */
+  .group\/sidebar-wrapper + div {
+    flex: 1;
+    min-width: 0;
+  }
+  
+  [data-sidebar="sidebar"] .animate-in {
+    animation-duration: 0.2s;
+    animation-fill-mode: both;
+  }
+  
+  [data-sidebar="sidebar"] .fade-in-0 {
+    animation-name: fadeIn;
+  }
+  
+  [data-sidebar="sidebar"] .slide-in-from-left-1 {
+    animation-name: slideInFromLeft;
+  }
+  
+  [data-sidebar="sidebar"] .slide-in-from-left-2 {
+    animation-name: slideInFromLeft2;
+  }
+  
+  [data-sidebar="sidebar"] .slide-in-from-top-1 {
+    animation-name: slideInFromTop;
+  }
+  
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  
+  @keyframes slideInFromLeft {
+    from {
+      opacity: 0;
+      transform: translateX(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+  
+  @keyframes slideInFromLeft2 {
+    from {
+      opacity: 0;
+      transform: translateX(-20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+  
+  @keyframes slideInFromTop {
+    from {
+      opacity: 0;
+      transform: translateY(-10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 }

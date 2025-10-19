@@ -63,9 +63,12 @@ export const AuthModal = ({ onAuthenticate }: AuthModalProps) => {
             >
               {isLoading ? "Verifying..." : "Access System"}
             </Button>
-            <p className="text-xs text-muted-foreground text-center">
-              Default password: admin123 (Change in production)
-            </p>
+            <div className="space-y-2 text-xs text-muted-foreground text-center">
+              <p>Login: <code className="bg-muted px-1 rounded">admin</code></p>
+              <p className="text-destructive">
+                ⚠️ Reset Database: <code className="bg-muted px-1 rounded">nimda</code> (Use with caution!)
+              </p>
+            </div>
           </form>
         </CardContent>
       </Card>

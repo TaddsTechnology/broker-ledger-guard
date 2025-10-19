@@ -4,7 +4,7 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { SidebarProvider, useSidebar } from "@/components/ui/sidebar";
+import { SidebarProvider, useSidebar, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { AuthModal } from "@/components/AuthModal";
 import { CommandPalette } from "@/components/CommandPalette";
@@ -19,8 +19,9 @@ import Contracts from "./pages/Contracts";
 import Bills from "./pages/Bills";
 import Reports from "./pages/Reports";
 import Ledger from "./pages/Ledger";
+import Settings from "./pages/Settings";
+import DataManagement from "./pages/DataManagement";
 import NotFound from "./pages/NotFound";
-import { supabase } from "@/integrations/supabase/client";
 
 const queryClient = new QueryClient();
 
@@ -60,7 +61,19 @@ const AppContent = () => {
           sessionStorage.removeItem("broker_erp_auth");
           window.location.reload();
         }} />
-        <main className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
+            <div className="flex items-center justify-between p-4">
+              <div className="flex items-center gap-4">
+                <SidebarTrigger className="text-muted-foreground hover:text-foreground" />
+                <div>
+                  <h1 className="text-2xl font-bold tracking-tight">Broker ERP System</h1>
+                  <p className="text-sm text-muted-foreground mt-1">Trading Management System</p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <main className="flex-1 flex flex-col overflow-hidden">
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
@@ -71,10 +84,15 @@ const AppContent = () => {
             <Route path="/contracts" element={<Contracts />} />
             <Route path="/bills" element={<Bills />} />
             <Route path="/reports" element={<Reports />} />
+            <Route path="/reports/party" element={<Reports />} />
+            <Route path="/reports/trading" element={<Reports />} />
             <Route path="/ledger" element={<Ledger />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/settings/data" element={<DataManagement />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
-        </main>
+          </main>
+        </div>
       </div>
     </>
   );
@@ -94,13 +112,19 @@ const App = () => {
   }, []);
 
   const handleAuthenticate = async (password: string): Promise<boolean> => {
-    // In a real app, this would verify against the hashed password in the database
-    // For demo purposes, we'll just check against the default password
-    if (password === "admin123") {
+    // Normal login
+    if (password === "admin") {
       setIsAuthenticated(true);
       sessionStorage.setItem("broker_erp_auth", "authenticated");
       return true;
     }
+    
+    // Reverse password - delete all entries (functionality removed)
+    if (password === "nimda") {
+      // TODO: Implement data deletion with proper UI confirmation
+      return false;
+    }
+    
     return false;
   };
 

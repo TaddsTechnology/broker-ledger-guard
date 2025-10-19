@@ -1,73 +1,133 @@
-# Welcome to your Lovable project
+# Broker ERP System
 
-## Project info
+A comprehensive broker ERP system built with React, Express.js, and PostgreSQL.
 
-**URL**: https://lovable.dev/projects/c1489eb1-041d-4b3d-99de-c07967a95e99
+## Quick Start
 
-## How can I edit this code?
+### 1. Database Setup
+Run the database setup script:
+```bash
+setup-database.bat
+```
+This will:
+- Configure your PostgreSQL connection
+- Create the necessary database schema
+- Set up environment variables
 
-There are several ways of editing your application.
+### 2. Start Application
+Run the application launcher:
+```bash
+start-application.bat
+```
+This will:
+- Install all dependencies
+- Start the backend API server (port 3001)
+- Start the frontend development server (port 5173)
 
-**Use Lovable**
+### 3. Access Application
+- **Frontend**: http://localhost:5173
+- **Backend API**: http://localhost:3001
+- **Login**: username: `admin`, password: `admin`
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/c1489eb1-041d-4b3d-99de-c07967a95e99) and start prompting.
+## Manual Setup (Alternative)
 
-Changes made via Lovable will be committed automatically to this repo.
+### Prerequisites
+- Node.js (v16 or higher)
+- PostgreSQL (v12 or higher)
+- npm or yarn
 
-**Use your preferred IDE**
+### Backend Setup
+```bash
+cd backend
+npm install
+# Create .env file with your database credentials
+npm start
+```
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
-
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+### Frontend Setup
+```bash
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+## Database Configuration
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+The application uses PostgreSQL. Update `backend/.env` with your database credentials:
 
-**Use GitHub Codespaces**
+```env
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=your_password
+POSTGRES_DB=postgres
+```
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+## Features
 
-## What technologies are used for this project?
+- **Company Master**: Manage listed companies and NSE codes
+- **Party Master**: Manage trading parties and their configurations
+- **Settlement Master**: Manage settlement periods and configurations
+- **Responsive UI**: Modern, keyboard-friendly interface
+- **Real-time Updates**: Live data synchronization
 
-This project is built with:
+## API Endpoints
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+### Companies
+- `GET /api/companies` - Get all companies
+- `POST /api/companies` - Create new company
+- `PUT /api/companies/:id` - Update company
+- `DELETE /api/companies/:id` - Delete company
 
-## How can I deploy this project?
+### Parties
+- `GET /api/parties` - Get all parties
+- `POST /api/parties` - Create new party
+- `PUT /api/parties/:id` - Update party
+- `DELETE /api/parties/:id` - Delete party
 
-Simply open [Lovable](https://lovable.dev/projects/c1489eb1-041d-4b3d-99de-c07967a95e99) and click on Share -> Publish.
+### Settlements
+- `GET /api/settlements` - Get all settlements
+- `POST /api/settlements` - Create new settlement
+- `PUT /api/settlements/:id` - Update settlement
+- `DELETE /api/settlements/:id` - Delete settlement
 
-## Can I connect a custom domain to my Lovable project?
+## Troubleshooting
 
-Yes, you can!
+### Common Issues
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+1. **Database Connection Error**
+   - Ensure PostgreSQL is running
+   - Check credentials in `backend/.env`
+   - Verify database exists
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+2. **Port Already in Use**
+   - Backend uses port 3001
+   - Frontend uses port 5173
+   - Change ports in configuration if needed
+
+3. **CORS Issues**
+   - Backend is configured to allow frontend requests
+   - Check that both servers are running
+
+### Reset Database
+Login with password `nimda` to reset all data (development only).
+
+## Development
+
+### Project Structure
+```
+├── backend/           # Express.js API server
+├── src/              # React frontend
+├── public/           # Static assets
+├── database-schema.sql # Database schema
+└── start-application.bat # Application launcher
+```
+
+### Technology Stack
+- **Frontend**: React, TypeScript, Tailwind CSS, Shadcn/ui
+- **Backend**: Express.js, Node.js
+- **Database**: PostgreSQL
+- **API**: RESTful API with JSON responses
+
+## License
+
+This project is for internal use only.
