@@ -49,6 +49,10 @@ const PartyMaster = () => {
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  
+  // Autocomplete states
+  const [partySuggestions, setPartySuggestions] = useState<Party[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
   const [formData, setFormData] = useState({
     party_code: "",
@@ -91,6 +95,40 @@ const PartyMaster = () => {
     setSelectedRowIndex(0);
   }, [parties, searchTerm]);
 
+  // Handle party code autocomplete
+  const handlePartyCodeChange = (value: string) => {
+    setFormData({ ...formData, party_code: value.toUpperCase() });
+    
+    if (value.trim() !== "") {
+      // Find parties that match the code
+      const suggestions = parties.filter(
+        party => party.party_code.toLowerCase().startsWith(value.toLowerCase())
+      );
+      setPartySuggestions(suggestions);
+      setShowSuggestions(suggestions.length > 0);
+    } else {
+      setPartySuggestions([]);
+      setShowSuggestions(false);
+    }
+  };
+
+  // Select a party from suggestions
+  const selectPartySuggestion = (party: Party) => {
+    setFormData({
+      party_code: party.party_code,
+      nse_code: party.nse_code || "",
+      name: party.name,
+      ref_code: party.ref_code || "",
+      address: party.address || "",
+      city: party.city || "",
+      phone: party.phone || "",
+      trading_slab: party.trading_slab.toString(),
+      delivery_slab: party.delivery_slab.toString(),
+    });
+    setPartySuggestions([]);
+    setShowSuggestions(false);
+  };
+
   // Focus first input when form view opens
   useEffect(() => {
     if (currentView === 'form' && firstInputRef.current) {
@@ -108,6 +146,23 @@ const PartyMaster = () => {
     }
   }, [selectedRowIndex, currentView, parties.length]);
 
+  // Close suggestions when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (showSuggestions) {
+        const target = event.target as HTMLElement;
+        const suggestionsContainer = document.querySelector('.absolute.z-10');
+        if (suggestionsContainer && !suggestionsContainer.contains(target)) {
+          setShowSuggestions(false);
+        }
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showSuggestions]);
 
   const fetchParties = async () => {
     setIsLoading(true);
@@ -354,16 +409,32 @@ const PartyMaster = () => {
                   <Label htmlFor="party_code" className="text-sm font-medium">
                     Party Code <span className="text-destructive">*</span>
                   </Label>
-                  <Input
-                    ref={firstInputRef}
-                    id="party_code"
-                    value={formData.party_code}
-                    onChange={(e) => setFormData({ ...formData, party_code: e.target.value.toUpperCase() })}
-                    required
-                    className="bg-secondary h-10"
-                    placeholder="Enter party code"
-                    tabIndex={1}
-                  />
+                  <div className="relative">
+                    <Input
+                      ref={firstInputRef}
+                      id="party_code"
+                      value={formData.party_code}
+                      onChange={(e) => handlePartyCodeChange(e.target.value)}
+                      required
+                      className="bg-secondary h-10"
+                      placeholder="Enter party code"
+                      tabIndex={1}
+                    />
+                    {showSuggestions && partySuggestions.length > 0 && (
+                      <div className="absolute z-10 w-full mt-1 bg-background border border-border rounded-md shadow-lg max-h-60 overflow-auto">
+                        {partySuggestions.map((party) => (
+                          <div
+                            key={party.id}
+                            className="px-4 py-2 hover:bg-muted cursor-pointer flex justify-between items-center"
+                            onClick={() => selectPartySuggestion(party)}
+                          >
+                            <span className="font-medium">{party.party_code}</span>
+                            <span className="text-sm text-muted-foreground">{party.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 
                 <div className="space-y-2">
@@ -636,6 +707,17 @@ const PartyMaster = () => {
                         // Focus the previous row
                         const prevRow = e.currentTarget.parentElement?.children[prevIndex] as HTMLElement;
                         prevRow?.focus();
+                      } else if (e.key === "Home") {
+                        e.preventDefault();
+                        setSelectedRowIndex(0);
+                        const firstRow = e.currentTarget.parentElement?.children[0] as HTMLElement;
+                        firstRow?.focus();
+                      } else if (e.key === "End") {
+                        e.preventDefault();
+                        const lastIndex = parties.length - 1;
+                        setSelectedRowIndex(lastIndex);
+                        const lastRow = e.currentTarget.parentElement?.children[lastIndex] as HTMLElement;
+                        lastRow?.focus();
                       }
                     }}
                   >

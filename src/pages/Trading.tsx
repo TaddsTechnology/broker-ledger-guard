@@ -24,7 +24,9 @@ const Trading = () => {
   const [uploadedFiles, setUploadedFiles] = useState<ProcessedFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   // Handle file upload
   const handleFileUpload = useCallback(async (files: FileList | null) => {
@@ -242,7 +244,47 @@ const Trading = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               {uploadedFiles.map((file, index) => (
-                <div key={index} className="border rounded-lg p-4">
+                <div 
+                  key={index} 
+                  ref={el => fileRefs.current[index] = el}
+                  className={`border rounded-lg p-4 ${index === selectedFileIndex ? 'ring-2 ring-primary/20 bg-primary/5' : ''}`}
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    // Don't handle arrow keys when in input fields
+                    const target = e.target as HTMLElement;
+                    const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
+                    const isContentEditable = target.isContentEditable || target.hasAttribute('contenteditable');
+                    
+                    if (isInputField || isContentEditable) {
+                      return;
+                    }
+                    
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      const nextIndex = Math.min(selectedFileIndex + 1, uploadedFiles.length - 1);
+                      setSelectedFileIndex(nextIndex);
+                      fileRefs.current[nextIndex]?.focus();
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      const prevIndex = Math.max(selectedFileIndex - 1, 0);
+                      setSelectedFileIndex(prevIndex);
+                      fileRefs.current[prevIndex]?.focus();
+                    } else if (e.key === "Home") {
+                      e.preventDefault();
+                      setSelectedFileIndex(0);
+                      fileRefs.current[0]?.focus();
+                    } else if (e.key === "End") {
+                      e.preventDefault();
+                      const lastIndex = uploadedFiles.length - 1;
+                      setSelectedFileIndex(lastIndex);
+                      fileRefs.current[lastIndex]?.focus();
+                    } else if (e.key === "Delete") {
+                      e.preventDefault();
+                      removeFile(index);
+                    }
+                  }}
+                  onClick={() => setSelectedFileIndex(index)}
+                >
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <FileText className="h-4 w-4" />
@@ -334,6 +376,9 @@ const Trading = () => {
                 <li><kbd className="px-1 py-0.5 bg-muted rounded text-xs">Tab 1</kbd> - Select Files</li>
                 <li><kbd className="px-1 py-0.5 bg-muted rounded text-xs">Tab 2</kbd> - Clear All</li>
                 <li><kbd className="px-1 py-0.5 bg-muted rounded text-xs">Tab 3+</kbd> - File actions</li>
+                <li><kbd className="px-1 py-0.5 bg-muted rounded text-xs">↑/↓</kbd> - Navigate between files</li>
+                <li><kbd className="px-1 py-0.5 bg-muted rounded text-xs">Home/End</kbd> - First/Last file</li>
+                <li><kbd className="px-1 py-0.5 bg-muted rounded text-xs">Delete</kbd> - Remove selected file</li>
               </ul>
             </div>
           </CardContent>

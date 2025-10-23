@@ -19,6 +19,17 @@ export const useBusinessKeyboard = (config: FormNavigationConfig) => {
     // Don't interfere with input fields unless specifically handled
     const target = e.target as HTMLElement;
     const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
+    const isContentEditable = target.isContentEditable || target.hasAttribute('contenteditable');
+    
+    // If we're in an input field or contenteditable element, don't handle most shortcuts
+    if (isInputField || isContentEditable) {
+      // Allow Escape and some special keys even in inputs
+      if (e.key === 'Escape' && config.onCancel) {
+        e.preventDefault();
+        config.onCancel();
+      }
+      return;
+    }
     
     // F2 - Edit
     if (e.key === 'F2' && config.onEdit) {
@@ -50,12 +61,12 @@ export const useBusinessKeyboard = (config: FormNavigationConfig) => {
       config.onPrint();
     }
     // Delete key
-    else if (e.key === 'Delete' && !isInputField && config.onDelete) {
+    else if (e.key === 'Delete' && config.onDelete) {
       e.preventDefault();
       config.onDelete();
     }
     // Enter in forms (submit)
-    else if (e.key === 'Enter' && config.onSubmit && !e.shiftKey && !isInputField) {
+    else if (e.key === 'Enter' && config.onSubmit && !e.shiftKey) {
       e.preventDefault();
       config.onSubmit();
     }
@@ -79,15 +90,23 @@ export const useBusinessKeyboard = (config: FormNavigationConfig) => {
       e.preventDefault();
       config.onPrint();
     }
-    // Arrow Up
-    else if (e.key === 'ArrowUp' && !isInputField && config.onUp) {
-      e.preventDefault();
-      config.onUp();
+    // Arrow Up - Only handle in list views, not in forms
+    else if (e.key === 'ArrowUp' && config.onUp) {
+      // Check if we're in a form by looking for common form container elements
+      const isInForm = target.closest('form') !== null;
+      if (!isInForm) {
+        e.preventDefault();
+        config.onUp();
+      }
     }
-    // Arrow Down
-    else if (e.key === 'ArrowDown' && !isInputField && config.onDown) {
-      e.preventDefault();
-      config.onDown();
+    // Arrow Down - Only handle in list views, not in forms
+    else if (e.key === 'ArrowDown' && config.onDown) {
+      // Check if we're in a form by looking for common form container elements
+      const isInForm = target.closest('form') !== null;
+      if (!isInForm) {
+        e.preventDefault();
+        config.onDown();
+      }
     }
   }, [config]);
 
@@ -102,8 +121,13 @@ export const useTableNavigation = (items: any[], selectedIndex: number, setSelec
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     const target = e.target as HTMLElement;
     const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT';
+    const isContentEditable = target.isContentEditable || target.hasAttribute('contenteditable');
     
-    if (isInputField) return;
+    if (isInputField || isContentEditable) return;
+    
+    // Check if we're in a form by looking for common form container elements
+    const isInForm = target.closest('form') !== null;
+    if (isInForm) return; // Don't handle arrow keys in forms
     
     switch (e.key) {
       case 'ArrowDown':

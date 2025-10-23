@@ -607,6 +607,17 @@ const SettlementMaster = () => {
                         // Focus the previous row
                         const prevRow = e.currentTarget.parentElement?.children[prevIndex] as HTMLElement;
                         prevRow?.focus();
+                      } else if (e.key === "Home") {
+                        e.preventDefault();
+                        setSelectedRowIndex(0);
+                        const firstRow = e.currentTarget.parentElement?.children[0] as HTMLElement;
+                        firstRow?.focus();
+                      } else if (e.key === "End") {
+                        e.preventDefault();
+                        const lastIndex = filteredSettlements.length - 1;
+                        setSelectedRowIndex(lastIndex);
+                        const lastRow = e.currentTarget.parentElement?.children[lastIndex] as HTMLElement;
+                        lastRow?.focus();
                       }
                     }}
                   >

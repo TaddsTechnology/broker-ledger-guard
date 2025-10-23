@@ -62,17 +62,6 @@ const AppContent = () => {
           window.location.reload();
         }} />
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
-            <div className="flex items-center justify-between p-4">
-              <div className="flex items-center gap-4">
-                <SidebarTrigger className="text-muted-foreground hover:text-foreground" />
-                <div>
-                  <h1 className="text-2xl font-bold tracking-tight">Broker ERP System</h1>
-                  <p className="text-sm text-muted-foreground mt-1">Trading Management System</p>
-                </div>
-              </div>
-            </div>
-          </div>
           <main className="flex-1 flex flex-col overflow-hidden">
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />

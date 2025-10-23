@@ -209,19 +209,19 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
   return (
     <Sidebar 
       collapsible="icon" 
-      className="border-r border-sidebar-border"
+      className="sidebar-clean"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      <SidebarHeader className="border-b border-sidebar-border p-4">
+      <SidebarHeader className="header-clean">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gradient-primary flex items-center justify-center shrink-0">
+          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
             <TrendingUp className="w-5 h-5 text-white" />
           </div>
           {(!isCollapsed || shouldShowExpanded) && (
             <div className="flex flex-col animate-in fade-in-0 slide-in-from-left-2">
-              <span className="font-bold text-sm text-sidebar-foreground">Broker ERP</span>
-              <span className="text-xs text-sidebar-foreground/70">Trading System</span>
+              <span className="font-bold text-sm text-clean">Broker ERP</span>
+              <span className="text-xs text-muted-clean">Trading System</span>
             </div>
           )}
         </div>
@@ -239,7 +239,14 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
             return (
               <SidebarMenuItem key={menu.title}>
                 {hasSubmenu ? (
-                  <Collapsible open={isOpen} onOpenChange={() => (!isCollapsed && !shouldShowExpanded) && toggleMenu(menu.title)}>
+                  <Collapsible open={isOpen} onOpenChange={(open) => {
+                    setOpenMenus((prev) => {
+                      if (open) {
+                        return prev.includes(menu.title) ? prev : [...prev, menu.title];
+                      }
+                      return prev.filter((t) => t !== menu.title);
+                    });
+                  }}>
                     <CollapsibleTrigger asChild>
                       <SidebarMenuButton
                         className={`w-full justify-between focus:ring-2 focus:ring-primary/50 ${
@@ -254,10 +261,20 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
                             handleMenuEnter(menu);
                           }
                         }}
-                        onClick={(e) => {
-                          // Click toggles submenu; for collapsed hover state, keep open via hover
-                          if (!isCollapsed || !shouldShowExpanded) {
-                            toggleMenu(menu.title);
+                        onClick={() => {
+                          // If collapsed, temporarily show expanded sidebar so submenu becomes visible
+                          if (isCollapsed && !shouldShowExpanded) {
+                            setShouldShowExpanded(true);
+                          }
+                          // Do not toggle here; CollapsibleTrigger handles it via onOpenChange
+                        }}
+                        onDoubleClick={() => {
+                          // Navigate to first submenu item on double-click
+                          if (menu.submenu && menu.submenu.length > 0) {
+                            const first = menu.submenu[0];
+                            if (first?.url) {
+                              navigate(first.url);
+                            }
                           }
                         }}
                       >

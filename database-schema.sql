@@ -160,6 +160,45 @@ CREATE INDEX IF NOT EXISTS idx_payments_bill_id ON payments(bill_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_entries_party_id ON ledger_entries(party_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_entries_entry_date ON ledger_entries(entry_date);
 
+-- Create contracts table
+CREATE TABLE IF NOT EXISTS contracts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    contract_number VARCHAR(50) UNIQUE NOT NULL,
+    party_id UUID REFERENCES party_master(id),
+    settlement_id UUID REFERENCES settlement_master(id),
+    contract_date DATE NOT NULL,
+    quantity INTEGER NOT NULL,
+    rate DECIMAL(10,2) NOT NULL,
+    amount DECIMAL(15,2) NOT NULL,
+    contract_type VARCHAR(10) CHECK (contract_type IN ('buy', 'sell')) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active',
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS idx_party_master_party_code ON party_master(party_code);
+CREATE INDEX IF NOT EXISTS idx_party_master_name ON party_master(name);
+CREATE INDEX IF NOT EXISTS idx_company_master_company_code ON company_master(company_code);
+CREATE INDEX IF NOT EXISTS idx_settlement_master_settlement_number ON settlement_master(settlement_number);
+CREATE INDEX IF NOT EXISTS idx_settlement_master_type ON settlement_master(type);
+CREATE INDEX IF NOT EXISTS idx_trade_data_party_code ON trade_data(party_code);
+CREATE INDEX IF NOT EXISTS idx_trade_data_company_code ON trade_data(company_code);
+CREATE INDEX IF NOT EXISTS idx_trade_data_trade_date ON trade_data(trade_date);
+CREATE INDEX IF NOT EXISTS idx_bills_bill_number ON bills(bill_number);
+CREATE INDEX IF NOT EXISTS idx_bills_party_id ON bills(party_id);
+CREATE INDEX IF NOT EXISTS idx_bills_status ON bills(status);
+CREATE INDEX IF NOT EXISTS idx_payments_party_id ON payments(party_id);
+CREATE INDEX IF NOT EXISTS idx_payments_bill_id ON payments(bill_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_entries_party_id ON ledger_entries(party_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_entries_entry_date ON ledger_entries(entry_date);
+CREATE INDEX IF NOT EXISTS idx_contracts_contract_number ON contracts(contract_number);
+CREATE INDEX IF NOT EXISTS idx_contracts_party_id ON contracts(party_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_settlement_id ON contracts(settlement_id);
+CREATE INDEX IF NOT EXISTS idx_contracts_contract_date ON contracts(contract_date);
+CREATE INDEX IF NOT EXISTS idx_contracts_status ON contracts(status);
+
 -- Create triggers for updated_at columns
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -183,6 +222,14 @@ CREATE TRIGGER update_bills_updated_at BEFORE UPDATE ON bills
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_application_settings_updated_at BEFORE UPDATE ON application_settings 
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Apply trigger to ledger_entries table
+CREATE TRIGGER update_ledger_entries_updated_at BEFORE UPDATE ON ledger_entries 
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Apply trigger to contracts table
+CREATE TRIGGER update_contracts_updated_at BEFORE UPDATE ON contracts 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Insert default application settings
@@ -214,5 +261,13 @@ ON CONFLICT (company_code) DO NOTHING;
 INSERT INTO settlement_master (type, settlement_number, start_date, end_date, contract_no, notes) VALUES
 ('nse', '2024NSE001', '2024-01-01', '2024-01-31', 'NSE-2024-JAN-001', 'January 2024 NSE Settlement')
 ON CONFLICT (settlement_number) DO NOTHING;
+
+-- Insert sample contract (optional - remove if not needed)
+-- Note: This requires existing party and settlement records
+-- INSERT INTO contracts (contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status) 
+-- SELECT 'CNT001', p.id, s.id, '2024-01-15', 100, 2500.00, 250000.00, 'buy', 'active'
+-- FROM party_master p, settlement_master s 
+-- WHERE p.party_code = 'SAMPLE001' AND s.settlement_number = '2024NSE001'
+-- ON CONFLICT (contract_number) DO NOTHING;
 
 COMMIT;

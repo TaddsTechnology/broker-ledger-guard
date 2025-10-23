@@ -181,6 +181,189 @@ app.delete('/api/settlements/:id', async (req, res) => {
   }
 });
 
+// Bills API routes
+app.get('/api/bills', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT b.*, p.party_code, p.name as party_name 
+      FROM bills b 
+      LEFT JOIN party_master p ON b.party_id = p.id 
+      ORDER BY b.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching bills:', error);
+    res.status(500).json({ error: 'Failed to fetch bills' });
+  }
+});
+
+app.post('/api/bills', async (req, res) => {
+  try {
+    const { bill_number, party_id, bill_date, due_date, total_amount, notes } = req.body;
+    const result = await pool.query(
+      'INSERT INTO bills (bill_number, party_id, bill_date, due_date, total_amount, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [bill_number, party_id, bill_date, due_date, total_amount, notes]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating bill:', error);
+    res.status(500).json({ error: 'Failed to create bill' });
+  }
+});
+
+app.put('/api/bills/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { bill_number, party_id, bill_date, due_date, total_amount, notes } = req.body;
+    const result = await pool.query(
+      'UPDATE bills SET bill_number = $1, party_id = $2, bill_date = $3, due_date = $4, total_amount = $5, notes = $6, updated_at = NOW() WHERE id = $7 RETURNING *',
+      [bill_number, party_id, bill_date, due_date, total_amount, notes, id]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating bill:', error);
+    res.status(500).json({ error: 'Failed to update bill' });
+  }
+});
+
+app.delete('/api/bills/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM bills WHERE id = $1', [id]);
+    res.json({ message: 'Bill deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting bill:', error);
+    res.status(500).json({ error: 'Failed to delete bill' });
+  }
+});
+
+// Ledger API routes
+app.get('/api/ledger', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT l.*, p.party_code, p.name as party_name 
+      FROM ledger_entries l 
+      LEFT JOIN party_master p ON l.party_id = p.id 
+      ORDER BY l.entry_date DESC, l.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching ledger entries:', error);
+    res.status(500).json({ error: 'Failed to fetch ledger entries' });
+  }
+});
+
+app.get('/api/ledger/party/:partyId', async (req, res) => {
+  try {
+    const { partyId } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC',
+      [partyId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching party ledger entries:', error);
+    res.status(500).json({ error: 'Failed to fetch party ledger entries' });
+  }
+});
+
+app.post('/api/ledger', async (req, res) => {
+  try {
+    const { party_id, entry_date, particulars, debit_amount, credit_amount, balance } = req.body;
+    const result = await pool.query(
+      'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [party_id, entry_date, particulars, debit_amount, credit_amount, balance]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating ledger entry:', error);
+    res.status(500).json({ error: 'Failed to create ledger entry' });
+  }
+});
+
+app.put('/api/ledger/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { party_id, entry_date, particulars, debit_amount, credit_amount, balance } = req.body;
+    const result = await pool.query(
+      'UPDATE ledger_entries SET party_id = $1, entry_date = $2, particulars = $3, debit_amount = $4, credit_amount = $5, balance = $6, updated_at = NOW() WHERE id = $7 RETURNING *',
+      [party_id, entry_date, particulars, debit_amount, credit_amount, balance, id]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating ledger entry:', error);
+    res.status(500).json({ error: 'Failed to update ledger entry' });
+  }
+});
+
+app.delete('/api/ledger/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM ledger_entries WHERE id = $1', [id]);
+    res.json({ message: 'Ledger entry deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting ledger entry:', error);
+    res.status(500).json({ error: 'Failed to delete ledger entry' });
+  }
+});
+
+// Contracts API routes
+app.get('/api/contracts', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.*, p.party_code, p.name as party_name, s.settlement_number
+      FROM contracts c
+      LEFT JOIN party_master p ON c.party_id = p.id
+      LEFT JOIN settlement_master s ON c.settlement_id = s.id
+      ORDER BY c.created_at DESC
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching contracts:', error);
+    res.status(500).json({ error: 'Failed to fetch contracts' });
+  }
+});
+
+app.post('/api/contracts', async (req, res) => {
+  try {
+    const { contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes } = req.body;
+    const result = await pool.query(
+      'INSERT INTO contracts (contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
+      [contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating contract:', error);
+    res.status(500).json({ error: 'Failed to create contract' });
+  }
+});
+
+app.put('/api/contracts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes } = req.body;
+    const result = await pool.query(
+      'UPDATE contracts SET contract_number = $1, party_id = $2, settlement_id = $3, contract_date = $4, quantity = $5, rate = $6, amount = $7, contract_type = $8, status = $9, notes = $10, updated_at = NOW() WHERE id = $11 RETURNING *',
+      [contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes, id]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating contract:', error);
+    res.status(500).json({ error: 'Failed to update contract' });
+  }
+});
+
+app.delete('/api/contracts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM contracts WHERE id = $1', [id]);
+    res.json({ message: 'Contract deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting contract:', error);
+    res.status(500).json({ error: 'Failed to delete contract' });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {

@@ -114,3 +114,104 @@ export const settlementQueries = {
     }),
   delete: (id: string) => apiCall(`/settlements/${id}`, { method: 'DELETE' }),
 };
+
+// Bills operations
+export const billQueries = {
+  getAll: () => apiCall('/bills'),
+  getById: (id: string) => apiCall(`/bills/${id}`),
+  create: (data: {
+    bill_number: string;
+    party_id: string;
+    bill_date: string;
+    due_date?: string;
+    total_amount: number;
+    notes?: string;
+  }) =>
+    apiCall('/bills', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, data: {
+    bill_number: string;
+    party_id: string;
+    bill_date: string;
+    due_date?: string;
+    total_amount: number;
+    notes?: string;
+  }) =>
+    apiCall(`/bills/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  delete: (id: string) => apiCall(`/bills/${id}`, { method: 'DELETE' }),
+};
+
+// Ledger operations
+export const ledgerQueries = {
+  getAll: () => apiCall('/ledger'),
+  getByPartyId: (partyId: string) => apiCall(`/ledger/party/${partyId}`),
+  create: (data: {
+    party_id: string;
+    entry_date: string;
+    particulars: string;
+    debit_amount: number;
+    credit_amount: number;
+    balance: number;
+  }) =>
+    apiCall('/ledger', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, data: {
+    party_id: string;
+    entry_date: string;
+    particulars: string;
+    debit_amount: number;
+    credit_amount: number;
+    balance: number;
+  }) =>
+    apiCall(`/ledger/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  delete: (id: string) => apiCall(`/ledger/${id}`, { method: 'DELETE' }),
+};
+
+// Contracts operations
+export const contractQueries = {
+  getAll: () => apiCall('/contracts'),
+  getById: (id: string) => apiCall(`/contracts/${id}`),
+  create: (data: {
+    contract_number: string;
+    party_id: string;
+    settlement_id: string;
+    contract_date: string;
+    quantity: number;
+    rate: number;
+    amount: number;
+    contract_type: 'buy' | 'sell';
+    status: 'active' | 'completed' | 'cancelled';
+    notes?: string;
+  }) =>
+    apiCall('/contracts', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, data: {
+    contract_number: string;
+    party_id: string;
+    settlement_id: string;
+    contract_date: string;
+    quantity: number;
+    rate: number;
+    amount: number;
+    contract_type: 'buy' | 'sell';
+    status: 'active' | 'completed' | 'cancelled';
+    notes?: string;
+  }) =>
+    apiCall(`/contracts/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  delete: (id: string) => apiCall(`/contracts/${id}`, { method: 'DELETE' }),
+};

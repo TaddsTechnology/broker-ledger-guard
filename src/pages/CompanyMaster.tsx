@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Plus, Pencil, Trash2, Save, X, List, Search } from "lucide-react";
@@ -48,6 +48,22 @@ const CompanyMaster = () => {
     nse_code: "",
   });
 
+  const fetchCompanies = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const result = await companyQueries.getAll();
+      setCompanies(result || []);
+    } catch (error) {
+      console.error('Error fetching companies:', error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch companies",
+        variant: "destructive",
+      });
+    }
+    setIsLoading(false);
+  }, [toast]);
+
   useEffect(() => {
     fetchCompanies();
     
@@ -59,7 +75,7 @@ const CompanyMaster = () => {
       // Clean up URL
       window.history.replaceState({}, '', window.location.pathname);
     }
-  }, []);
+  }, [fetchCompanies]);
 
   // Filter companies based on search term
   useEffect(() => {
@@ -93,23 +109,6 @@ const CompanyMaster = () => {
       }
     }
   }, [selectedRowIndex, currentView, filteredCompanies.length]);
-
-
-  const fetchCompanies = async () => {
-    setIsLoading(true);
-    try {
-      const result = await companyQueries.getAll();
-      setCompanies(result || []);
-    } catch (error) {
-      console.error('Error fetching companies:', error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch companies",
-        variant: "destructive",
-      });
-    }
-    setIsLoading(false);
-  };
 
   const resetForm = () => {
     setFormData({
@@ -292,8 +291,7 @@ const CompanyMaster = () => {
                 setCurrentView('list');
                 resetForm();
               }}
-              variant="outline"
-              className="group relative"
+              className="btn-secondary group relative"
             >
               <List className="w-4 h-4 mr-2" />
               View List
@@ -303,7 +301,7 @@ const CompanyMaster = () => {
             </Button>
             <Button
               onClick={handleSubmit}
-              className="bg-primary hover:bg-primary-hover group relative"
+              className="btn-primary group relative"
             >
               <Save className="w-4 h-4 mr-2" />
               {editingCompany ? "Update" : "Save"}
@@ -315,67 +313,69 @@ const CompanyMaster = () => {
         }
       />
       
-      <div className="p-6">
-        <form ref={formRef} onSubmit={handleSubmit} className="space-y-8">
+      <div className="spacing-lg">
+        <form ref={formRef} onSubmit={handleSubmit} className="form-clean">
           {/* Company Information */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
+          <div className="card-clean">
+            <div className="header-clean">
+              <h3 className="text-lg flex items-center gap-2 text-clean">
                 <span className="bg-primary text-primary-foreground rounded-full w-6 h-6 flex items-center justify-center text-sm font-semibold">1</span>
                 Company Information
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="company_code" className="text-sm font-medium">
-                    Company Code <span className="text-destructive">*</span>
-                  </Label>
-                  <Input
-                    ref={firstInputRef}
-                    id="company_code"
-                    value={formData.company_code}
-                    onChange={(e) => setFormData({ ...formData, company_code: e.target.value.toUpperCase() })}
-                    required
-                    className="bg-secondary h-10 uppercase"
-                    placeholder="e.g., TCS, INFY"
-                    maxLength={50}
-                    tabIndex={1}
-                  />
+              </h3>
+            </div>
+            <div className="spacing-lg">
+              <div className="form-clean">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="form-group">
+                    <Label htmlFor="company_code" className="form-clean label">
+                      Company Code <span className="text-primary">*</span>
+                    </Label>
+                    <Input
+                      ref={firstInputRef}
+                      id="company_code"
+                      value={formData.company_code}
+                      onChange={(e) => setFormData({ ...formData, company_code: e.target.value.toUpperCase() })}
+                      required
+                      className="input-clean h-10 uppercase focus-clean"
+                      placeholder="e.g., TCS, INFY"
+                      maxLength={50}
+                      tabIndex={1}
+                    />
+                  </div>
+                  
+                  <div className="form-group">
+                    <Label htmlFor="nse_code" className="form-clean label">
+                      NSE Code
+                    </Label>
+                    <Input
+                      id="nse_code"
+                      value={formData.nse_code}
+                      onChange={(e) => setFormData({ ...formData, nse_code: e.target.value.toUpperCase() })}
+                      className="input-clean h-10 uppercase focus-clean"
+                      placeholder="NSE trading symbol"
+                      maxLength={50}
+                      tabIndex={3}
+                    />
+                  </div>
                 </div>
                 
-                <div className="space-y-2">
-                  <Label htmlFor="nse_code" className="text-sm font-medium">
-                    NSE Code
+                <div className="form-group">
+                  <Label htmlFor="name" className="form-clean label">
+                    Company Name <span className="text-primary">*</span>
                   </Label>
                   <Input
-                    id="nse_code"
-                    value={formData.nse_code}
-                    onChange={(e) => setFormData({ ...formData, nse_code: e.target.value.toUpperCase() })}
-                    className="bg-secondary h-10 uppercase"
-                    placeholder="NSE trading symbol"
-                    maxLength={50}
-                    tabIndex={3}
+                    id="name"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    required
+                    className="input-clean h-10 focus-clean"
+                    placeholder="Full company name"
+                    tabIndex={2}
                   />
                 </div>
               </div>
-              
-              <div className="space-y-2">
-                <Label htmlFor="name" className="text-sm font-medium">
-                  Company Name <span className="text-destructive">*</span>
-                </Label>
-                <Input
-                  id="name"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  required
-                  className="bg-secondary h-10"
-                  placeholder="Full company name"
-                  tabIndex={2}
-                />
-              </div>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
           
           <div className="flex justify-end space-x-4 pt-6 border-t">
             <Button
@@ -420,7 +420,7 @@ const CompanyMaster = () => {
                 placeholder="Search companies... (F3)"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-8 w-64 bg-secondary"
+                className="input-clean pl-8 w-64 focus-clean"
               />
             </div>
             <Button
@@ -428,7 +428,7 @@ const CompanyMaster = () => {
                 resetForm();
                 setCurrentView('form');
               }}
-              className="bg-primary hover:bg-primary-hover group relative"
+              className="btn-primary group relative"
             >
               <Plus className="w-4 h-4 mr-2" />
               Add Company
@@ -440,16 +440,16 @@ const CompanyMaster = () => {
         }
       />
 
-      <div className="p-6">
-        <div className="rounded-lg border border-border bg-card overflow-hidden">
-          <Table>
+      <div className="spacing-lg">
+        <div className="card-clean overflow-hidden">
+          <Table className="table-clean">
             <TableHeader>
-              <TableRow className="bg-muted/50">
-                <TableHead className="font-semibold">Company Code</TableHead>
-                <TableHead className="font-semibold">Company Name</TableHead>
-                <TableHead className="font-semibold">NSE Code</TableHead>
-                <TableHead className="font-semibold">Created</TableHead>
-                <TableHead className="font-semibold text-right">Actions</TableHead>
+              <TableRow>
+                <TableHead>Company Code</TableHead>
+                <TableHead>Company Name</TableHead>
+                <TableHead>NSE Code</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -470,7 +470,7 @@ const CompanyMaster = () => {
                   <TableRow 
                     key={company.id} 
                     data-row-index={index}
-                    className={`hover:bg-muted/30 cursor-pointer transition-colors ${
+                    className={`hover-clean cursor-pointer transition-colors ${
                       index === selectedRowIndex ? "bg-primary/10 ring-2 ring-primary/20" : ""
                     }`}
                     onClick={(e) => {
@@ -498,6 +498,17 @@ const CompanyMaster = () => {
                         // Focus the previous row
                         const prevRow = e.currentTarget.parentElement?.children[prevIndex] as HTMLElement;
                         prevRow?.focus();
+                      } else if (e.key === "Home") {
+                        e.preventDefault();
+                        setSelectedRowIndex(0);
+                        const firstRow = e.currentTarget.parentElement?.children[0] as HTMLElement;
+                        firstRow?.focus();
+                      } else if (e.key === "End") {
+                        e.preventDefault();
+                        const lastIndex = filteredCompanies.length - 1;
+                        setSelectedRowIndex(lastIndex);
+                        const lastRow = e.currentTarget.parentElement?.children[lastIndex] as HTMLElement;
+                        lastRow?.focus();
                       }
                     }}
                   >
@@ -516,7 +527,7 @@ const CompanyMaster = () => {
                             e.stopPropagation();
                             handleEdit(company);
                           }}
-                          className="hover:bg-primary/10 hover:text-primary"
+                          className="hover-clean hover:text-primary"
                         >
                           <Pencil className="w-4 h-4" />
                         </Button>
@@ -527,7 +538,7 @@ const CompanyMaster = () => {
                             e.stopPropagation();
                             handleDelete(company);
                           }}
-                          className="hover:bg-destructive/10 hover:text-destructive"
+                          className="hover-clean hover:text-primary"
                         >
                           <Trash2 className="w-4 h-4" />
                         </Button>

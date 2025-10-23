@@ -47,6 +47,8 @@ export const KeyboardShortcutsHelp = ({
         { keys: ["Enter"], description: "Submit form / Select item" },
         { keys: ["Esc"], description: "Cancel / Close" },
         { keys: ["↑", "↓"], description: "Navigate table rows" },
+        { keys: ["Home", "End"], description: "First / Last table row" },
+        { keys: ["PgUp", "PgDn"], description: "Jump 10 rows up / down" },
         { keys: ["E"], description: "Edit selected row" },
         { keys: ["Del"], description: "Delete selected row" },
       ],
