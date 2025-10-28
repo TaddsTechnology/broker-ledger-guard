@@ -184,12 +184,24 @@ app.delete('/api/settlements/:id', async (req, res) => {
 // Bills API routes
 app.get('/api/bills', async (req, res) => {
   try {
-    const result = await pool.query(`
+    const { type } = req.query;
+    
+    let query = `
       SELECT b.*, p.party_code, p.name as party_name 
       FROM bills b 
-      LEFT JOIN party_master p ON b.party_id = p.id 
-      ORDER BY b.created_at DESC
-    `);
+      LEFT JOIN party_master p ON b.party_id = p.id
+    `;
+    
+    const params = [];
+    
+    if (type) {
+      query += ' WHERE b.bill_type = $1';
+      params.push(type);
+    }
+    
+    query += ' ORDER BY b.created_at DESC';
+    
+    const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching bills:', error);
@@ -197,12 +209,34 @@ app.get('/api/bills', async (req, res) => {
   }
 });
 
+app.get('/api/bills/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `SELECT b.*, p.party_code, p.name as party_name 
+       FROM bills b 
+       LEFT JOIN party_master p ON b.party_id = p.id 
+       WHERE b.id = $1`,
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching bill:', error);
+    res.status(500).json({ error: 'Failed to fetch bill' });
+  }
+});
+
 app.post('/api/bills', async (req, res) => {
   try {
-    const { bill_number, party_id, bill_date, due_date, total_amount, notes } = req.body;
+    const { bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type } = req.body;
     const result = await pool.query(
-      'INSERT INTO bills (bill_number, party_id, bill_date, due_date, total_amount, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [bill_number, party_id, bill_date, due_date, total_amount, notes]
+      'INSERT INTO bills (bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type || 'party']
     );
     res.json(result.rows[0]);
   } catch (error) {
@@ -214,10 +248,10 @@ app.post('/api/bills', async (req, res) => {
 app.put('/api/bills/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { bill_number, party_id, bill_date, due_date, total_amount, notes } = req.body;
+    const { bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type } = req.body;
     const result = await pool.query(
-      'UPDATE bills SET bill_number = $1, party_id = $2, bill_date = $3, due_date = $4, total_amount = $5, notes = $6, updated_at = NOW() WHERE id = $7 RETURNING *',
-      [bill_number, party_id, bill_date, due_date, total_amount, notes, id]
+      'UPDATE bills SET bill_number = $1, party_id = $2, bill_date = $3, due_date = $4, total_amount = $5, notes = $6, bill_type = $7, updated_at = NOW() WHERE id = $8 RETURNING *',
+      [bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type || 'party', id]
     );
     res.json(result.rows[0]);
   } catch (error) {

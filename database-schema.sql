@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS bills (
     paid_amount DECIMAL(15,2) DEFAULT 0.00,
     status VARCHAR(20) DEFAULT 'pending',
     notes TEXT,
+    bill_type VARCHAR(10) DEFAULT 'party' CHECK (bill_type IN ('party', 'broker')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

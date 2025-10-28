@@ -1,13 +1,11 @@
 import { useState, useEffect, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Plus, Pencil, Trash2, Save, X, List, Search, Calendar, IndianRupee, Eye } from "lucide-react";
+import { Plus, Pencil, Trash2, Save, X, List, Search, Calendar, IndianRupee, FileText } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useFormNavigation, useBusinessKeyboard } from "@/hooks/useBusinessKeyboard";
-import { billQueries, partyQueries } from "@/lib/database";
+import { billQueries, partyQueries, companyQueries } from "@/lib/database";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { BillView } from "@/components/BillView";
 import {
   Table,
   TableBody,
@@ -51,11 +49,10 @@ interface Bill {
   status: string;
   notes: string | null;
   created_at: string;
-  bill_type?: 'party' | 'broker';
+  bill_type: 'party' | 'broker'; // New field to distinguish bill types
 }
 
-const Bills = () => {
-  const [searchParams, setSearchParams] = useSearchParams();
+const FinanceManagement = () => {
   const [bills, setBills] = useState<Bill[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -66,8 +63,7 @@ const Bills = () => {
   const [filteredBills, setFilteredBills] = useState<Bill[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [billToDelete, setBillToDelete] = useState<Bill | null>(null);
-  const [viewBillId, setViewBillId] = useState<string | null>(null);
-  const [billViewOpen, setBillViewOpen] = useState(false);
+  const [billType, setBillType] = useState<'party' | 'broker'>('party'); // Track bill type
   const { toast } = useToast();
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -88,19 +84,28 @@ const Bills = () => {
     fetchParties();
   }, []);
 
-  // Filter bills based on search term
+  // Filter bills based on search term and bill type
   useEffect(() => {
-    if (searchTerm.trim() === "") {
-      setFilteredBills(bills);
-    } else {
-      const filtered = bills.filter(
+    let filtered = bills;
+    
+    // Filter by search term
+    if (searchTerm.trim() !== "") {
+      filtered = bills.filter(
         (bill) =>
           bill.bill_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
           (bill.party_name && bill.party_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
           (bill.party_code && bill.party_code.toLowerCase().includes(searchTerm.toLowerCase()))
       );
-      setFilteredBills(filtered);
     }
+    
+    // Ensure numeric fields are properly converted to numbers
+    const processedFilteredBills = filtered.map(bill => ({
+      ...bill,
+      total_amount: typeof bill.total_amount === 'string' ? parseFloat(bill.total_amount) : bill.total_amount,
+      paid_amount: typeof bill.paid_amount === 'string' ? parseFloat(bill.paid_amount) : bill.paid_amount,
+    }));
+    
+    setFilteredBills(processedFilteredBills);
     setSelectedRowIndex(0);
   }, [bills, searchTerm]);
 
@@ -114,8 +119,15 @@ const Bills = () => {
   const fetchBills = async () => {
     setIsLoading(true);
     try {
-      const result = await billQueries.getAll();
-      setBills(result || []);
+      const result = await billQueries.getAll(billType);
+      // Ensure numeric fields are properly converted to numbers
+      const processedBills = (result || []).map(bill => ({
+        ...bill,
+        total_amount: typeof bill.total_amount === 'string' ? parseFloat(bill.total_amount) : bill.total_amount,
+        paid_amount: typeof bill.paid_amount === 'string' ? parseFloat(bill.paid_amount) : bill.paid_amount,
+        bill_type: bill.bill_type || 'party', // Default to party if not set
+      }));
+      setBills(processedBills);
     } catch (error) {
       console.error('Error fetching bills:', error);
       toast({
@@ -149,7 +161,7 @@ const Bills = () => {
       due_date: "",
       total_amount: "",
       notes: "",
-      bill_type: 'party',
+      bill_type: billType,
     });
     setEditingBill(null);
   };
@@ -157,8 +169,16 @@ const Bills = () => {
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
 
+    // Generate bill number if not provided
+    let billNumber = formData.bill_number;
+    if (!billNumber) {
+      const today = new Date();
+      const prefix = formData.bill_type === 'broker' ? 'BRK' : 'PTY';
+      billNumber = `${prefix}${today.getFullYear()}${(today.getMonth() + 1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+    }
+
     const billData = {
-      bill_number: formData.bill_number,
+      bill_number: billNumber,
       party_id: formData.party_id,
       bill_date: formData.bill_date,
       due_date: formData.due_date || null,
@@ -224,16 +244,58 @@ const Bills = () => {
   };
 
   const handleEdit = (bill: Bill) => {
-    setEditingBill(bill);
+    // Ensure numeric fields are properly converted to numbers
+    const processedBill = {
+      ...bill,
+      total_amount: typeof bill.total_amount === 'string' ? parseFloat(bill.total_amount) : bill.total_amount,
+      paid_amount: typeof bill.paid_amount === 'string' ? parseFloat(bill.paid_amount) : bill.paid_amount,
+    };
+    
+    // Format dates for the input fields
+    const formatDateForInput = (dateString: string | null | undefined): string => {
+      if (!dateString) return "";
+      
+      try {
+        // Handle various date formats that might come from PostgreSQL
+        let date: Date;
+        
+        // If it's already a valid date string
+        if (typeof dateString === 'string') {
+          // Check if it's in ISO format (2023-12-25T00:00:00.000Z)
+          if (dateString.includes('T')) {
+            date = new Date(dateString);
+          } 
+          // Check if it's already in YYYY-MM-DD format
+          else if (dateString.match(/^\d{4}-\d{2}-\d{2}$/)) {
+            return dateString;
+          }
+          // Handle other formats
+          else {
+            date = new Date(dateString);
+          }
+        } else {
+          date = new Date(dateString);
+        }
+        
+        // Return in YYYY-MM-DD format for input field
+        return date.toISOString().split('T')[0];
+      } catch (error) {
+        console.error('Error formatting date:', error);
+        return "";
+      }
+    };
+    
+    setEditingBill(processedBill);
     setFormData({
-      bill_number: bill.bill_number,
-      party_id: bill.party_id,
-      bill_date: bill.bill_date,
-      due_date: bill.due_date || "",
-      total_amount: bill.total_amount.toString(),
-      notes: bill.notes || "",
-      bill_type: bill.bill_type || 'party',
+      bill_number: processedBill.bill_number,
+      party_id: processedBill.party_id,
+      bill_date: formatDateForInput(processedBill.bill_date),
+      due_date: formatDateForInput(processedBill.due_date),
+      total_amount: processedBill.total_amount.toString(),
+      notes: processedBill.notes || "",
+      bill_type: processedBill.bill_type,
     });
+    setBillType(processedBill.bill_type);
     setCurrentView('form');
   };
 
@@ -312,12 +374,78 @@ const Bills = () => {
   // Form navigation
   useFormNavigation(formRef, handleSubmit);
 
+  // Filter bills by type
+  const filterBillsByType = (type: 'party' | 'broker') => {
+    setBillType(type);
+    // This will trigger the useEffect that filters bills
+  };
+
+  // Generate formatted bill content
+  const generateFormattedBill = (bill: Bill): string => {
+    const party = parties.find(p => p.id === bill.party_id);
+    const billDate = new Date(bill.bill_date).toLocaleDateString();
+    const dueDate = bill.due_date ? new Date(bill.due_date).toLocaleDateString() : "N/A";
+    
+    let billContent = "";
+    
+    if (bill.bill_type === 'broker') {
+      billContent = `BROKER BILL
+================
+
+Bill Number: ${bill.bill_number}
+Bill Date: ${billDate}
+Due Date: ${dueDate}
+Party: ${party ? `${party.party_code} - ${party.name}` : 'N/A'}
+
+AMOUNT DETAILS
+--------------
+Total Amount: ₹${Number(bill.total_amount).toFixed(2)}
+
+NOTES
+-----
+${bill.notes || 'No additional notes'}
+
+---
+Generated on: ${new Date().toLocaleString()}
+`;
+    } else {
+      billContent = `PARTY BILL
+===========
+
+Bill Number: ${bill.bill_number}
+Bill Date: ${billDate}
+Due Date: ${dueDate}
+Party: ${party ? `${party.party_code} - ${party.name}` : 'N/A'}
+
+AMOUNT DETAILS
+--------------
+Total Amount: ₹${Number(bill.total_amount).toFixed(2)}
+
+NOTES
+-----
+${bill.notes || 'No additional notes'}
+
+---
+Generated on: ${new Date().toLocaleString()}
+`;
+    }
+    
+    return billContent;
+  };
+
+  // View formatted bill
+  const viewFormattedBill = (bill: Bill) => {
+    const formattedBill = generateFormattedBill(bill);
+    // In a real implementation, this would open a modal or new window with the formatted bill
+    alert(formattedBill);
+  };
+
   // Render form view
   const renderFormView = () => (
     <div className="flex-1 overflow-auto">
       <PageHeader
-        title={editingBill ? "Edit Bill" : "New Bill Entry"}
-        description={editingBill ? "Update bill information" : "Create new bill"}
+        title={editingBill ? "Edit Bill" : "Finance Management - New Bill"}
+        description={editingBill ? "Update bill information" : "Create new party or broker bill"}
         action={
           <div className="flex gap-2">
             <Button
@@ -350,11 +478,48 @@ const Bills = () => {
       
       <div className="p-6">
         <form ref={formRef} onSubmit={handleSubmit} className="space-y-8">
-          {/* Bill Information Section */}
+          {/* Bill Type Selection */}
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
                 <span className="bg-primary text-primary-foreground rounded-full w-6 h-6 flex items-center justify-center text-sm font-semibold">1</span>
+                Bill Type
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">
+                    Select Bill Type <span className="text-destructive">*</span>
+                  </Label>
+                  <div className="flex gap-4">
+                    <Button
+                      type="button"
+                      variant={formData.bill_type === 'party' ? "default" : "outline"}
+                      onClick={() => setFormData({ ...formData, bill_type: 'party' })}
+                      className="flex-1"
+                    >
+                      Party Bill
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={formData.bill_type === 'broker' ? "default" : "outline"}
+                      onClick={() => setFormData({ ...formData, bill_type: 'broker' })}
+                      className="flex-1"
+                    >
+                      Broker Bill
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          
+          {/* Bill Information Section */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <span className="bg-primary text-primary-foreground rounded-full w-6 h-6 flex items-center justify-center text-sm font-semibold">2</span>
                 Bill Information
               </CardTitle>
             </CardHeader>
@@ -362,18 +527,22 @@ const Bills = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="bill_number" className="text-sm font-medium">
-                    Bill Number <span className="text-destructive">*</span>
+                    Bill Number
                   </Label>
                   <Input
                     ref={firstInputRef}
                     id="bill_number"
                     value={formData.bill_number}
                     onChange={(e) => setFormData({ ...formData, bill_number: e.target.value.toUpperCase() })}
-                    required
                     className="bg-secondary h-10"
-                    placeholder="Enter bill number"
+                    placeholder={formData.bill_type === 'broker' ? "BRK20251028-001" : "PTY20251028-001"}
                     tabIndex={1}
                   />
+                  {!formData.bill_number && (
+                    <p className="text-xs text-muted-foreground">
+                      Will be auto-generated as {formData.bill_type === 'broker' ? "BRK" : "PTY"} + date + sequence
+                    </p>
+                  )}
                 </div>
                 
                 <div className="space-y-2">
@@ -462,38 +631,6 @@ const Bills = () => {
                   tabIndex={6}
                 />
               </div>
-              
-              <div className="space-y-2">
-                <Label htmlFor="bill_type" className="text-sm font-medium">
-                  Bill Type
-                </Label>
-                <div className="flex space-x-4">
-                  <label className="inline-flex items-center">
-                    <input
-                      type="radio"
-                      id="bill_type_party"
-                      name="bill_type"
-                      value="party"
-                      checked={formData.bill_type === 'party'}
-                      onChange={() => setFormData({ ...formData, bill_type: 'party' })}
-                      className="form-radio h-4 w-4 text-primary"
-                    />
-                    <span className="ml-2">Party Bill</span>
-                  </label>
-                  <label className="inline-flex items-center">
-                    <input
-                      type="radio"
-                      id="bill_type_broker"
-                      name="bill_type"
-                      value="broker"
-                      checked={formData.bill_type === 'broker'}
-                      onChange={() => setFormData({ ...formData, bill_type: 'broker' })}
-                      className="form-radio h-4 w-4 text-primary"
-                    />
-                    <span className="ml-2">Broker Bill</span>
-                  </label>
-                </div>
-              </div>
             </CardContent>
           </Card>
             
@@ -529,10 +666,26 @@ const Bills = () => {
   const renderListView = () => (
     <div className="flex-1 overflow-auto">
       <PageHeader
-        title="Bills"
-        description="Generate and manage billing"
+        title="Finance Management"
+        description="Manage party bills and broker bills"
         action={
           <div className="flex gap-2">
+            <div className="flex gap-2">
+              <Button
+                variant={billType === 'party' ? "default" : "outline"}
+                onClick={() => filterBillsByType('party')}
+                size="sm"
+              >
+                Party Bills
+              </Button>
+              <Button
+                variant={billType === 'broker' ? "default" : "outline"}
+                onClick={() => filterBillsByType('broker')}
+                size="sm"
+              >
+                Broker Bills
+              </Button>
+            </div>
             <div className="relative">
               <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
@@ -581,14 +734,14 @@ const Bills = () => {
                     Loading bills...
                   </TableCell>
                 </TableRow>
-              ) : filteredBills.length === 0 ? (
+              ) : filteredBills.filter(bill => bill.bill_type === billType).length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                    No bills found. Add your first bill to get started.
+                    No {billType} bills found. Add your first bill to get started.
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredBills.map((bill, index) => (
+                filteredBills.filter(bill => bill.bill_type === billType).map((bill, index) => (
                   <TableRow 
                     key={bill.id} 
                     data-row-index={index}
@@ -660,18 +813,21 @@ const Bills = () => {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => {
-                            setViewBillId(bill.id);
-                            setBillViewOpen(true);
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            viewFormattedBill(bill);
                           }}
                           className="hover:bg-primary/10 hover:text-primary"
                         >
-                          <Eye className="w-4 h-4" />
+                          <FileText className="w-4 h-4" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleEdit(bill)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEdit(bill);
+                          }}
                           className="hover:bg-primary/10 hover:text-primary"
                         >
                           <Pencil className="w-4 h-4" />
@@ -679,7 +835,10 @@ const Bills = () => {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleDelete(bill)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(bill);
+                          }}
                           className="hover:bg-destructive/10 hover:text-destructive"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -711,23 +870,8 @@ const Bills = () => {
         onConfirm={confirmDelete}
         variant="destructive"
       />
-      
-      {viewBillId && (
-        (() => {
-          const billToView = bills.find(b => b.id === viewBillId);
-          console.log('Bill to view:', billToView, 'View bill ID:', viewBillId, 'Available bills:', bills);
-          return (
-            <BillView
-              bill={billToView}
-              billId={viewBillId}
-              open={billViewOpen}
-              onOpenChange={setBillViewOpen}
-            />
-          );
-        })()
-      )}
     </>
   );
 };
 
-export default Bills;
+export default FinanceManagement;

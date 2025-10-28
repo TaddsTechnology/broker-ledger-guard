@@ -117,7 +117,8 @@ export const settlementQueries = {
 
 // Bills operations
 export const billQueries = {
-  getAll: () => apiCall('/bills'),
+  getAll: (type?: 'party' | 'broker') => 
+    type ? apiCall(`/bills?type=${type}`) : apiCall('/bills'),
   getById: (id: string) => apiCall(`/bills/${id}`),
   create: (data: {
     bill_number: string;
@@ -126,6 +127,7 @@ export const billQueries = {
     due_date?: string;
     total_amount: number;
     notes?: string;
+    bill_type?: 'party' | 'broker'; // Add bill_type field
   }) =>
     apiCall('/bills', {
       method: 'POST',
@@ -138,6 +140,7 @@ export const billQueries = {
     due_date?: string;
     total_amount: number;
     notes?: string;
+    bill_type?: 'party' | 'broker'; // Add bill_type field
   }) =>
     apiCall(`/bills/${id}`, {
       method: 'PUT',

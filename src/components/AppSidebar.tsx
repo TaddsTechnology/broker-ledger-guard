@@ -38,7 +38,7 @@ interface MenuItem {
   title: string;
   icon: any;
   url?: string;
-  submenu?: { title: string; url: string; icon?: any }[];
+  submenu?: { title: string; url: string; icon?: any; submenu?: { title: string; url: string; icon?: any }[] }[];
 }
 
 const menuItems: MenuItem[] = [
@@ -68,7 +68,15 @@ const menuItems: MenuItem[] = [
     title: "Financial Management",
     icon: DollarSign,
     submenu: [
-      { title: "Bills & Invoices", url: "/bills", icon: Receipt },
+      { 
+        title: "Bills & Invoices", 
+        url: "/bills",
+        icon: Receipt,
+        submenu: [
+          { title: "Party Bills", url: "/bills?type=party", icon: FileText },
+          { title: "Broker Bills", url: "/bills?type=broker", icon: FileText },
+        ]
+      },
       { title: "Payments & Ledger", url: "/ledger", icon: BookOpen },
     ]
   },
@@ -252,7 +260,7 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
                         className={`w-full justify-between focus:ring-2 focus:ring-primary/50 ${
                           hasActiveSubmenu 
                             ? "bg-primary/10 text-primary font-medium" 
-                            : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                            : "text-sidebar-foreground font-medium hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                         }`}
                         tabIndex={0}
                         onKeyDown={(e) => {
@@ -300,6 +308,93 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
                         <div className="ml-6 mt-1 space-y-1 animate-in fade-in-0 slide-in-from-top-1">
                           {menu.submenu!.map((submenuItem, submenuIndex) => {
                             const SubmenuIcon = submenuItem.icon;
+                            
+                            // Check if this submenu item has its own submenu
+                            const hasNestedSubmenu = submenuItem.submenu && submenuItem.submenu.length > 0;
+                            const isNestedSubmenuOpen = openMenus.includes(submenuItem.title) || shouldShowExpanded;
+                            
+                            if (hasNestedSubmenu) {
+                              return (
+                                <Collapsible 
+                                  key={submenuItem.title} 
+                                  open={isNestedSubmenuOpen} 
+                                  onOpenChange={(open) => {
+                                    setOpenMenus((prev) => {
+                                      if (open) {
+                                        return prev.includes(submenuItem.title) ? prev : [...prev, submenuItem.title];
+                                      }
+                                      return prev.filter((t) => t !== submenuItem.title);
+                                    });
+                                  }}
+                                >
+                                  <CollapsibleTrigger asChild>
+                                    <SidebarMenuButton
+                                      className="w-full justify-between focus:ring-2 focus:ring-primary/50 text-sidebar-foreground font-medium hover:bg-sidebar-accent hover:text-sidebar-accent-foreground pl-2"
+                                      tabIndex={0}
+                                      onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                          e.preventDefault();
+                                          if (submenuItem.url) {
+                                            navigate(submenuItem.url);
+                                          } else {
+                                            // Toggle submenu
+                                            setOpenMenus(prev => 
+                                              prev.includes(submenuItem.title) 
+                                                ? prev.filter(item => item !== submenuItem.title)
+                                                : [...prev, submenuItem.title]
+                                            );
+                                          }
+                                        }
+                                      }}
+                                    >
+                                      <div className="flex items-center gap-2">
+                                        {SubmenuIcon && <SubmenuIcon className="w-3 h-3 mr-2" />}
+                                        <span className="text-sm">{submenuItem.title}</span>
+                                      </div>
+                                      <ChevronDown 
+                                        className={`w-3 h-3 transition-transform ${
+                                          isNestedSubmenuOpen ? "transform rotate-180" : ""
+                                        }`} 
+                                      />
+                                    </SidebarMenuButton>
+                                  </CollapsibleTrigger>
+                                  <CollapsibleContent className="overflow-hidden transition-all duration-200">
+                                    {isNestedSubmenuOpen && (
+                                      <div className="ml-4 mt-1 space-y-1">
+                                        {submenuItem.submenu!.map((nestedItem, nestedIndex) => {
+                                          const NestedIcon = nestedItem.icon;
+                                          return (
+                                            <SidebarMenuButton key={nestedItem.title} asChild size="sm">
+                                              <NavLink
+                                                to={nestedItem.url}
+                                                className={({ isActive }) =>
+                                                  `focus:ring-2 focus:ring-primary/50 transition-colors ${
+                                                    isActive
+                                                      ? "bg-primary text-primary-foreground font-medium pl-2"
+                                                      : "text-sidebar-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground pl-2"
+                                                  }`
+                                                }
+                                                tabIndex={0}
+                                                onKeyDown={(e) => {
+                                                  if (e.key === 'Enter' || e.key === ' ') {
+                                                    e.preventDefault();
+                                                    handleSubmenuEnter(nestedItem);
+                                                  }
+                                                }}
+                                              >
+                                                {NestedIcon && <NestedIcon className="w-3 h-3 mr-2" />}
+                                                <span className="text-sm font-medium">{nestedItem.title}</span>
+                                              </NavLink>
+                                            </SidebarMenuButton>
+                                          );
+                                        })}
+                                      </div>
+                                    )}
+                                  </CollapsibleContent>
+                                </Collapsible>
+                              );
+                            }
+                            
                             return (
                               <SidebarMenuButton key={submenuItem.title} asChild size="sm">
                                 <NavLink
@@ -308,7 +403,7 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
                                     `focus:ring-2 focus:ring-primary/50 transition-colors ${
                                       isActive
                                         ? "bg-primary text-primary-foreground font-medium pl-2"
-                                        : "text-sidebar-foreground/80 hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground pl-2"
+                                        : "text-sidebar-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground pl-2"
                                     }`
                                   }
                                   tabIndex={0}
@@ -328,7 +423,7 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
                                   }}
                                 >
                                   {SubmenuIcon && <SubmenuIcon className="w-3 h-3 mr-2" />}
-                                  <span className="text-sm">{submenuItem.title}</span>
+                                  <span className="text-sm font-medium">{submenuItem.title}</span>
                                 </NavLink>
                               </SidebarMenuButton>
                             );

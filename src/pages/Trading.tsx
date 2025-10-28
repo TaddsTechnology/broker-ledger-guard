@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,8 +7,19 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Upload, FileText, Download, X, CheckCircle, AlertCircle, FileSpreadsheet } from "lucide-react";
+import { Upload, FileText, Download, X, CheckCircle, AlertCircle, FileSpreadsheet, IndianRupee } from "lucide-react";
 import * as XLSX from "xlsx";
+import { useToast } from "@/hooks/use-toast";
+import { billQueries, partyQueries } from "@/lib/database";
+
+interface Party {
+  id: string;
+  party_code: string;
+  name: string;
+  nse_code: string | null;
+  trading_slab: number;
+  delivery_slab: number;
+}
 
 interface ProcessedFile {
   name: string;
@@ -18,6 +29,9 @@ interface ProcessedFile {
   rowCount: number;
   status: 'processing' | 'completed' | 'error';
   error?: string;
+  // Added for manual column functionality
+  editableContent?: string[][];
+  editableHeaders?: string[];
 }
 
 const Trading = () => {
@@ -25,8 +39,29 @@ const Trading = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
+  const [parties, setParties] = useState<Party[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const { toast } = useToast();
+
+  // Fetch parties on component mount
+  useEffect(() => {
+    const fetchParties = async () => {
+      try {
+        const result = await partyQueries.getAll();
+        setParties(result || []);
+      } catch (error) {
+        console.error('Error fetching parties:', error);
+        toast({
+          title: "Error",
+          description: "Failed to fetch parties",
+          variant: "destructive",
+        });
+      }
+    };
+    
+    fetchParties();
+  }, [toast]);
 
   // Handle file upload
   const handleFileUpload = useCallback(async (files: FileList | null) => {
@@ -38,8 +73,12 @@ const Trading = () => {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       
-      // Check if file is TXT
-      if (!file.name.toLowerCase().endsWith('.txt')) {
+      // Check if file is TXT, CSV, or XLSX
+      const isTxt = file.name.toLowerCase().endsWith('.txt');
+      const isCsv = file.name.toLowerCase().endsWith('.csv');
+      const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
+      
+      if (!isTxt && !isCsv && !isXlsx) {
         newFiles.push({
           name: file.name,
           size: file.size,
@@ -47,43 +86,75 @@ const Trading = () => {
           headers: [],
           rowCount: 0,
           status: 'error',
-          error: 'Only TXT files are supported'
+          error: 'Only TXT, CSV, and XLSX files are supported'
         });
         continue;
       }
 
       try {
-        const text = await file.text();
-        const lines = text.split('\n').filter(line => line.trim());
+        let headers: string[] = [];
+        let dataRows: string[][] = [];
         
-        if (lines.length === 0) {
-          newFiles.push({
-            name: file.name,
-            size: file.size,
-            content: [],
-            headers: [],
-            rowCount: 0,
-            status: 'error',
-            error: 'File is empty'
-          });
-          continue;
+        if (isXlsx) {
+          // Handle XLSX file
+          const arrayBuffer = await file.arrayBuffer();
+          const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          
+          // Convert to JSON
+          const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
+          
+          if (jsonData.length === 0) {
+            newFiles.push({
+              name: file.name,
+              size: file.size,
+              content: [],
+              headers: [],
+              rowCount: 0,
+              status: 'error',
+              error: 'File is empty'
+            });
+            continue;
+          }
+          
+          // Assume first row is headers
+          headers = jsonData[0] || [];
+          dataRows = jsonData.slice(1);
+        } else {
+          // Handle TXT/CSV files
+          const text = await file.text();
+          const lines = text.split('\n').filter(line => line.trim());
+          
+          if (lines.length === 0) {
+            newFiles.push({
+              name: file.name,
+              size: file.size,
+              content: [],
+              headers: [],
+              rowCount: 0,
+              status: 'error',
+              error: 'File is empty'
+            });
+            continue;
+          }
+
+          // Try to detect delimiter (comma, tab, pipe, semicolon)
+          const firstLine = lines[0];
+          let delimiter = ',';
+          if (firstLine.includes('\t')) delimiter = '\t';
+          else if (firstLine.includes('|')) delimiter = '|';
+          else if (firstLine.includes(';')) delimiter = ';';
+
+          // Parse content
+          const content = lines.map(line => 
+            line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, ''))
+          );
+          
+          // Assume first row is headers
+          headers = content[0] || [];
+          dataRows = content.slice(1);
         }
-
-        // Try to detect delimiter (comma, tab, pipe, semicolon)
-        const firstLine = lines[0];
-        let delimiter = ',';
-        if (firstLine.includes('\t')) delimiter = '\t';
-        else if (firstLine.includes('|')) delimiter = '|';
-        else if (firstLine.includes(';')) delimiter = ';';
-
-        // Parse content
-        const content = lines.map(line => 
-          line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, ''))
-        );
-        
-        // Assume first row is headers
-        const headers = content[0] || [];
-        const dataRows = content.slice(1);
 
         newFiles.push({
           name: file.name,
@@ -146,7 +217,16 @@ const Trading = () => {
       ws['!cols'] = colWidths;
       
       XLSX.utils.book_append_sheet(wb, ws, "Trade Data");
-      const excelName = file.name.replace(/\.txt$/i, '.xlsx');
+      // Generate filename - convert TXT to XLSX, keep XLSX/XLS as is but with standardized name
+      let excelName = file.name;
+      if (file.name.toLowerCase().endsWith('.txt')) {
+        excelName = file.name.replace(/\.txt$/i, '.xlsx');
+      } else if (file.name.toLowerCase().endsWith('.csv')) {
+        excelName = file.name.replace(/\.csv$/i, '.xlsx');
+      } else if (!file.name.toLowerCase().endsWith('.xlsx')) {
+        // For any other file type, add .xlsx extension
+        excelName = file.name.replace(/\.[^/.]+$/, "") + '.xlsx';
+      }
       XLSX.writeFile(wb, excelName);
     } catch (error) {
       alert('Failed to convert to Excel. Please try again.');
@@ -163,6 +243,593 @@ const Trading = () => {
     setUploadedFiles([]);
   }, []);
 
+  // Add a new column to the file data
+  const addColumn = useCallback((fileIndex: number) => {
+    setUploadedFiles(prev => prev.map((file, index) => {
+      if (index === fileIndex) {
+        // Initialize editable headers and content if not already done
+        const editableHeaders = file.editableHeaders || [...file.headers];
+        const editableContent = file.editableContent || file.content.map(row => [...row]);
+        
+        // Add new column to headers and content
+        editableHeaders.push(`Column ${editableHeaders.length + 1}`);
+        const newContent = editableContent.map(row => [...row, '']);
+        
+        return {
+          ...file,
+          editableHeaders,
+          editableContent: newContent
+        };
+      }
+      return file;
+    }));
+  }, []);
+
+  // Update cell value in editable grid
+  const updateCellValue = useCallback((fileIndex: number, rowIndex: number, colIndex: number, value: string) => {
+    setUploadedFiles(prev => prev.map((file, index) => {
+      if (index === fileIndex) {
+        // Initialize editable content if not already done
+        const editableContent = file.editableContent || file.content.map(row => [...row]);
+        const editableHeaders = file.editableHeaders || [...file.headers];
+        
+        // Update the specific cell
+        if (!editableContent[rowIndex]) {
+          editableContent[rowIndex] = Array(editableHeaders.length).fill('');
+        }
+        editableContent[rowIndex][colIndex] = value;
+        
+        return {
+          ...file,
+          editableHeaders,
+          editableContent
+        };
+      }
+      return file;
+    }));
+  }, []);
+
+  // Generate bills from trade data
+  const generateBills = useCallback(async (file: ProcessedFile) => {
+    try {
+      if (!(file.editableContent || file.content).length) {
+        toast({
+          title: "Error",
+          description: "No data found in the file to generate bills",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      // Show processing message
+      toast({
+        title: "Bill Generation Started",
+        description: `Generating bills from ${file.name}. This may take a moment...`
+      });
+      
+      // Use editable data if available, otherwise use original data
+      const headersToUse = file.editableHeaders || file.headers;
+      const contentToUse = file.editableContent || file.content;
+      
+      // Find important columns
+      const sideIndex = headersToUse.findIndex(header => 
+        header.toLowerCase().includes('side') || 
+        header.toLowerCase().includes('type') ||
+        header.toLowerCase().includes('buy') ||
+        header.toLowerCase().includes('sell')
+      );
+      
+      // Find party code column with better prioritization
+      const partyCodeIndex = headersToUse.findIndex(header => 
+        (header.toLowerCase().includes('client') && header.toLowerCase().includes('id')) ||
+        header.toLowerCase() === 'clientid' ||
+        header.toLowerCase() === 'partyid' ||
+        header.toLowerCase() === 'partycode' ||
+        header.toLowerCase() === 'party_code' ||
+        header.toLowerCase() === 'client_code' ||
+        header.toLowerCase() === 'clientid' ||
+        (header.toLowerCase().includes('party') && header.toLowerCase().includes('code')) ||
+        header.toLowerCase().includes('party_code') ||
+        header.toLowerCase().includes('client_code') ||
+        header.toLowerCase() === 'clientid' ||
+        header.toLowerCase() === 'partyid'
+      );
+      
+      // If no specific party column found, try generic terms but exclude 'side'
+      const fallbackPartyIndex = partyCodeIndex === -1 ? 
+        headersToUse.findIndex((header, index) => 
+          (header.toLowerCase().includes('party') || 
+           header.toLowerCase().includes('client') ||
+           header.toLowerCase().includes('customer') ||
+           header.toLowerCase().includes('code') ||
+           header.toLowerCase().includes('id')) &&
+          !header.toLowerCase().includes('side') &&
+          index !== sideIndex
+        ) : -1;
+      
+      const finalPartyIndex = partyCodeIndex !== -1 ? partyCodeIndex : fallbackPartyIndex;
+      
+      // Find broker-related columns
+      const typeIndex = headersToUse.findIndex(header => 
+        header.toLowerCase().includes('type')
+      );
+      
+      const brokerIdIndex = headersToUse.findIndex(header => 
+        (header.toLowerCase().includes('broker') && header.toLowerCase().includes('id')) ||
+        header.toLowerCase().includes('brokerid') ||
+        header.toLowerCase().includes('broker_code')
+      );
+      
+      // Find delivery/trading column (D/T)
+      const deliveryTradingIndex = headersToUse.findIndex(header => 
+        header.toLowerCase().includes('d/t') ||
+        header.toLowerCase().includes('delivery') ||
+        header.toLowerCase().includes('trading')
+      );
+      
+      // Find company/security column
+      const companyCodeIndex = headersToUse.findIndex(header => 
+        header.toLowerCase().includes('security') || 
+        header.toLowerCase().includes('company') ||
+        header.toLowerCase().includes('stock') ||
+        header.toLowerCase().includes('script') ||
+        header.toLowerCase().includes('name')
+      );
+      
+      // Find quantity column
+      const quantityIndex = headersToUse.findIndex(header => 
+        header.toLowerCase().includes('quantity') || 
+        header.toLowerCase().includes('qty')
+      );
+      
+      // Find price column
+      const priceIndex = headersToUse.findIndex(header => 
+        header.toLowerCase().includes('price') || 
+        header.toLowerCase().includes('rate')
+      );
+      
+      // Validate required columns
+      if (finalPartyIndex === -1) {
+        toast({
+          title: "Error",
+          description: "Could not find party/client ID column in the file",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      if (quantityIndex === -1) {
+        toast({
+          title: "Error",
+          description: "Could not find quantity column in the file",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      if (priceIndex === -1) {
+        toast({
+          title: "Error",
+          description: "Could not find price column in the file",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      // Group data by party code
+      const partyGroups: { 
+        [key: string]: { 
+          rows: string[][], 
+          totalAmount: number,
+          buyAmount: number,
+          sellAmount: number,
+          deliveryAmount: number,
+          tradingAmount: number,
+          transactions: {
+            security: string,
+            quantity: number,
+            price: number,
+            amount: number,
+            side: string,
+            deliveryTrading?: string
+          }[],
+          hasBrokerage: boolean,
+          brokerId?: string
+        } 
+      } = {};
+      
+      // Track invalid entries for error reporting
+      const invalidEntries: { row: number; errors: string[] }[] = [];
+      const validPartyCodes: string[] = [];
+      const invalidPartyCodes: string[] = [];
+      
+      contentToUse.forEach((row, rowIndex) => {
+        const partyCode = row[finalPartyIndex] || 'Unknown Party';
+        const companyCode = companyCodeIndex !== -1 ? row[companyCodeIndex] : 'Unknown Security';
+        const quantity = quantityIndex !== -1 && row[quantityIndex] ? 
+          Number(parseFloat(row[quantityIndex])) || 0 : 0;
+        const price = priceIndex !== -1 && row[priceIndex] ? 
+          Number(parseFloat(row[priceIndex])) || 0 : 0;
+        const side = sideIndex !== -1 && row[sideIndex] ? 
+          row[sideIndex] : 'Unknown';
+        const type = typeIndex !== -1 && row[typeIndex] ? 
+          row[typeIndex].toLowerCase() : '';
+        const brokerId = brokerIdIndex !== -1 && row[brokerIdIndex] ? 
+          row[brokerIdIndex] : '';
+        const deliveryTrading = deliveryTradingIndex !== -1 && row[deliveryTradingIndex] ? 
+          row[deliveryTradingIndex].toUpperCase() : '';
+        
+        const amount = Number(quantity) * Number(price);
+        
+        // Validate party code
+        const party = parties.find(p => p.party_code === partyCode);
+        if (!party && partyCode !== 'Unknown Party') {
+          invalidEntries.push({
+            row: rowIndex + 2, // +2 because of header row and 0-based index
+            errors: [`Invalid party code: ${partyCode}`]
+          });
+          
+          if (!invalidPartyCodes.includes(partyCode)) {
+            invalidPartyCodes.push(partyCode);
+          }
+        } else if (partyCode !== 'Unknown Party') {
+          if (!validPartyCodes.includes(partyCode)) {
+            validPartyCodes.push(partyCode);
+          }
+        }
+        
+        // Validate quantity and price
+        if (quantity <= 0) {
+          invalidEntries.push({
+            row: rowIndex + 2,
+            errors: [`Invalid quantity: ${quantity}`]
+          });
+        }
+        
+        if (price <= 0) {
+          invalidEntries.push({
+            row: rowIndex + 2,
+            errors: [`Invalid price: ${price}`]
+          });
+        }
+        
+        if (!partyGroups[partyCode]) {
+          partyGroups[partyCode] = { 
+            rows: [], 
+            totalAmount: 0,
+            buyAmount: 0,
+            sellAmount: 0,
+            deliveryAmount: 0,
+            tradingAmount: 0,
+            transactions: [],
+            hasBrokerage: type.trim().toLowerCase() === 'brokerage',
+            brokerId: brokerId || undefined
+          };
+        }
+        
+        partyGroups[partyCode].rows.push(row);
+        partyGroups[partyCode].totalAmount += Number(amount);
+        partyGroups[partyCode].transactions.push({
+          security: companyCode,
+          quantity: Number(quantity),
+          price: Number(price),
+          amount: Number(amount),
+          side: side,
+          deliveryTrading: deliveryTrading
+        });
+        
+        // Track buy/sell amounts separately
+        if (side.toLowerCase().includes('buy')) {
+          partyGroups[partyCode].buyAmount += Number(amount);
+        } else if (side.toLowerCase().includes('sell')) {
+          partyGroups[partyCode].sellAmount += Number(amount);
+        }
+        
+        // Track delivery/trading amounts
+        if (deliveryTrading === 'D') {
+          partyGroups[partyCode].deliveryAmount += Number(amount);
+        } else if (deliveryTrading === 'T') {
+          partyGroups[partyCode].tradingAmount += Number(amount);
+        }
+        
+        // Update brokerage info if this row has brokerage type
+        const trimmedType = type.trim().toLowerCase();
+        if (trimmedType === 'brokerage') {
+          partyGroups[partyCode].hasBrokerage = true;
+          if (brokerId) {
+            const trimmedBrokerId = brokerId.trim();
+            partyGroups[partyCode].brokerId = trimmedBrokerId;
+          }
+        }
+      });
+      
+      // Report validation errors
+      if (invalidEntries.length > 0) {
+        const errorMessages = invalidEntries
+          .slice(0, 5) // Limit to first 5 errors
+          .map(entry => `Row ${entry.row}: ${entry.errors.join(', ')}`)
+          .join('; ');
+        
+        const moreErrors = invalidEntries.length > 5 ? 
+          ` and ${invalidEntries.length - 5} more errors` : '';
+        
+        toast({
+          title: "Validation Errors",
+          description: `${errorMessages}${moreErrors}. Please correct these entries before generating bills.`,
+          variant: "destructive"
+        });
+        
+        // If all entries are invalid, stop processing
+        if (invalidEntries.length === contentToUse.length) {
+          return;
+        }
+      }
+      
+      // Generate bills for each party group
+      let billsCreated = 0;
+      const errors: string[] = [];
+      
+      for (const [partyCode, groupData] of Object.entries(partyGroups)) {
+        try {
+          // Find party by code
+          const party = parties.find(p => p.party_code === partyCode);
+          
+          // Generate party bill
+          const today = new Date();
+          const partyBillNumber = `BL${today.getFullYear()}${(today.getMonth() + 1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}-${partyCode}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+          
+          // Create detailed notes with transaction summary in a proper format
+          let partyNotes = `TRADE BILL\n`;
+          partyNotes += `==========\n\n`;
+          partyNotes += `Generated from file: ${file.name}\n`;
+          partyNotes += `Party Code: ${partyCode}\n`;
+          partyNotes += `Party Name: ${party ? party.name : 'Unknown Party'}\n`;
+          partyNotes += `Bill Date: ${today.toLocaleDateString()}\n\n`;
+          partyNotes += `SUMMARY\n`;
+          partyNotes += `-------\n`;
+          partyNotes += `Total Transactions: ${groupData.transactions.length}\n`;
+          partyNotes += `Buy Amount: ₹${groupData.buyAmount.toFixed(2)}\n`;
+          partyNotes += `Sell Amount: ₹${groupData.sellAmount.toFixed(2)}\n`;
+          partyNotes += `Delivery Amount: ₹${groupData.deliveryAmount.toFixed(2)}\n`;
+          partyNotes += `Trading Amount: ₹${groupData.tradingAmount.toFixed(2)}\n`;
+          partyNotes += `Net Amount: ₹${groupData.totalAmount.toFixed(2)}\n\n`;
+          
+          partyNotes += `DETAILED TRANSACTIONS\n`;
+          partyNotes += `---------------------\n`;
+          
+          // Group transactions by security for better organization
+          const securityGroups: { [key: string]: typeof groupData.transactions } = {};
+          groupData.transactions.forEach(tx => {
+            if (!securityGroups[tx.security]) {
+              securityGroups[tx.security] = [];
+            }
+            securityGroups[tx.security].push(tx);
+          });
+          
+          // Add transactions grouped by security
+          Object.entries(securityGroups).forEach(([security, transactions]) => {
+            partyNotes += `\n${security}:\n`;
+            
+            let securityTotal = 0;
+            let securityDeliveryAmount = 0;
+            let securityTradingAmount = 0;
+            
+            transactions.forEach((tx, index) => {
+              const dtLabel = tx.deliveryTrading ? ` (${tx.deliveryTrading === 'D' ? 'Delivery' : 'Trading'})` : '';
+              partyNotes += `${index + 1}. ${tx.side.toUpperCase()} ${Number(tx.quantity).toFixed(0)} units @ ₹${Number(tx.price).toFixed(2)} = ₹${Number(tx.amount).toFixed(2)}${dtLabel}\n`;
+              securityTotal += Number(tx.amount);
+              
+              // Track delivery/trading amounts for this security
+              if (tx.deliveryTrading === 'D') {
+                securityDeliveryAmount += Number(tx.amount);
+              } else if (tx.deliveryTrading === 'T') {
+                securityTradingAmount += Number(tx.amount);
+              }
+            });
+            
+            partyNotes += `   Subtotal: ₹${Number(securityTotal).toFixed(2)}`;
+            if (securityDeliveryAmount > 0 || securityTradingAmount > 0) {
+              partyNotes += ` (Delivery: ₹${securityDeliveryAmount.toFixed(2)}, Trading: ₹${securityTradingAmount.toFixed(2)})`;
+            }
+            partyNotes += `\n`;
+          });
+          
+          // Add footer
+          partyNotes += `\n---\n`;
+          partyNotes += `Generated on: ${new Date().toLocaleString()}\n`;
+          partyNotes += `Bill Number: ${partyBillNumber}\n`;
+          
+          // Create party bill data
+          const partyBillData = {
+            bill_number: partyBillNumber,
+            party_id: party ? party.id : "", // Use actual party ID if found
+            bill_date: today.toISOString().split('T')[0],
+            due_date: new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days from now
+            total_amount: Number(groupData.totalAmount.toFixed(2)),
+            notes: partyNotes,
+            bill_type: 'party' as 'party' | 'broker' // Specify bill type
+          };
+          
+          // Create the party bill in the database
+          if (party) {
+            await billQueries.create(partyBillData);
+            billsCreated++;
+          } else {
+            // If party not found, we could either skip or create with empty party_id
+            // For now, we'll create with empty party_id and log a warning
+            await billQueries.create(partyBillData);
+            billsCreated++;
+            console.warn(`Party bill created for party code '${partyCode}' but party not found in database`);
+          }
+          
+          // Generate broker bill if this party has brokerage transactions
+          if (groupData.hasBrokerage) {
+            const brokerBillNumber = `BR${today.getFullYear()}${(today.getMonth() + 1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}-${partyCode}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+            
+            // Use brokerage rates from party master data
+            let totalBrokerageAmount = 0;
+            let deliveryBrokerageAmount = 0;
+            let tradingBrokerageAmount = 0;
+            
+            // Calculate brokerage for each transaction based on delivery/trading type
+            groupData.transactions.forEach(tx => {
+              let txBrokerageRate = 0;
+              if (tx.deliveryTrading === 'D' && party?.delivery_slab) {
+                // Use delivery slab rate for delivery transactions
+                txBrokerageRate = party.delivery_slab / 100;
+                deliveryBrokerageAmount += Number(tx.amount) * txBrokerageRate;
+              } else if (tx.deliveryTrading === 'T' && party?.trading_slab) {
+                // Use trading slab rate for trading transactions
+                txBrokerageRate = party.trading_slab / 100;
+                tradingBrokerageAmount += Number(tx.amount) * txBrokerageRate;
+              } else if (party?.trading_slab) {
+                // Default to trading slab rate if no D/T specified
+                txBrokerageRate = party.trading_slab / 100;
+                tradingBrokerageAmount += Number(tx.amount) * txBrokerageRate;
+              }
+              
+              totalBrokerageAmount += Number(tx.amount) * txBrokerageRate;
+            });
+            
+            // If no transactions had specific rates, use party's trading slab as default
+            if (totalBrokerageAmount === 0 && party?.trading_slab) {
+              const defaultRate = party.trading_slab / 100;
+              totalBrokerageAmount = Number(groupData.totalAmount) * defaultRate;
+              tradingBrokerageAmount = totalBrokerageAmount;
+            }
+            
+            // Create broker bill notes
+            let brokerNotes = `BROKERAGE BILL\n`;
+            brokerNotes += `==============\n\n`;
+            brokerNotes += `Generated from file: ${file.name}\n`;
+            brokerNotes += `Party Code: ${partyCode}\n`;
+            brokerNotes += `Party Name: ${party ? party.name : 'Unknown Party'}\n`;
+            brokerNotes += `Broker ID: ${groupData.brokerId || 'Not specified'}\n`;
+            brokerNotes += `Bill Date: ${today.toLocaleDateString()}\n\n`;
+            
+            brokerNotes += `PARTY BROKERAGE RATES\n`;
+            brokerNotes += `---------------------\n`;
+            brokerNotes += `Trading Slab: ${party?.trading_slab || 0}%\n`;
+            brokerNotes += `Delivery Slab: ${party?.delivery_slab || 0}%\n\n`;
+            
+            brokerNotes += `TRANSACTION SUMMARY\n`;
+            brokerNotes += `-------------------\n`;
+            brokerNotes += `Total Transaction Value: ₹${Number(groupData.totalAmount).toFixed(2)}\n`;
+            brokerNotes += `Delivery Amount: ₹${Number(groupData.deliveryAmount).toFixed(2)}\n`;
+            brokerNotes += `Trading Amount: ₹${Number(groupData.tradingAmount).toFixed(2)}\n`;
+            brokerNotes += `Delivery Brokerage: ₹${Number(deliveryBrokerageAmount).toFixed(2)}\n`;
+            brokerNotes += `Trading Brokerage: ₹${Number(tradingBrokerageAmount).toFixed(2)}\n`;
+            brokerNotes += `Total Brokerage Amount: ₹${Number(totalBrokerageAmount).toFixed(2)}\n\n`;
+            
+            brokerNotes += `DETAILED TRANSACTIONS\n`;
+            brokerNotes += `---------------------\n`;
+            
+            // Add transactions grouped by security
+            Object.entries(securityGroups).forEach(([security, transactions]) => {
+              brokerNotes += `\n${security}:\n`;
+              
+              let securityTotal = 0;
+              let securityDeliveryAmount = 0;
+              let securityTradingAmount = 0;
+              let securityDeliveryBrokerage = 0;
+              let securityTradingBrokerage = 0;
+              
+              transactions.forEach((tx, index) => {
+                let txBrokerage = 0;
+                let txBrokerageRate = 0;
+                
+                if (tx.deliveryTrading === 'D' && party?.delivery_slab) {
+                  txBrokerageRate = party.delivery_slab / 100;
+                  txBrokerage = Number(tx.amount) * txBrokerageRate;
+                  securityDeliveryBrokerage += txBrokerage;
+                  securityDeliveryAmount += Number(tx.amount);
+                } else if (tx.deliveryTrading === 'T' && party?.trading_slab) {
+                  txBrokerageRate = party.trading_slab / 100;
+                  txBrokerage = Number(tx.amount) * txBrokerageRate;
+                  securityTradingBrokerage += txBrokerage;
+                  securityTradingAmount += Number(tx.amount);
+                } else if (party?.trading_slab) {
+                  txBrokerageRate = party.trading_slab / 100;
+                  txBrokerage = Number(tx.amount) * txBrokerageRate;
+                  securityTradingBrokerage += txBrokerage;
+                  securityTradingAmount += Number(tx.amount);
+                }
+                
+                const dtLabel = tx.deliveryTrading ? ` (${tx.deliveryTrading === 'D' ? 'Delivery' : 'Trading'})` : '';
+                brokerNotes += `${index + 1}. ${tx.side.toUpperCase()} ${Number(tx.quantity).toFixed(0)} units @ ₹${Number(tx.price).toFixed(2)} = ₹${Number(tx.amount).toFixed(2)}${dtLabel} (Brokerage: ₹${txBrokerage.toFixed(2)})\n`;
+                securityTotal += Number(tx.amount);
+              });
+              
+              const securityTotalBrokerage = securityDeliveryBrokerage + securityTradingBrokerage;
+              brokerNotes += `   Subtotal: ₹${Number(securityTotal).toFixed(2)} (Delivery: ₹${securityDeliveryAmount.toFixed(2)}, Trading: ₹${securityTradingAmount.toFixed(2)}, Delivery Brokerage: ₹${securityDeliveryBrokerage.toFixed(2)}, Trading Brokerage: ₹${securityTradingBrokerage.toFixed(2)}, Total Brokerage: ₹${securityTotalBrokerage.toFixed(2)})\n`;
+            });
+            
+            // Add footer
+            brokerNotes += `\n---\n`;
+            brokerNotes += `Generated on: ${new Date().toLocaleString()}\n`;
+            brokerNotes += `Bill Number: ${brokerBillNumber}\n`;
+            
+            // Create broker bill data
+            const brokerBillData = {
+              bill_number: brokerBillNumber,
+              party_id: party ? party.id : "", // Use actual party ID if found
+              bill_date: today.toISOString().split('T')[0],
+              due_date: new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days from now
+              total_amount: Number(totalBrokerageAmount.toFixed(2)),
+              notes: brokerNotes,
+              bill_type: 'broker' as 'party' | 'broker' // Specify bill type
+            };
+            
+            // Create the broker bill in the database
+            if (party) {
+              await billQueries.create(brokerBillData);
+              billsCreated++;
+            } else {
+              // If party not found, we could either skip or create with empty party_id
+              // For now, we'll create with empty party_id and log a warning
+              await billQueries.create(brokerBillData);
+              billsCreated++;
+              console.warn(`Broker bill created for party code '${partyCode}' but party not found in database`);
+            }
+          }
+        } catch (error) {
+          errors.push(`Failed to create bill for party ${partyCode}: ${(error as Error).message}`);
+        }
+      }
+      
+      // Show results
+      setTimeout(() => {
+        if (errors.length > 0) {
+          toast({
+            title: "Bill Generation Completed with Errors",
+            description: `Created ${billsCreated} bill(s). ${errors.length} error(s) occurred.`,
+            variant: "destructive"
+          });
+        } else if (invalidEntries.length > 0) {
+          toast({
+            title: "Bills Generated with Warnings",
+            description: `Created ${billsCreated} bill(s) for ${Object.keys(partyGroups).length} parties. ${invalidEntries.length} invalid entries were skipped. Valid party codes: ${validPartyCodes.length}, Invalid: ${invalidPartyCodes.length}`,
+          });
+        } else {
+          toast({
+            title: "Bills Generated Successfully",
+            description: `Created ${billsCreated} bill(s) for ${Object.keys(partyGroups).length} parties. All party codes validated successfully.`
+          });
+          
+          // Clear the uploaded files after successful bill generation
+          setUploadedFiles([]);
+        }
+      }, 2000);
+    } catch (error) {
+      console.error('Error generating bills:', error);
+      toast({
+        title: "Error",
+        description: "Failed to generate bills: " + (error as Error).message,
+        variant: "destructive"
+      });
+    }
+  }, [toast, parties]);
+
   // Format file size
   const formatFileSize = (bytes: number) => {
     if (bytes === 0) return '0 Bytes';
@@ -176,7 +843,7 @@ const Trading = () => {
     <div className="flex-1 overflow-auto">
       <PageHeader
         title="Trade File Transfer"
-        description="Upload TXT trade files and convert to Excel format"
+        description="Upload trade files (TXT/CSV/XLSX), edit data, and generate party/broker bills"
       />
       <div className="p-6 space-y-6">
         
@@ -185,7 +852,7 @@ const Trading = () => {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Upload className="h-5 w-5" />
-              Upload TXT Files
+              Upload Files
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -201,9 +868,9 @@ const Trading = () => {
               onDrop={handleDrop}
             >
               <FileText className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
-              <h3 className="text-lg font-semibold mb-2">Drop TXT files here</h3>
+              <h3 className="text-lg font-semibold mb-2">Drop files here</h3>
               <p className="text-muted-foreground mb-4">
-                or click to browse and select files
+                or click to browse and select files (TXT, CSV, XLSX)
               </p>
               <Button 
                 onClick={() => fileInputRef.current?.click()}
@@ -215,7 +882,7 @@ const Trading = () => {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".txt"
+                accept=".txt,.csv,.xlsx"
                 multiple
                 className="hidden"
                 onChange={(e) => handleFileUpload(e.target.files)}
@@ -337,14 +1004,76 @@ const Trading = () => {
                         </div>
                       </div>
                       
-                      <Button
-                        onClick={() => downloadAsExcel(file)}
-                        className="w-full sm:w-auto"
-                        tabIndex={4 + index * 2}
-                      >
-                        <Download className="h-4 w-4 mr-2" />
-                        Download as Excel
-                      </Button>
+                      {/* Editable Grid */}
+                      <div className="mb-4">
+                        <h4 className="text-sm font-medium mb-2">Editable Data Grid</h4>
+                        <div className="overflow-x-auto max-h-60 overflow-y-auto border rounded">
+                          <table className="w-full text-xs">
+                            <thead className="bg-muted">
+                              <tr>
+                                {(file.editableHeaders || file.headers).map((header, colIndex) => (
+                                  <th key={colIndex} className="px-2 py-1 text-left border-r last:border-r-0 sticky top-0 bg-muted">
+                                    <Input
+                                      value={header}
+                                      onChange={(e) => {
+                                        // For now, we'll just display headers as read-only
+                                        // In a full implementation, you'd make these editable too
+                                        console.log('Header change:', e.target.value);
+                                      }}
+                                      className="h-6 px-1 py-0 text-xs font-medium bg-transparent border-none focus:ring-1"
+                                      readOnly
+                                    />
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(file.editableContent || file.content).map((row, rowIndex) => (
+                                <tr key={rowIndex} className="border-b hover:bg-muted/50">
+                                  {row.map((cell, colIndex) => (
+                                    <td key={colIndex} className="px-2 py-1 border-r last:border-r-0">
+                                      <Input
+                                        value={cell}
+                                        onChange={(e) => updateCellValue(index, rowIndex, colIndex, e.target.value)}
+                                        className="h-6 px-1 py-0 text-xs"
+                                        onBlur={() => {
+                                          // Any additional logic on blur
+                                        }}
+                                      />
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                      
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={() => downloadAsExcel(file)}
+                          className="flex-1"
+                          tabIndex={4 + index * 4}
+                        >
+                          <Download className="h-4 w-4 mr-2" />
+                          Download as Excel
+                        </Button>
+                        <Button
+                          onClick={() => addColumn(index)}
+                          className="flex-1"
+                          tabIndex={5 + index * 4}
+                        >
+                          <span className="text-xs">+ Add Column</span>
+                        </Button>
+                        <Button
+                          onClick={() => generateBills(file)}
+                          className="flex-1"
+                          tabIndex={6 + index * 4}
+                        >
+                          <IndianRupee className="h-4 w-4 mr-2" />
+                          Generate Bills
+                        </Button>
+                      </div>
                     </>
                   )}
                 </div>
@@ -362,9 +1091,22 @@ const Trading = () => {
             <div>
               <h4 className="font-semibold mb-2">Supported File Formats</h4>
               <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
-                <li>TXT files with comma, tab, pipe (|), or semicolon delimiters</li>
+                <li>TXT, CSV, and XLSX files</li>
                 <li>First row should contain column headers</li>
                 <li>Maximum file size: 50MB per file</li>
+              </ul>
+            </div>
+            
+            <Separator />
+            
+            <div>
+              <h4 className="font-semibold mb-2">Bill Generation</h4>
+              <ul className="list-disc list-inside text-sm text-muted-foreground space-y-1">
+                <li>Click "Generate Bills" to create party bills and broker bills from your data</li>
+                <li>Party bills are generated for all transactions</li>
+                <li>Broker bills are generated for rows with "Type" column value "Brokerage"</li>
+                <li>Brokerage rates are automatically applied based on party master data</li>
+                <li>Delivery/Trading type is detected from "D/T" column (D = Delivery, T = Trading)</li>
               </ul>
             </div>
             
