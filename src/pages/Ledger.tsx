@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Plus, Save, X, List, Search, Calendar, IndianRupee } from "lucide-react";
+import { Plus, Save, X, List, Search, Calendar, IndianRupee, Pencil, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useFormNavigation, useBusinessKeyboard } from "@/hooks/useBusinessKeyboard";
 import { ledgerQueries, partyQueries } from "@/lib/database";
@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Select,
   SelectContent,
@@ -71,6 +72,8 @@ const Ledger = () => {
   });
 
   const [editingEntry, setEditingEntry] = useState<LedgerEntry | null>(null);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [entryToDelete, setEntryToDelete] = useState<LedgerEntry | null>(null);
 
   useEffect(() => {
     fetchParties();
@@ -205,6 +208,35 @@ const Ledger = () => {
     setCurrentView('form');
   };
 
+  const handleDeleteClick = (entry: LedgerEntry) => {
+    setEntryToDelete(entry);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!entryToDelete) return;
+
+    try {
+      await ledgerQueries.delete(entryToDelete.id);
+      toast({ 
+        title: "Success", 
+        description: "Ledger entry deleted successfully",
+        variant: "default"
+      });
+      fetchLedgerEntries();
+    } catch (error) {
+      console.error('Error deleting ledger entry:', error);
+      toast({
+        title: "Error",
+        description: "Failed to delete ledger entry",
+        variant: "destructive",
+      });
+    } finally {
+      setEntryToDelete(null);
+      setDeleteDialogOpen(false);
+    }
+  };
+
   // Add edit functionality to keyboard shortcuts
   // Business keyboard shortcuts
   useBusinessKeyboard({
@@ -300,11 +332,13 @@ const Ledger = () => {
                       <SelectValue placeholder="Select party" />
                     </SelectTrigger>
                     <SelectContent>
-                      {parties.map((party) => (
-                        <SelectItem key={party.id} value={party.id}>
-                          {party.party_code} - {party.name}
-                        </SelectItem>
-                      ))}
+                      {parties
+                        .filter(party => party.id && party.id.trim() !== "")
+                        .map((party) => (
+                          <SelectItem key={party.id} value={party.id}>
+                            {party.party_code} - {party.name}
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -448,12 +482,14 @@ const Ledger = () => {
                   <SelectValue placeholder="Filter by party" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Parties</SelectItem>
-                  {parties.map((party) => (
-                    <SelectItem key={party.id} value={party.id}>
-                      {party.party_code} - {party.name}
-                    </SelectItem>
-                  ))}
+                  <SelectItem value="all">All Parties</SelectItem>
+                  {parties
+                    .filter(party => party.id && party.id.trim() !== "")
+                    .map((party) => (
+                      <SelectItem key={party.id} value={party.id}>
+                        {party.party_code} - {party.name}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
               
@@ -522,30 +558,51 @@ const Ledger = () => {
                   >
                     <TableCell className="text-sm">{new Date(entry.entry_date).toLocaleDateString()}</TableCell>
                     <TableCell>
-                      <div className="font-medium">{entry.party_code}</div>
-                      <div className="text-sm text-muted-foreground">{entry.party_name}</div>
+                      <div className="font-medium">
+                        {entry.party_code ? entry.party_code : 'Broker Entry'}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {entry.party_name ? entry.party_name : 'Brokerage Transaction'}
+                      </div>
                     </TableCell>
-                    <TableCell className="font-medium">{entry.particulars}</TableCell>
-                    <TableCell className="text-right font-mono text-accent">
-                      {entry.debit_amount > 0 ? `₹${entry.debit_amount.toFixed(2)}` : "-"}
+                    <TableCell className="font-medium">
+                      {entry.particulars}
+                      {entry.particulars.includes('Brokerage for bill') && (
+                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                          Broker Bill
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="text-right font-mono text-accent">
-                      {entry.credit_amount > 0 ? `₹${entry.credit_amount.toFixed(2)}` : "-"}
+                      {Number(entry.debit_amount) > 0 ? `₹${Number(entry.debit_amount).toFixed(2)}` : "-"}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-accent">
+                      {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                     </TableCell>
                     <TableCell className={`text-right font-mono font-medium ${
-                      entry.balance >= 0 ? 'text-green-600' : 'text-red-600'
+                      Number(entry.balance) >= 0 ? 'text-green-600' : 'text-red-600'
                     }`}>
-                      ₹{entry.balance.toFixed(2)}
+                      ₹{Number(entry.balance).toFixed(2)}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleEdit(entry)}
-                        className="hover:bg-primary/10 hover:text-primary"
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </Button>
+                      <div className="flex gap-2 justify-end">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleEdit(entry)}
+                          className="hover:bg-primary/10 hover:text-primary"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteClick(entry)}
+                          className="hover:bg-destructive/10 hover:text-destructive"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -561,6 +618,16 @@ const Ledger = () => {
   return (
     <>
       {currentView === 'form' ? renderFormView() : renderListView()}
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        title="Delete Ledger Entry"
+        description={`Are you sure you want to delete this ledger entry? This action cannot be undone.`}
+        confirmText="Delete"
+        cancelText="Cancel"
+        onConfirm={handleDeleteConfirm}
+        variant="destructive"
+      />
     </>
   );
 };

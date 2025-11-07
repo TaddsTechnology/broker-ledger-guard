@@ -52,6 +52,7 @@ const menuItems: MenuItem[] = [
     icon: Database,
     submenu: [
       { title: "Party Master", url: "/master/party", icon: Users },
+      { title: "Broker Master", url: "/master/broker", icon: Users },
       { title: "Company Master", url: "/master/company", icon: Building2 },
       { title: "Settlement Master", url: "/master/settlement", icon: Calendar },
     ]
@@ -77,7 +78,15 @@ const menuItems: MenuItem[] = [
           { title: "Broker Bills", url: "/bills?type=broker", icon: FileText },
         ]
       },
-      { title: "Payments & Ledger", url: "/ledger", icon: BookOpen },
+      { 
+        title: "Ledger", 
+        url: "/ledger",
+        icon: BookOpen,
+        submenu: [
+          { title: "All Entries", url: "/ledger", icon: FileText },
+          { title: "Bill Transactions", url: "/ledger/bills", icon: FileText },
+        ]
+      },
     ]
   },
   {

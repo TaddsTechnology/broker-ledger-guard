@@ -120,14 +120,18 @@ export const billQueries = {
   getAll: (type?: 'party' | 'broker') => 
     type ? apiCall(`/bills?type=${type}`) : apiCall('/bills'),
   getById: (id: string) => apiCall(`/bills/${id}`),
+  getByNumber: (billNumber: string) => apiCall(`/bills/number/${billNumber}`), // Add this new method
+  getItems: (billId: string) => apiCall(`/bills/${billId}/items`),
   create: (data: {
     bill_number: string;
-    party_id: string;
+    party_id: string | null;
+    broker_id?: string | null;
+    broker_code?: string | null;
     bill_date: string;
     due_date?: string;
     total_amount: number;
     notes?: string;
-    bill_type?: 'party' | 'broker'; // Add bill_type field
+    bill_type?: 'party' | 'broker';
   }) =>
     apiCall('/bills', {
       method: 'POST',
@@ -135,12 +139,25 @@ export const billQueries = {
     }),
   update: (id: string, data: {
     bill_number: string;
-    party_id: string;
+    party_id: string | null;
+    broker_id?: string | null;
+    broker_code?: string | null;
     bill_date: string;
     due_date?: string;
     total_amount: number;
     notes?: string;
-    bill_type?: 'party' | 'broker'; // Add bill_type field
+    bill_type?: 'party' | 'broker';
+    items?: Array<{
+      description: string;
+      quantity: number;
+      rate: number;
+      amount: number;
+      client_code?: string;
+      company_code?: string;
+      trade_type?: string;  // Add trade_type field
+      brokerage_rate_pct?: number;
+      brokerage_amount?: number;
+    }>;
   }) =>
     apiCall(`/bills/${id}`, {
       method: 'PUT',
@@ -178,6 +195,39 @@ export const ledgerQueries = {
       body: JSON.stringify(data),
     }),
   delete: (id: string) => apiCall(`/ledger/${id}`, { method: 'DELETE' }),
+};
+
+// Broker Master operations
+export const brokerQueries = {
+  getAll: () => apiCall('/brokers'),
+  getById: (id: string) => apiCall(`/brokers/${id}`),
+  create: (data: {
+    broker_code: string;
+    name: string;
+    address?: string;
+    city?: string;
+    phone?: string;
+    trading_slab: number;
+    delivery_slab: number;
+  }) =>
+    apiCall('/brokers', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, data: {
+    broker_code: string;
+    name: string;
+    address?: string;
+    city?: string;
+    phone?: string;
+    trading_slab: number;
+    delivery_slab: number;
+  }) =>
+    apiCall(`/brokers/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  delete: (id: string) => apiCall(`/brokers/${id}`, { method: 'DELETE' }),
 };
 
 // Contracts operations

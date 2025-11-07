@@ -25,6 +25,20 @@ CREATE TABLE IF NOT EXISTS party_master (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Create broker_master table
+CREATE TABLE IF NOT EXISTS broker_master (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    broker_code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    address TEXT,
+    city VARCHAR(100),
+    phone VARCHAR(20),
+    trading_slab DECIMAL(5,2) DEFAULT 0.00,
+    delivery_slab DECIMAL(5,2) DEFAULT 0.00,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create company_master table
 CREATE TABLE IF NOT EXISTS company_master (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -83,6 +97,8 @@ CREATE TABLE IF NOT EXISTS bills (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     bill_number VARCHAR(50) UNIQUE NOT NULL,
     party_id UUID REFERENCES party_master(id),
+    broker_id UUID REFERENCES broker_master(id),
+    broker_code VARCHAR(50),
     bill_date DATE NOT NULL,
     due_date DATE,
     total_amount DECIMAL(15,2) NOT NULL,
@@ -102,8 +118,16 @@ CREATE TABLE IF NOT EXISTS bill_items (
     quantity INTEGER DEFAULT 1,
     rate DECIMAL(10,2) NOT NULL,
     amount DECIMAL(15,2) NOT NULL,
+    client_code VARCHAR(50),
+    company_code VARCHAR(50),
+    trade_type VARCHAR(10) CHECK (trade_type IN ('T', 'D')),  -- Add trade type field (T for Trading, D for Delivery)
+    brokerage_rate_pct DECIMAL(5,2) DEFAULT 0.00,
+    brokerage_amount DECIMAL(15,2) DEFAULT 0.00,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Add trade_type column to existing bill_items table (for existing databases)
+ALTER TABLE bill_items ADD COLUMN IF NOT EXISTS trade_type VARCHAR(10) CHECK (trade_type IN ('T', 'D'));
 
 -- Create payments table
 CREATE TABLE IF NOT EXISTS payments (
@@ -155,6 +179,8 @@ CREATE INDEX IF NOT EXISTS idx_trade_data_company_code ON trade_data(company_cod
 CREATE INDEX IF NOT EXISTS idx_trade_data_trade_date ON trade_data(trade_date);
 CREATE INDEX IF NOT EXISTS idx_bills_bill_number ON bills(bill_number);
 CREATE INDEX IF NOT EXISTS idx_bills_party_id ON bills(party_id);
+CREATE INDEX IF NOT EXISTS idx_bills_broker_id ON bills(broker_id);
+CREATE INDEX IF NOT EXISTS idx_bills_broker_code ON bills(broker_code);
 CREATE INDEX IF NOT EXISTS idx_bills_status ON bills(status);
 CREATE INDEX IF NOT EXISTS idx_payments_party_id ON payments(party_id);
 CREATE INDEX IF NOT EXISTS idx_payments_bill_id ON payments(bill_id);
@@ -200,6 +226,10 @@ CREATE INDEX IF NOT EXISTS idx_contracts_settlement_id ON contracts(settlement_i
 CREATE INDEX IF NOT EXISTS idx_contracts_contract_date ON contracts(contract_date);
 CREATE INDEX IF NOT EXISTS idx_contracts_status ON contracts(status);
 
+-- Create indexes for broker_master
+CREATE INDEX IF NOT EXISTS idx_broker_master_broker_code ON broker_master(broker_code);
+CREATE INDEX IF NOT EXISTS idx_broker_master_name ON broker_master(name);
+
 -- Create triggers for updated_at columns
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -233,6 +263,10 @@ CREATE TRIGGER update_ledger_entries_updated_at BEFORE UPDATE ON ledger_entries
 CREATE TRIGGER update_contracts_updated_at BEFORE UPDATE ON contracts 
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Apply trigger to broker_master table
+CREATE TRIGGER update_broker_master_updated_at BEFORE UPDATE ON broker_master 
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- Insert default application settings
 INSERT INTO application_settings (setting_key, setting_value, setting_type, description) VALUES
 ('app_name', 'Broker ERP', 'string', 'Application name'),
@@ -250,6 +284,12 @@ ON CONFLICT (setting_key) DO NOTHING;
 INSERT INTO party_master (party_code, name, nse_code, address, city, phone, trading_slab, delivery_slab) VALUES
 ('SAMPLE001', 'Sample Trading Party', 'STP001', '123 Business Street', 'Mumbai', '+91-98765-43210', 0.25, 0.50)
 ON CONFLICT (party_code) DO NOTHING;
+
+-- Insert sample broker
+INSERT INTO broker_master (broker_code, name, address, city, phone, trading_slab, delivery_slab) VALUES
+('GROW', 'Groww Broker', '456 Finance Street', 'Bangalore', '+91-98765-43211', 0.30, 0.60),
+('A2', 'AngelOne Broker', '789 Trading Avenue', 'Delhi', '+91-98765-43212', 0.25, 0.50)
+ON CONFLICT (broker_code) DO NOTHING;
 
 -- Insert sample company
 INSERT INTO company_master (company_code, name, nse_code) VALUES

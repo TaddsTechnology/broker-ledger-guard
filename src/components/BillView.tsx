@@ -8,6 +8,8 @@ interface Bill {
   party_id: string;
   party_code?: string;
   party_name?: string;
+  broker_code?: string;
+  broker_name?: string;
   bill_date: string;
   due_date: string | null;
   total_amount: number;
@@ -38,6 +40,7 @@ interface BillData {
   tradingBrokerageAmount?: number;
   deliverySlab?: number;
   tradingSlab?: number;
+  notes?: string;
   transactions: {
     security: string;
     trades: {
@@ -78,15 +81,15 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
     } else if (open && propBill) {
       // If bill was passed as prop, use it directly
       setBill(propBill);
-      parseBillNotes(propBill);
+      fetchAndProcessBillData(propBill);
     }
   }, [open, billId, propBill]);
 
-  // Re-parse notes when propBill changes
+  // Re-parse when propBill changes
   useEffect(() => {
     if (propBill && open) {
       setBill(propBill);
-      parseBillNotes(propBill);
+      fetchAndProcessBillData(propBill);
     }
   }, [propBill, open]);
 
@@ -99,8 +102,8 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
       
       if (billData && billData.id) {
         setBill(billData);
-        // Parse the notes to extract bill data
-        parseBillNotes(billData);
+        // Fetch and process bill data with items
+        await fetchAndProcessBillData(billData);
       } else {
         setError("Bill not found");
         setBill(null);
@@ -115,9 +118,160 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
     }
   };
 
+  const fetchAndProcessBillData = async (bill: Bill) => {
+    try {
+      // First try to fetch actual bill items from database
+      const items = await billQueries.getItems(bill.id);
+      console.log('Fetched bill items:', items);
+      
+      // If we have items, use them to build the bill data
+      if (items && items.length > 0) {
+        const billData = await buildBillDataFromItems(bill, items);
+        setBillData(billData);
+      } else {
+        // Fall back to parsing notes if no items found
+        console.log('No items found, falling back to parsing notes');
+        parseBillNotes(bill);
+      }
+    } catch (error) {
+      console.error("Error fetching bill items:", error);
+      // Fall back to parsing notes if there's an error
+      console.log('Error fetching items, falling back to parsing notes');
+      parseBillNotes(bill);
+    }
+  };
+
+  const buildBillDataFromItems = async (bill: Bill, items: any[]): Promise<BillData> => {
+    console.log('Building bill data from items:', items);
+    // Group items by company/security (use description/securityName instead of just company_code)
+    const transactions: BillData['transactions'] = [];
+    const securityMap = new Map<string, any[]>();
+    
+    // Group items by security name (extracted from description or use company_code)
+    items.forEach(item => {
+      // Try to extract security name from description first
+      let security = item.description || item.company_code || 'Unknown Security';
+      // Remove BUY/SELL prefix if present
+      security = security.replace(/^(BUY|SELL)\s+/i, '').trim();
+      
+      if (!securityMap.has(security)) {
+        securityMap.set(security, []);
+      }
+      securityMap.get(security)?.push(item);
+    });
+    
+    // Convert to transaction format
+    securityMap.forEach((securityItems, security) => {
+      const trades = securityItems.map(item => ({
+        side: item.description?.toUpperCase().includes('BUY') ? 'BUY' : 'SELL',
+        quantity: Number(item.quantity) || 0,
+        price: Number(item.rate) || 0,
+        amount: Number(item.amount) || 0,
+        deliveryTrading: item.trade_type || undefined, // Use trade_type from database (T or D)
+        brokerageAmount: Number(item.brokerage_amount) || undefined
+      }));
+      
+      console.log('Processing security:', security, 'trades:', trades);
+      
+      // Calculate subtotal for this security
+      // Subtotal always shows transaction amount, regardless of bill type
+      // Brokerage is shown separately in the UI
+      const subtotal = securityItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+      
+      transactions.push({
+        security,
+        trades,
+        subtotal
+      });
+    });
+    
+    // Build the bill data
+    const isBrokerBill = bill.bill_type === 'broker';
+    
+    // Calculate delivery and trading amounts based on trade_type
+    const deliveryAmount = items
+      .filter(item => item.trade_type === 'D')
+      .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+    const tradingAmount = items
+      .filter(item => item.trade_type === 'T')
+      .reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+    
+    // Calculate brokerage amounts by type
+    const deliveryBrokerageAmount = items
+      .filter(item => item.trade_type === 'D')
+      .reduce((sum, item) => sum + (Number(item.brokerage_amount) || 0), 0);
+    const tradingBrokerageAmount = items
+      .filter(item => item.trade_type === 'T')
+      .reduce((sum, item) => sum + (Number(item.brokerage_amount) || 0), 0);
+    
+    // Extract broker/client info from notes if this is a broker bill
+    let partyCode = bill.party_code || 'Unknown';
+    let partyName = bill.party_name || 'Unknown Party';
+    
+    if (isBrokerBill) {
+      // Use broker_code and broker_name from bill data (fetched from broker_master)
+      partyCode = bill.broker_code || 'Unknown';
+      partyName = bill.broker_name || 'Unknown Broker';
+      
+      // Fall back to extracting from notes if not available
+      if ((!bill.broker_code || !bill.broker_name) && bill.notes) {
+        const brokerCodeMatch = bill.notes.match(/Broker Code: ([^\n]+)/);
+        if (brokerCodeMatch) partyCode = brokerCodeMatch[1];
+        
+        const brokerNameMatch = bill.notes.match(/Broker Name: ([^\n]+)/);
+        if (brokerNameMatch) partyName = brokerNameMatch[1];
+      }
+      
+      // Extract unique client codes from items for display
+      const clientCodes = [...new Set(items.map(item => item.client_code).filter(Boolean))];
+      if (clientCodes.length > 0) {
+        // Fetch all parties once
+        try {
+          const response = await fetch('http://localhost:3001/api/parties');
+          const parties = await response.json();
+          
+          // Map client codes to party names
+          const partyNames = clientCodes.map(clientCode => {
+            const party = parties.find((p: any) => p.party_code.toUpperCase() === clientCode.toUpperCase());
+            return party ? `${clientCode} (${party.name})` : clientCode;
+          });
+          
+          partyCode = partyNames.join(', ');
+          partyName = `Broker: ${partyName}`;
+        } catch (error) {
+          console.error('Error fetching parties:', error);
+          partyCode = clientCodes.join(', ');
+        }
+      }
+    }
+    
+    const billData: BillData = {
+      billNumber: bill.bill_number,
+      partyCode: partyCode,
+      partyName: partyName,
+      billDate: bill.bill_date ? new Date(bill.bill_date).toLocaleDateString() : new Date().toLocaleDateString(),
+      fileName: 'Generated from database items',
+      totalTransactions: items.length,
+      buyAmount: items.filter(item => item.description?.toUpperCase().includes('BUY')).reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+      sellAmount: items.filter(item => item.description?.toUpperCase().includes('SELL')).reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+      netAmount: bill.total_amount ? Number(bill.total_amount) : 0,
+      deliveryAmount,
+      tradingAmount,
+      billType: bill.bill_type || 'party',
+      deliveryBrokerageAmount,
+      tradingBrokerageAmount,
+      deliverySlab: 0, // Not available in database items
+      tradingSlab: 0, // Not available in database items
+      transactions
+    };
+    
+    console.log('Built bill data:', billData);
+    return billData;
+  };
+
   const parseBillNotes = (bill: Bill) => {
+    // If no notes, create minimal bill data from bill fields
     if (!bill.notes) {
-      // If no notes, create minimal bill data from bill fields
       const parsedBillData: BillData = {
         billNumber: bill.bill_number,
         partyCode: bill.party_code || 'Unknown',
@@ -313,6 +467,7 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
         tradingBrokerageAmount,
         deliverySlab,
         tradingSlab,
+        notes: bill.notes || '', // Add notes
         transactions
       };
       

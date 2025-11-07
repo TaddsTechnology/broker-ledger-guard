@@ -10,13 +10,24 @@ import { Separator } from "@/components/ui/separator";
 import { Upload, FileText, Download, X, CheckCircle, AlertCircle, FileSpreadsheet, IndianRupee } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useToast } from "@/hooks/use-toast";
-import { billQueries, partyQueries } from "@/lib/database";
+import { billQueries, partyQueries, ledgerQueries, brokerQueries } from "@/lib/database";
 
 interface Party {
   id: string;
   party_code: string;
   name: string;
   nse_code: string | null;
+  trading_slab: number;
+  delivery_slab: number;
+}
+
+interface Broker {
+  id: string;
+  broker_code: string;
+  name: string;
+  address: string | null;
+  city: string | null;
+  phone: string | null;
   trading_slab: number;
   delivery_slab: number;
 }
@@ -40,27 +51,33 @@ const Trading = () => {
   const [dragActive, setDragActive] = useState(false);
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
   const [parties, setParties] = useState<Party[]>([]);
+  const [brokers, setBrokers] = useState<Broker[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileRefs = useRef<(HTMLDivElement | null)[]>([]);
   const { toast } = useToast();
 
-  // Fetch parties on component mount
+  // Fetch parties and brokers on component mount
   useEffect(() => {
-    const fetchParties = async () => {
+    const fetchData = async () => {
       try {
-        const result = await partyQueries.getAll();
-        setParties(result || []);
+        // Fetch parties
+        const partyResult = await partyQueries.getAll();
+        setParties(partyResult || []);
+        
+        // Fetch brokers
+        const brokerResult = await brokerQueries.getAll();
+        setBrokers(brokerResult || []);
       } catch (error) {
-        console.error('Error fetching parties:', error);
+        console.error('Error fetching data:', error);
         toast({
           title: "Error",
-          description: "Failed to fetch parties",
+          description: "Failed to fetch data",
           variant: "destructive",
         });
       }
     };
     
-    fetchParties();
+    fetchData();
   }, [toast]);
 
   // Handle file upload
@@ -289,6 +306,16 @@ const Trading = () => {
     }));
   }, []);
 
+  // Find broker by broker ID
+  const findBrokerByBrokerId = useCallback((brokerId: string) => {
+    return brokers.find(broker => broker.broker_code.trim() === brokerId.trim());
+  }, [brokers]);
+  
+  // Find broker by broker ID with provided broker list
+  const findBrokerByBrokerIdWithList = (brokerId: string, brokerList: Broker[]) => {
+    return brokerList.find(broker => broker.broker_code.trim() === brokerId.trim());
+  };
+
   // Generate bills from trade data
   const generateBills = useCallback(async (file: ProcessedFile) => {
     try {
@@ -299,6 +326,15 @@ const Trading = () => {
           variant: "destructive"
         });
         return;
+      }
+      
+      // Ensure brokers are loaded
+      let currentBrokers = brokers;
+      if (currentBrokers.length === 0) {
+        console.log('Brokers not loaded, fetching brokers...');
+        const brokerResult = await brokerQueries.getAll();
+        console.log('Fetched brokers for bill generation:', brokerResult);
+        currentBrokers = brokerResult || [];
       }
       
       // Show processing message
@@ -350,10 +386,6 @@ const Trading = () => {
       const finalPartyIndex = partyCodeIndex !== -1 ? partyCodeIndex : fallbackPartyIndex;
       
       // Find broker-related columns
-      const typeIndex = headersToUse.findIndex(header => 
-        header.toLowerCase().includes('type')
-      );
-      
       const brokerIdIndex = headersToUse.findIndex(header => 
         (header.toLowerCase().includes('broker') && header.toLowerCase().includes('id')) ||
         header.toLowerCase().includes('brokerid') ||
@@ -361,7 +393,9 @@ const Trading = () => {
       );
       
       // Find delivery/trading column (D/T)
+      // Check for 'Type' column first (common in CSV exports), then d/t, delivery, trading
       const deliveryTradingIndex = headersToUse.findIndex(header => 
+        header.toLowerCase() === 'type' ||
         header.toLowerCase().includes('d/t') ||
         header.toLowerCase().includes('delivery') ||
         header.toLowerCase().includes('trading')
@@ -452,8 +486,6 @@ const Trading = () => {
           Number(parseFloat(row[priceIndex])) || 0 : 0;
         const side = sideIndex !== -1 && row[sideIndex] ? 
           row[sideIndex] : 'Unknown';
-        const type = typeIndex !== -1 && row[typeIndex] ? 
-          row[typeIndex].toLowerCase() : '';
         const brokerId = brokerIdIndex !== -1 && row[brokerIdIndex] ? 
           row[brokerIdIndex] : '';
         const deliveryTrading = deliveryTradingIndex !== -1 && row[deliveryTradingIndex] ? 
@@ -502,7 +534,7 @@ const Trading = () => {
             deliveryAmount: 0,
             tradingAmount: 0,
             transactions: [],
-            hasBrokerage: type.trim().toLowerCase() === 'brokerage',
+            hasBrokerage: brokerId ? true : false,
             brokerId: brokerId || undefined
           };
         }
@@ -532,13 +564,15 @@ const Trading = () => {
           partyGroups[partyCode].tradingAmount += Number(amount);
         }
         
-        // Update brokerage info if this row has brokerage type
-        const trimmedType = type.trim().toLowerCase();
-        if (trimmedType === 'brokerage') {
+        // Update brokerage info - every row with a brokerId contributes to brokerage
+        if (brokerId) {
           partyGroups[partyCode].hasBrokerage = true;
-          if (brokerId) {
-            const trimmedBrokerId = brokerId.trim();
+          const trimmedBrokerId = brokerId.trim();
+          // Only set brokerId if not already set, or if it's the same
+          if (!partyGroups[partyCode].brokerId || partyGroups[partyCode].brokerId === trimmedBrokerId) {
             partyGroups[partyCode].brokerId = trimmedBrokerId;
+          } else {
+            console.warn('Different broker IDs found for same party:', partyCode, partyGroups[partyCode].brokerId, trimmedBrokerId);
           }
         }
       });
@@ -576,7 +610,7 @@ const Trading = () => {
           
           // Generate party bill
           const today = new Date();
-          const partyBillNumber = `BL${today.getFullYear()}${(today.getMonth() + 1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}-${partyCode}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+          const partyBillNumber = `PTY${today.getFullYear()}${(today.getMonth() + 1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
           
           // Create detailed notes with transaction summary in a proper format
           let partyNotes = `TRADE BILL\n`;
@@ -650,146 +684,289 @@ const Trading = () => {
             bill_type: 'party' as 'party' | 'broker' // Specify bill type
           };
           
-          // Create the party bill in the database
+          // Create the party bill in the database with items
           if (party) {
-            await billQueries.create(partyBillData);
+            const createdBill = await billQueries.create(partyBillData);
+            
+            // Now create bill_items for this bill
+            if (createdBill && createdBill.id) {
+              // Prepare items array from transactions
+              const billItems = groupData.transactions.map(tx => ({
+                description: `${tx.side.toUpperCase()} ${tx.security}`,
+                quantity: Number(tx.quantity),
+                rate: Number(tx.price),
+                amount: Number(tx.amount),
+                client_code: partyCode,
+                company_code: tx.security,
+                trade_type: tx.deliveryTrading || null, // D, T, or null
+                brokerage_rate_pct: 0,
+                brokerage_amount: 0
+              }));
+              
+              // Update the bill to include items
+              await billQueries.update(createdBill.id, {
+                ...partyBillData,
+                items: billItems
+              });
+            }
+            
             billsCreated++;
+            
+            // Create ledger entry for party
+            try {
+              // Get current balance for this party
+              const currentLedgerEntries = await ledgerQueries.getByPartyId(party.id);
+              const currentBalance = currentLedgerEntries.length > 0 
+                ? Number(currentLedgerEntries[0].balance) 
+                : 0;
+              const newBalance = currentBalance + Number(groupData.totalAmount.toFixed(2));
+              
+              await ledgerQueries.create({
+                party_id: party.id,
+                entry_date: today.toISOString().split('T')[0],
+                particulars: `Trade bill ${partyBillNumber}`,
+                debit_amount: Number(groupData.totalAmount.toFixed(2)),
+                credit_amount: 0,
+                balance: newBalance
+              });
+            } catch (ledgerError) {
+              console.warn(`Failed to create ledger entry for party bill ${partyBillNumber}:`, ledgerError);
+            }
           } else {
             // If party not found, we could either skip or create with empty party_id
             // For now, we'll create with empty party_id and log a warning
-            await billQueries.create(partyBillData);
+            const createdBill = await billQueries.create(partyBillData);
+            
+            // Now create bill_items for this bill
+            if (createdBill && createdBill.id) {
+              // Prepare items array from transactions
+              const billItems = groupData.transactions.map(tx => ({
+                description: `${tx.side.toUpperCase()} ${tx.security}`,
+                quantity: Number(tx.quantity),
+                rate: Number(tx.price),
+                amount: Number(tx.amount),
+                client_code: partyCode,
+                company_code: tx.security,
+                trade_type: tx.deliveryTrading || null, // D, T, or null
+                brokerage_rate_pct: 0,
+                brokerage_amount: 0
+              }));
+              
+              // Update the bill to include items
+              await billQueries.update(createdBill.id, {
+                ...partyBillData,
+                items: billItems
+              });
+            }
+            
             billsCreated++;
             console.warn(`Party bill created for party code '${partyCode}' but party not found in database`);
           }
           
           // Generate broker bill if this party has brokerage transactions
-          if (groupData.hasBrokerage) {
-            const brokerBillNumber = `BR${today.getFullYear()}${(today.getMonth() + 1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}-${partyCode}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+          if (groupData.hasBrokerage && groupData.brokerId) {
+            // Find the broker party by broker ID
+            const brokerParty = findBrokerByBrokerIdWithList(groupData.brokerId, currentBrokers);
             
-            // Use brokerage rates from party master data
-            let totalBrokerageAmount = 0;
-            let deliveryBrokerageAmount = 0;
-            let tradingBrokerageAmount = 0;
-            
-            // Calculate brokerage for each transaction based on delivery/trading type
-            groupData.transactions.forEach(tx => {
-              let txBrokerageRate = 0;
-              if (tx.deliveryTrading === 'D' && party?.delivery_slab) {
-                // Use delivery slab rate for delivery transactions
-                txBrokerageRate = party.delivery_slab / 100;
-                deliveryBrokerageAmount += Number(tx.amount) * txBrokerageRate;
-              } else if (tx.deliveryTrading === 'T' && party?.trading_slab) {
-                // Use trading slab rate for trading transactions
-                txBrokerageRate = party.trading_slab / 100;
-                tradingBrokerageAmount += Number(tx.amount) * txBrokerageRate;
-              } else if (party?.trading_slab) {
-                // Default to trading slab rate if no D/T specified
-                txBrokerageRate = party.trading_slab / 100;
-                tradingBrokerageAmount += Number(tx.amount) * txBrokerageRate;
-              }
+            if (brokerParty) {
+              const brokerBillNumber = `BRK${today.getFullYear()}${(today.getMonth() + 1).toString().padStart(2, '0')}${today.getDate().toString().padStart(2, '0')}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
               
-              totalBrokerageAmount += Number(tx.amount) * txBrokerageRate;
-            });
-            
-            // If no transactions had specific rates, use party's trading slab as default
-            if (totalBrokerageAmount === 0 && party?.trading_slab) {
-              const defaultRate = party.trading_slab / 100;
-              totalBrokerageAmount = Number(groupData.totalAmount) * defaultRate;
-              tradingBrokerageAmount = totalBrokerageAmount;
-            }
-            
-            // Create broker bill notes
-            let brokerNotes = `BROKERAGE BILL\n`;
-            brokerNotes += `==============\n\n`;
-            brokerNotes += `Generated from file: ${file.name}\n`;
-            brokerNotes += `Party Code: ${partyCode}\n`;
-            brokerNotes += `Party Name: ${party ? party.name : 'Unknown Party'}\n`;
-            brokerNotes += `Broker ID: ${groupData.brokerId || 'Not specified'}\n`;
-            brokerNotes += `Bill Date: ${today.toLocaleDateString()}\n\n`;
-            
-            brokerNotes += `PARTY BROKERAGE RATES\n`;
-            brokerNotes += `---------------------\n`;
-            brokerNotes += `Trading Slab: ${party?.trading_slab || 0}%\n`;
-            brokerNotes += `Delivery Slab: ${party?.delivery_slab || 0}%\n\n`;
-            
-            brokerNotes += `TRANSACTION SUMMARY\n`;
-            brokerNotes += `-------------------\n`;
-            brokerNotes += `Total Transaction Value: ₹${Number(groupData.totalAmount).toFixed(2)}\n`;
-            brokerNotes += `Delivery Amount: ₹${Number(groupData.deliveryAmount).toFixed(2)}\n`;
-            brokerNotes += `Trading Amount: ₹${Number(groupData.tradingAmount).toFixed(2)}\n`;
-            brokerNotes += `Delivery Brokerage: ₹${Number(deliveryBrokerageAmount).toFixed(2)}\n`;
-            brokerNotes += `Trading Brokerage: ₹${Number(tradingBrokerageAmount).toFixed(2)}\n`;
-            brokerNotes += `Total Brokerage Amount: ₹${Number(totalBrokerageAmount).toFixed(2)}\n\n`;
-            
-            brokerNotes += `DETAILED TRANSACTIONS\n`;
-            brokerNotes += `---------------------\n`;
-            
-            // Add transactions grouped by security
-            Object.entries(securityGroups).forEach(([security, transactions]) => {
-              brokerNotes += `\n${security}:\n`;
+              // Use brokerage rates from broker master data
+              let totalBrokerageAmount = 0;
+              let deliveryBrokerageAmount = 0;
+              let tradingBrokerageAmount = 0;
               
-              let securityTotal = 0;
-              let securityDeliveryAmount = 0;
-              let securityTradingAmount = 0;
-              let securityDeliveryBrokerage = 0;
-              let securityTradingBrokerage = 0;
-              
-              transactions.forEach((tx, index) => {
-                let txBrokerage = 0;
+              // Calculate brokerage for each transaction based on delivery/trading type
+              groupData.transactions.forEach(tx => {
                 let txBrokerageRate = 0;
-                
-                if (tx.deliveryTrading === 'D' && party?.delivery_slab) {
-                  txBrokerageRate = party.delivery_slab / 100;
-                  txBrokerage = Number(tx.amount) * txBrokerageRate;
-                  securityDeliveryBrokerage += txBrokerage;
-                  securityDeliveryAmount += Number(tx.amount);
-                } else if (tx.deliveryTrading === 'T' && party?.trading_slab) {
-                  txBrokerageRate = party.trading_slab / 100;
-                  txBrokerage = Number(tx.amount) * txBrokerageRate;
-                  securityTradingBrokerage += txBrokerage;
-                  securityTradingAmount += Number(tx.amount);
-                } else if (party?.trading_slab) {
-                  txBrokerageRate = party.trading_slab / 100;
-                  txBrokerage = Number(tx.amount) * txBrokerageRate;
-                  securityTradingBrokerage += txBrokerage;
-                  securityTradingAmount += Number(tx.amount);
+                if (tx.deliveryTrading === 'D' && brokerParty?.delivery_slab) {
+                  // Use delivery slab rate for delivery transactions
+                  txBrokerageRate = brokerParty.delivery_slab / 100;
+                  deliveryBrokerageAmount += Number(tx.amount) * txBrokerageRate;
+                } else if (tx.deliveryTrading === 'T' && brokerParty?.trading_slab) {
+                  // Use trading slab rate for trading transactions
+                  txBrokerageRate = brokerParty.trading_slab / 100;
+                  tradingBrokerageAmount += Number(tx.amount) * txBrokerageRate;
+                } else if (brokerParty?.trading_slab) {
+                  // Default to trading slab rate if no D/T specified
+                  txBrokerageRate = brokerParty.trading_slab / 100;
+                  tradingBrokerageAmount += Number(tx.amount) * txBrokerageRate;
                 }
                 
-                const dtLabel = tx.deliveryTrading ? ` (${tx.deliveryTrading === 'D' ? 'Delivery' : 'Trading'})` : '';
-                brokerNotes += `${index + 1}. ${tx.side.toUpperCase()} ${Number(tx.quantity).toFixed(0)} units @ ₹${Number(tx.price).toFixed(2)} = ₹${Number(tx.amount).toFixed(2)}${dtLabel} (Brokerage: ₹${txBrokerage.toFixed(2)})\n`;
-                securityTotal += Number(tx.amount);
+                totalBrokerageAmount += Number(tx.amount) * txBrokerageRate;
               });
               
-              const securityTotalBrokerage = securityDeliveryBrokerage + securityTradingBrokerage;
-              brokerNotes += `   Subtotal: ₹${Number(securityTotal).toFixed(2)} (Delivery: ₹${securityDeliveryAmount.toFixed(2)}, Trading: ₹${securityTradingAmount.toFixed(2)}, Delivery Brokerage: ₹${securityDeliveryBrokerage.toFixed(2)}, Trading Brokerage: ₹${securityTradingBrokerage.toFixed(2)}, Total Brokerage: ₹${securityTotalBrokerage.toFixed(2)})\n`;
-            });
-            
-            // Add footer
-            brokerNotes += `\n---\n`;
-            brokerNotes += `Generated on: ${new Date().toLocaleString()}\n`;
-            brokerNotes += `Bill Number: ${brokerBillNumber}\n`;
-            
-            // Create broker bill data
-            const brokerBillData = {
-              bill_number: brokerBillNumber,
-              party_id: party ? party.id : "", // Use actual party ID if found
-              bill_date: today.toISOString().split('T')[0],
-              due_date: new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days from now
-              total_amount: Number(totalBrokerageAmount.toFixed(2)),
-              notes: brokerNotes,
-              bill_type: 'broker' as 'party' | 'broker' // Specify bill type
-            };
-            
-            // Create the broker bill in the database
-            if (party) {
-              await billQueries.create(brokerBillData);
+              // If no transactions had specific rates, use broker's trading slab as default
+              if (totalBrokerageAmount === 0 && brokerParty?.trading_slab) {
+                const defaultRate = brokerParty.trading_slab / 100;
+                totalBrokerageAmount = Number(groupData.totalAmount) * defaultRate;
+                tradingBrokerageAmount = totalBrokerageAmount;
+              }
+              
+              // Create broker bill notes
+              let brokerNotes = `BROKERAGE BILL\n`;
+              brokerNotes += `==============\n\n`;
+              brokerNotes += `Generated from file: ${file.name}\n`;
+              brokerNotes += `Broker Code: ${groupData.brokerId}\n`;
+              brokerNotes += `Broker Name: ${brokerParty.name}\n`;
+              brokerNotes += `Client Code: ${partyCode}\n`;
+              brokerNotes += `Client Name: ${party ? party.name : 'Unknown Party'}\n`;
+              brokerNotes += `Bill Date: ${today.toLocaleDateString()}\n\n`;
+              
+              brokerNotes += `BROKERAGE RATES\n`;
+              brokerNotes += `---------------\n`;
+              brokerNotes += `Trading Slab: ${brokerParty?.trading_slab || 0}%\n`;
+              brokerNotes += `Delivery Slab: ${brokerParty?.delivery_slab || 0}%\n\n`;
+              
+              brokerNotes += `TRANSACTION SUMMARY\n`;
+              brokerNotes += `-------------------\n`;
+              brokerNotes += `Total Transaction Value: ₹${Number(groupData.totalAmount).toFixed(2)}\n`;
+              brokerNotes += `Delivery Amount: ₹${Number(groupData.deliveryAmount).toFixed(2)}\n`;
+              brokerNotes += `Trading Amount: ₹${Number(groupData.tradingAmount).toFixed(2)}\n`;
+              brokerNotes += `Delivery Brokerage: ₹${Number(deliveryBrokerageAmount).toFixed(2)}\n`;
+              brokerNotes += `Trading Brokerage: ₹${Number(tradingBrokerageAmount).toFixed(2)}\n`;
+              brokerNotes += `Total Brokerage Amount: ₹${Number(totalBrokerageAmount).toFixed(2)}\n\n`;
+              
+              brokerNotes += `DETAILED TRANSACTIONS\n`;
+              brokerNotes += `---------------------\n`;
+              
+              // Add transactions grouped by security
+              Object.entries(securityGroups).forEach(([security, transactions]) => {
+                brokerNotes += `\n${security}:\n`;
+                
+                let securityTotal = 0;
+                let securityDeliveryAmount = 0;
+                let securityTradingAmount = 0;
+                let securityDeliveryBrokerage = 0;
+                let securityTradingBrokerage = 0;
+                
+                transactions.forEach((tx, index) => {
+                  let txBrokerage = 0;
+                  let txBrokerageRate = 0;
+                  
+                  if (tx.deliveryTrading === 'D' && brokerParty?.delivery_slab) {
+                    txBrokerageRate = brokerParty.delivery_slab / 100;
+                    txBrokerage = Number(tx.amount) * txBrokerageRate;
+                    securityDeliveryBrokerage += txBrokerage;
+                    securityDeliveryAmount += Number(tx.amount);
+                  } else if (tx.deliveryTrading === 'T' && brokerParty?.trading_slab) {
+                    txBrokerageRate = brokerParty.trading_slab / 100;
+                    txBrokerage = Number(tx.amount) * txBrokerageRate;
+                    securityTradingBrokerage += txBrokerage;
+                    securityTradingAmount += Number(tx.amount);
+                  } else if (brokerParty?.trading_slab) {
+                    txBrokerageRate = brokerParty.trading_slab / 100;
+                    txBrokerage = Number(tx.amount) * txBrokerageRate;
+                    securityTradingBrokerage += txBrokerage;
+                    securityTradingAmount += Number(tx.amount);
+                  }
+                  
+                  const dtLabel = tx.deliveryTrading ? ` (${tx.deliveryTrading === 'D' ? 'Delivery' : 'Trading'})` : '';
+                  brokerNotes += `${index + 1}. ${tx.side.toUpperCase()} ${Number(tx.quantity).toFixed(0)} units @ ₹${Number(tx.price).toFixed(2)} = ₹${Number(tx.amount).toFixed(2)}${dtLabel} (Brokerage: ₹${txBrokerage.toFixed(2)})\n`;
+                  securityTotal += Number(tx.amount);
+                });
+                
+                const securityTotalBrokerage = securityDeliveryBrokerage + securityTradingBrokerage;
+                brokerNotes += `   Subtotal: ₹${Number(securityTotal).toFixed(2)} (Delivery: ₹${securityDeliveryAmount.toFixed(2)}, Trading: ₹${securityTradingAmount.toFixed(2)}, Delivery Brokerage: ₹${securityDeliveryBrokerage.toFixed(2)}, Trading Brokerage: ₹${securityTradingBrokerage.toFixed(2)}, Total Brokerage: ₹${securityTotalBrokerage.toFixed(2)})\n`;
+              });
+              
+              // Add footer
+              brokerNotes += `\n---\n`;
+              brokerNotes += `Generated on: ${new Date().toLocaleString()}\n`;
+              brokerNotes += `Bill Number: ${brokerBillNumber}\n`;
+              
+              // Prepare bill items for broker bill
+              const brokerBillItems = groupData.transactions.map(tx => {
+                let txBrokerageRate = 0;
+                let txBrokerage = 0;
+                
+                if (tx.deliveryTrading === 'D' && brokerParty?.delivery_slab) {
+                  txBrokerageRate = brokerParty.delivery_slab;
+                  txBrokerage = Number(tx.amount) * (brokerParty.delivery_slab / 100);
+                } else if (tx.deliveryTrading === 'T' && brokerParty?.trading_slab) {
+                  txBrokerageRate = brokerParty.trading_slab;
+                  txBrokerage = Number(tx.amount) * (brokerParty.trading_slab / 100);
+                } else if (brokerParty?.trading_slab) {
+                  txBrokerageRate = brokerParty.trading_slab;
+                  txBrokerage = Number(tx.amount) * (brokerParty.trading_slab / 100);
+                }
+                
+                return {
+                  description: `${tx.side.toUpperCase()} ${tx.security}`,
+                  quantity: Number(tx.quantity),
+                  rate: Number(tx.price),
+                  amount: Number(tx.amount),
+                  client_code: partyCode, // Store which party this brokerage is for
+                  company_code: tx.security,
+                  trade_type: tx.deliveryTrading || null, // D, T, or null
+                  brokerage_rate_pct: txBrokerageRate,
+                  brokerage_amount: txBrokerage
+                };
+              });
+              
+              // Create broker bill data
+              const brokerBillData = {
+                bill_number: brokerBillNumber,
+                party_id: null, // Don't set party_id for broker bills
+                broker_id: brokerParty.id, // Store broker ID
+                broker_code: groupData.brokerId, // Store broker code
+                bill_date: today.toISOString().split('T')[0],
+                due_date: new Date(today.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+                total_amount: Number(totalBrokerageAmount.toFixed(2)),
+                notes: brokerNotes,
+                bill_type: 'broker' as 'party' | 'broker'
+              };
+              
+              // Create the broker bill in the database with items
+              const createdBrokerBill = await billQueries.create(brokerBillData);
+              
+              // Update the bill to include items
+              if (createdBrokerBill && createdBrokerBill.id) {
+                await billQueries.update(createdBrokerBill.id, {
+                  ...brokerBillData,
+                  items: brokerBillItems
+                });
+              }
               billsCreated++;
+              
+              // Create ledger entry for broker (what we owe the broker)
+              try {
+                await ledgerQueries.create({
+                  party_id: null, // party_id is null for broker ledger entries
+                  entry_date: today.toISOString().split('T')[0],
+                  particulars: `Brokerage for client ${partyCode} - Bill ${brokerBillNumber}`,
+                  debit_amount: 0,
+                  credit_amount: Number(totalBrokerageAmount.toFixed(2)),
+                  balance: 0
+                });
+              } catch (ledgerError) {
+                console.warn(`Failed to create ledger entry for broker bill ${brokerBillNumber}:`, ledgerError);
+              }
+              
+              // Create party ledger entry (add brokerage to party's debit - what they owe us)
+              if (party) {
+                try {
+                  // Get current balance for this party
+                  const currentLedgerEntries = await ledgerQueries.getByPartyId(party.id);
+                  const currentBalance = currentLedgerEntries.length > 0 
+                    ? Number(currentLedgerEntries[0].balance) 
+                    : 0;
+                  const newBalance = currentBalance + Number(totalBrokerageAmount.toFixed(2));
+                  
+                  await ledgerQueries.create({
+                    party_id: party.id,
+                    entry_date: today.toISOString().split('T')[0],
+                    particulars: `Brokerage charges - Bill ${brokerBillNumber}`,
+                    debit_amount: Number(totalBrokerageAmount.toFixed(2)),
+                    credit_amount: 0,
+                    balance: newBalance
+                  });
+                } catch (partyLedgerError) {
+                  console.warn(`Failed to create party ledger entry for broker bill ${brokerBillNumber}:`, partyLedgerError);
+                }
+              }
             } else {
-              // If party not found, we could either skip or create with empty party_id
-              // For now, we'll create with empty party_id and log a warning
-              await billQueries.create(brokerBillData);
-              billsCreated++;
-              console.warn(`Broker bill created for party code '${partyCode}' but party not found in database`);
+              console.warn(`Broker bill not created - broker with ID '${groupData.brokerId}' not found`);
             }
           }
         } catch (error) {

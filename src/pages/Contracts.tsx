@@ -165,8 +165,23 @@ const Contracts = () => {
   };
 
   const resetForm = () => {
+    // Generate next contract number
+    let nextContractNumber = "001";
+    if (contracts.length > 0) {
+      // Find the highest contract number
+      const contractNumbers = contracts
+        .map(c => c.contract_number)
+        .map(cn => parseInt(cn, 10))
+        .filter(num => !isNaN(num));
+      
+      if (contractNumbers.length > 0) {
+        const maxNumber = Math.max(...contractNumbers);
+        nextContractNumber = `${(maxNumber + 1).toString().padStart(3, '0')}`;
+      }
+    }
+    
     setFormData({
-      contract_number: "",
+      contract_number: nextContractNumber,
       party_id: "",
       settlement_id: "",
       contract_date: new Date().toISOString().split('T')[0],
@@ -181,8 +196,14 @@ const Contracts = () => {
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
 
+    // For new contracts, ensure the contract number is auto-generated
+    // For editing existing contracts, use the existing contract number
+    const contractNumber = editingContract ? 
+      editingContract.contract_number : 
+      formData.contract_number;
+    
     const contractData = {
-      contract_number: formData.contract_number,
+      contract_number: contractNumber,
       party_id: formData.party_id,
       settlement_id: formData.settlement_id,
       contract_date: formData.contract_date,
@@ -396,12 +417,15 @@ const Contracts = () => {
                     ref={firstInputRef}
                     id="contract_number"
                     value={formData.contract_number}
-                    onChange={(e) => setFormData({ ...formData, contract_number: e.target.value.toUpperCase() })}
-                    required
-                    className="bg-secondary h-10"
-                    placeholder="Enter contract number"
-                    tabIndex={1}
+                    readOnly
+                    className="bg-secondary h-10 cursor-not-allowed pointer-events-none select-none"
+                    placeholder="Auto-generated"
+                    tabIndex={-1}
+                    onClick={(e) => e.preventDefault()}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseUp={(e) => e.preventDefault()}
                   />
+                  <p className="text-xs text-muted-foreground">Auto-generated contract number</p>
                 </div>
                 
                 <div className="space-y-2">
@@ -681,8 +705,8 @@ const Contracts = () => {
                     <TableCell className="font-medium">{contract.settlement_number}</TableCell>
                     <TableCell className="text-sm">{new Date(contract.contract_date).toLocaleDateString()}</TableCell>
                     <TableCell className="font-mono text-accent">{contract.quantity}</TableCell>
-                    <TableCell className="text-right font-mono text-accent">₹{contract.rate.toFixed(2)}</TableCell>
-                    <TableCell className="text-right font-mono text-accent font-medium">₹{contract.amount.toFixed(2)}</TableCell>
+                    <TableCell className="text-right font-mono text-accent">₹{Number(contract.rate).toFixed(2)}</TableCell>
+                    <TableCell className="text-right font-mono text-accent font-medium">₹{Number(contract.amount).toFixed(2)}</TableCell>
                     <TableCell className="text-right">
                       <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
                         contract.contract_type === 'buy' ? 'bg-blue-100 text-blue-800' : 'bg-orange-100 text-orange-800'

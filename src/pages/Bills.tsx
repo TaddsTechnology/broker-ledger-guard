@@ -8,6 +8,7 @@ import { useFormNavigation, useBusinessKeyboard } from "@/hooks/useBusinessKeybo
 import { billQueries, partyQueries } from "@/lib/database";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { BillView } from "@/components/BillView";
+import { BillEditor } from "@/components/BillEditor";
 import {
   Table,
   TableBody,
@@ -44,6 +45,8 @@ interface Bill {
   party_id: string;
   party_code?: string;
   party_name?: string;
+  broker_code?: string;
+  broker_name?: string;
   bill_date: string;
   due_date: string | null;
   total_amount: number;
@@ -59,7 +62,7 @@ const Bills = () => {
   const [bills, setBills] = useState<Bill[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [currentView, setCurrentView] = useState<'form' | 'list'>('list');
+  const [currentView, setCurrentView] = useState<'list' | 'form' | 'edit'>('list');
   const [editingBill, setEditingBill] = useState<Bill | null>(null);
   const [selectedRowIndex, setSelectedRowIndex] = useState<number>(0);
   const [searchTerm, setSearchTerm] = useState("");
@@ -84,9 +87,30 @@ const Bills = () => {
   });
 
   useEffect(() => {
-    fetchBills();
     fetchParties();
   }, []);
+
+  // Fetch bills based on bill type from search params
+  useEffect(() => {
+    const fetchBillsByType = async () => {
+      setIsLoading(true);
+      try {
+        const type = searchParams.get('type') as 'party' | 'broker' | null;
+        const result = await billQueries.getAll(type || undefined);
+        setBills(result || []);
+      } catch (error) {
+        console.error('Error fetching bills:', error);
+        toast({
+          title: "Error",
+          description: "Failed to fetch bills",
+          variant: "destructive",
+        });
+      }
+      setIsLoading(false);
+    };
+    
+    fetchBillsByType();
+  }, [searchParams]);
 
   // Filter bills based on search term
   useEffect(() => {
@@ -114,7 +138,8 @@ const Bills = () => {
   const fetchBills = async () => {
     setIsLoading(true);
     try {
-      const result = await billQueries.getAll();
+      const type = searchParams.get('type') as 'party' | 'broker' | null;
+      const result = await billQueries.getAll(type || undefined);
       setBills(result || []);
     } catch (error) {
       console.error('Error fetching bills:', error);
@@ -173,7 +198,9 @@ const Bills = () => {
         toast({ title: "Success", description: "Bill updated successfully" });
         setCurrentView('list');
         resetForm();
-        fetchBills();
+        const type = searchParams.get('type') as 'party' | 'broker' | null;
+        const result = await billQueries.getAll(type || undefined);
+        setBills(result || []);
       } else {
         await billQueries.create(billData);
         toast({ 
@@ -211,7 +238,9 @@ const Bills = () => {
             </div>
           ),
         });
-        fetchBills();
+        const type2 = searchParams.get('type') as 'party' | 'broker' | null;
+        const result2 = await billQueries.getAll(type2 || undefined);
+        setBills(result2 || []);
       }
     } catch (error) {
       console.error('Error saving bill:', error);
@@ -237,6 +266,25 @@ const Bills = () => {
     setCurrentView('form');
   };
 
+  const handleEditBill = async (bill: Bill) => {
+    try {
+      // Try to fetch the bill details to ensure we have the latest data
+      const updatedBill = await billQueries.getById(bill.id);
+      setEditingBill(updatedBill);
+      setCurrentView('edit');
+    } catch (error) {
+      console.error("Error fetching bill details:", error);
+      toast({
+        title: "Error",
+        description: "Failed to load bill details. Please try again.",
+        variant: "destructive",
+      });
+      // Still proceed with the existing bill data
+      setEditingBill(bill);
+      setCurrentView('edit');
+    }
+  };
+
   const handleDelete = (bill: Bill) => {
     setBillToDelete(bill);
     setDeleteDialogOpen(true);
@@ -252,12 +300,33 @@ const Bills = () => {
         description: `Bill "${billToDelete.bill_number}" deleted successfully`,
         variant: "default"
       });
-      fetchBills();
+      const type = searchParams.get('type') as 'party' | 'broker' | null;
+      const result = await billQueries.getAll(type || undefined);
+      setBills(result || []);
     } catch (error) {
       console.error('Error deleting bill:', error);
       toast({
         title: "Error",
         description: "Failed to delete bill",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleSaveEditedBill = async (updatedBill: Bill) => {
+    try {
+      await billQueries.update(updatedBill.id, updatedBill);
+      toast({ title: "Success", description: "Bill updated successfully" });
+      setCurrentView('list');
+      setEditingBill(null);
+      const type = searchParams.get('type') as 'party' | 'broker' | null;
+      const result = await billQueries.getAll(type || undefined);
+      setBills(result || []);
+    } catch (error) {
+      console.error('Error saving bill:', error);
+      toast({
+        title: "Error",
+        description: "Failed to save bill",
         variant: "destructive",
       });
     }
@@ -290,7 +359,7 @@ const Bills = () => {
       }
     },
     onCancel: () => {
-      if (currentView === 'form') {
+      if (currentView === 'form' || currentView === 'edit') {
         setCurrentView('list');
         resetForm();
       }
@@ -388,11 +457,13 @@ const Bills = () => {
                       <SelectValue placeholder="Select party" />
                     </SelectTrigger>
                     <SelectContent>
-                      {parties.map((party) => (
-                        <SelectItem key={party.id} value={party.id}>
-                          {party.party_code} - {party.name}
-                        </SelectItem>
-                      ))}
+                      {parties
+                        .filter(party => party.id && party.id.trim() !== "")
+                        .map((party) => (
+                          <SelectItem key={party.id} value={party.id}>
+                            {party.party_code} - {party.name}
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -636,8 +707,22 @@ const Bills = () => {
                   >
                     <TableCell className="font-mono text-sm font-medium">{bill.bill_number}</TableCell>
                     <TableCell>
-                      <div className="font-medium">{bill.party_code}</div>
-                      <div className="text-sm text-muted-foreground">{bill.party_name}</div>
+                      <div className="font-medium">
+                        {bill.bill_type === 'broker' ? (
+                          bill.broker_code ? (
+                            <span className="text-blue-600">{bill.broker_code}</span>
+                          ) : (
+                            <span className="text-blue-600">Broker Bill</span>
+                          )
+                        ) : (
+                          bill.party_code
+                        )}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {bill.bill_type === 'broker' ? (
+                          bill.broker_name || 'Brokerage Bill'
+                        ) : bill.party_name}
+                      </div>
                     </TableCell>
                     <TableCell className="text-sm">{new Date(bill.bill_date).toLocaleDateString()}</TableCell>
                     <TableCell className="text-sm">
@@ -671,7 +756,7 @@ const Bills = () => {
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleEdit(bill)}
+                          onClick={() => handleEditBill(bill)}
                           className="hover:bg-primary/10 hover:text-primary"
                         >
                           <Pencil className="w-4 h-4" />
@@ -686,6 +771,7 @@ const Bills = () => {
                         </Button>
                       </div>
                     </TableCell>
+
                   </TableRow>
                 ))
               )}
@@ -699,7 +785,17 @@ const Bills = () => {
   // Main render based on current view
   return (
     <>
-      {currentView === 'form' ? renderFormView() : renderListView()}
+      {currentView === 'form' ? renderFormView() : 
+       currentView === 'edit' && editingBill ? (
+        <BillEditor 
+          bill={editingBill} 
+          onSave={handleSaveEditedBill} 
+          onCancel={() => {
+            setCurrentView('list');
+            setEditingBill(null);
+          }} 
+        />
+      ) : renderListView()}
       
       <ConfirmDialog
         open={deleteDialogOpen}

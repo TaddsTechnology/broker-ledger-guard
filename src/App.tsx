@@ -19,9 +19,12 @@ import Contracts from "./pages/Contracts";
 import Bills from "./pages/Bills";
 import Reports from "./pages/Reports";
 import Ledger from "./pages/Ledger";
+import LedgerBills from "./pages/LedgerBills";
 import Settings from "./pages/Settings";
 import DataManagement from "./pages/DataManagement";
+import BrokerMaster from "./pages/BrokerMaster";
 import NotFound from "./pages/NotFound";
+import BrokerBill from "./pages/BrokerBill";
 
 const queryClient = new QueryClient();
 
@@ -67,15 +70,18 @@ const AppContent = () => {
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/master/party" element={<PartyMaster />} />
+            <Route path="/master/broker" element={<BrokerMaster />} />
             <Route path="/master/company" element={<CompanyMaster />} />
             <Route path="/master/settlement" element={<SettlementMaster />} />
             <Route path="/trading" element={<Trading />} />
             <Route path="/contracts" element={<Contracts />} />
             <Route path="/bills" element={<Bills />} />
+            <Route path="/bills/broker" element={<BrokerBill />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/reports/party" element={<Reports />} />
             <Route path="/reports/trading" element={<Reports />} />
             <Route path="/ledger" element={<Ledger />} />
+            <Route path="/ledger/bills" element={<LedgerBills />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/settings/data" element={<DataManagement />} />
             <Route path="*" element={<NotFound />} />

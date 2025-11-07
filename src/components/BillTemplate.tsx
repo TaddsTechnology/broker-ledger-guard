@@ -22,6 +22,7 @@ interface BillData {
   tradingBrokerageAmount?: number;
   deliverySlab?: number;
   tradingSlab?: number;
+  notes?: string; // Add notes property
   transactions: {
     security: string;
     trades: {
@@ -255,8 +256,8 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                           <td>${Number(trade.quantity).toFixed(0)}</td>
                           <td>${Number(trade.price).toFixed(2)}</td>
                           <td>${Number(trade.amount).toFixed(2)}</td>
-                          <td>${trade.deliveryTrading === 'D' ? 'Delivery' : trade.deliveryTrading === 'T' ? 'Trading' : ''}</td>
-                          ${billData.billType === 'broker' && trade.brokerageAmount !== undefined ? `<td>${Number(trade.brokerageAmount).toFixed(2)}</td>` : ''}
+                          <td>${trade.deliveryTrading === 'D' ? 'D' : trade.deliveryTrading === 'T' ? 'T' : ''}</td>
+                          ${billData.billType === 'broker' && trade.brokerageAmount !== undefined ? `<td>${Number(trade.brokerageAmount).toFixed(2)}</td>` : billData.billType === 'broker' ? '<td></td>' : ''}
                         </tr>
                       `).join('')}
                     </tbody>
@@ -268,6 +269,15 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                 </div>
               `).join('')}
             </div>
+            
+            ${billData.notes ? `
+            <div class="notes-section">
+              <h3>Notes</h3>
+              <div style="border: 1px solid #ccc; border-radius: 5px; padding: 15px; background-color: #f9f9f9; white-space: pre-wrap;">
+                ${billData.notes}
+              </div>
+            </div>
+            ` : ''}
             
             <div class="footer">
               <div>Bill Number: ${billData.billNumber}</div>
@@ -334,6 +344,13 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
         billText += `   Subtotal: ₹${Number(transaction.subtotal).toFixed(2)}\n\n`;
       }
     });
+    
+    // Add notes to the text version if they exist
+    if (billData.notes) {
+      billText += `NOTES\n`;
+      billText += `-----\n`;
+      billText += `${billData.notes}\n\n`;
+    }
     
     billText += `---\n`;
     billText += `Generated on: ${new Date().toLocaleString()}\n`;
@@ -512,12 +529,13 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                             <td className="p-2">{Number(trade.price).toFixed(2)}</td>
                             <td className="p-2 text-right">{Number(trade.amount).toFixed(2)}</td>
                             <td className="p-2">
-                              {trade.deliveryTrading === 'D' ? 'Delivery' : 
-                               trade.deliveryTrading === 'T' ? 'Trading' : ''}
+                              {trade.deliveryTrading === 'D' ? 'D' : 
+                               trade.deliveryTrading === 'T' ? 'T' : 
+                               ''}
                             </td>
-                            {billData.billType === 'broker' && trade.brokerageAmount !== undefined && (
+                            {billData.billType === 'broker' && (
                               <td className="p-2 text-right">
-                                {Number(trade.brokerageAmount).toFixed(2)}
+                                {trade.brokerageAmount !== undefined ? Number(trade.brokerageAmount).toFixed(2) : ''}
                               </td>
                             )}
                           </tr>
@@ -538,6 +556,17 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
               ))}
             </div>
           </div>
+          
+          {/* Notes Section */}
+          {/* Hidden as per user request - Notes section is not displayed */}
+          {/* {billData.notes && (
+            <div className="mt-8">
+              <h3 className="font-semibold mb-3">Notes</h3>
+              <div className="border rounded-lg p-4 bg-muted/50 whitespace-pre-wrap">
+                {billData.notes}
+              </div>
+            </div>
+          )} */}
           
           {/* Footer */}
           <div className="border-t pt-4 mt-6 text-center text-sm text-muted-foreground">
