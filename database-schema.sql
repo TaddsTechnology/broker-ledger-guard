@@ -120,14 +120,11 @@ CREATE TABLE IF NOT EXISTS bill_items (
     amount DECIMAL(15,2) NOT NULL,
     client_code VARCHAR(50),
     company_code VARCHAR(50),
-    trade_type VARCHAR(10) CHECK (trade_type IN ('T', 'D')),  -- Add trade type field (T for Trading, D for Delivery)
     brokerage_rate_pct DECIMAL(5,2) DEFAULT 0.00,
     brokerage_amount DECIMAL(15,2) DEFAULT 0.00,
+    trade_type VARCHAR(1) CHECK (trade_type IN ('D', 'T')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
-
--- Add trade_type column to existing bill_items table (for existing databases)
-ALTER TABLE bill_items ADD COLUMN IF NOT EXISTS trade_type VARCHAR(10) CHECK (trade_type IN ('T', 'D'));
 
 -- Create payments table
 CREATE TABLE IF NOT EXISTS payments (

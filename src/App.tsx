@@ -143,8 +143,8 @@ const App = () => {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <Toaster />
-        <Sonner />
+        <Toaster duration={1000} />
+        <Sonner duration={1000} />
         <BrowserRouter>
           <SidebarProvider defaultOpen>
             <AppContent />

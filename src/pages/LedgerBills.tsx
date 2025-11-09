@@ -43,6 +43,8 @@ interface LedgerEntry {
   credit_amount: number;
   balance: number;
   created_at: string;
+  reference_type?: string;
+  reference_id?: string;
   // Add bill reference if this entry is related to a bill
   bill_id?: string;
   bill_number?: string;
@@ -126,20 +128,27 @@ const LedgerBills = () => {
     for (const entry of entries) {
       const enhancedEntry = { ...entry };
       
+      // If entry already has reference_id, use it as bill_id
+      if (entry.reference_id) {
+        enhancedEntry.bill_id = entry.reference_id;
+      }
+      
       // Try to extract bill number from particulars
-      // Look for patterns like "Bill BRK20251104-215" or "bill BRK20251104-215"
-      const billNumberMatch = entry.particulars.match(/(?:Bill|bill)\s+([A-Z0-9-]+)/i);
+      // Look for patterns like "Bill PTY20251104-215" or "Bill BRK20251104-215"
+      const billNumberMatch = entry.particulars.match(/Bill\s+((?:PTY|BRK)\d{8}-\d{3})/i);
       if (billNumberMatch) {
         enhancedEntry.bill_number = billNumberMatch[1];
         
-        // Try to find the bill ID by bill number
-        try {
-          const bill = await billQueries.getByNumber(billNumberMatch[1]);
-          if (bill && bill.id) {
-            enhancedEntry.bill_id = bill.id;
+        // If we don't have bill_id yet, try to find it by bill number
+        if (!enhancedEntry.bill_id) {
+          try {
+            const bill = await billQueries.getByNumber(billNumberMatch[1]);
+            if (bill && bill.id) {
+              enhancedEntry.bill_id = bill.id;
+            }
+          } catch (error) {
+            console.error('Error fetching bill info:', error);
           }
-        } catch (error) {
-          console.error('Error fetching bill info:', error);
         }
       }
       

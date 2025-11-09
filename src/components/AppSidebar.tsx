@@ -79,12 +79,12 @@ const menuItems: MenuItem[] = [
         ]
       },
       { 
-        title: "Ledger", 
+        title: "Payments & Ledger", 
         url: "/ledger",
         icon: BookOpen,
         submenu: [
-          { title: "All Entries", url: "/ledger", icon: FileText },
-          { title: "Bill Transactions", url: "/ledger/bills", icon: FileText },
+          { title: "All Transactions", url: "/ledger", icon: BookOpen },
+          { title: "Ledger Bills", url: "/ledger/bills", icon: Receipt },
         ]
       },
     ]

@@ -163,7 +163,7 @@ export const useTableNavigation = (items: any[], selectedIndex: number, setSelec
   }, [handleKeyDown]);
 };
 
-// Enhanced form field navigation (Tab/Enter/Arrow sequence)
+// Enhanced form field navigation (Tab/Enter sequence)
 export const useFormNavigation = (formRef: React.RefObject<HTMLFormElement>, onSubmit?: () => void) => {
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (!formRef.current) return;
@@ -175,10 +175,6 @@ export const useFormNavigation = (formRef: React.RefObject<HTMLFormElement>, onS
     
     const currentIndex = formElements.indexOf(target);
     
-    // Check if we're in a text input and cursor is at start/end
-    const isTextInput = target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'text';
-    const isTextarea = target.tagName === 'TEXTAREA';
-    
     if (e.key === 'Enter' && target.tagName !== 'TEXTAREA' && target.tagName !== 'BUTTON') {
       e.preventDefault();
       
@@ -189,45 +185,6 @@ export const useFormNavigation = (formRef: React.RefObject<HTMLFormElement>, onS
       } else if (onSubmit) {
         // Reached end of form, submit
         onSubmit();
-      }
-    }
-    
-    // Arrow Right - Move to next field (only if cursor is at end or not in text field)
-    if (e.key === 'ArrowRight' && !isTextarea) {
-      if (isTextInput) {
-        const input = target as HTMLInputElement;
-        const cursorAtEnd = input.selectionStart === input.value.length;
-        if (!cursorAtEnd) return; // Let cursor move naturally
-      }
-      
-      e.preventDefault();
-      const nextIndex = currentIndex + 1;
-      if (nextIndex < formElements.length) {
-        formElements[nextIndex].focus();
-        // If it's a text input, move cursor to start
-        if (formElements[nextIndex] instanceof HTMLInputElement) {
-          (formElements[nextIndex] as HTMLInputElement).setSelectionRange(0, 0);
-        }
-      }
-    }
-    
-    // Arrow Left - Move to previous field (only if cursor is at start or not in text field)
-    if (e.key === 'ArrowLeft' && !isTextarea) {
-      if (isTextInput) {
-        const input = target as HTMLInputElement;
-        const cursorAtStart = input.selectionStart === 0;
-        if (!cursorAtStart) return; // Let cursor move naturally
-      }
-      
-      e.preventDefault();
-      const prevIndex = currentIndex - 1;
-      if (prevIndex >= 0) {
-        formElements[prevIndex].focus();
-        // If it's a text input, move cursor to end
-        if (formElements[prevIndex] instanceof HTMLInputElement) {
-          const input = formElements[prevIndex] as HTMLInputElement;
-          input.setSelectionRange(input.value.length, input.value.length);
-        }
       }
     }
     

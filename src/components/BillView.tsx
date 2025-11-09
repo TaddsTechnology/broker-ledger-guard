@@ -207,19 +207,24 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
     // Extract broker/client info from notes if this is a broker bill
     let partyCode = bill.party_code || 'Unknown';
     let partyName = bill.party_name || 'Unknown Party';
+    let brokerName = 'Unknown Broker';
     
     if (isBrokerBill) {
-      // Use broker_code and broker_name from bill data (fetched from broker_master)
-      partyCode = bill.broker_code || 'Unknown';
-      partyName = bill.broker_name || 'Unknown Broker';
+      // Use broker_code from bill data
+      const brokerCode = bill.broker_code || 'Unknown';
       
-      // Fall back to extracting from notes if not available
-      if ((!bill.broker_code || !bill.broker_name) && bill.notes) {
-        const brokerCodeMatch = bill.notes.match(/Broker Code: ([^\n]+)/);
-        if (brokerCodeMatch) partyCode = brokerCodeMatch[1];
-        
-        const brokerNameMatch = bill.notes.match(/Broker Name: ([^\n]+)/);
-        if (brokerNameMatch) partyName = brokerNameMatch[1];
+      // Fetch broker name from broker_master table
+      if (brokerCode && brokerCode !== 'Unknown') {
+        try {
+          const response = await fetch(`http://localhost:3001/api/brokers`);
+          const brokers = await response.json();
+          const broker = brokers.find((b: any) => b.broker_code.toUpperCase() === brokerCode.toUpperCase());
+          if (broker) {
+            brokerName = broker.name;
+          }
+        } catch (error) {
+          console.error('Error fetching broker:', error);
+        }
       }
       
       // Extract unique client codes from items for display
@@ -237,13 +242,25 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
           });
           
           partyCode = partyNames.join(', ');
-          partyName = `Broker: ${partyName}`;
+          partyName = `Broker: ${brokerName}`;
         } catch (error) {
           console.error('Error fetching parties:', error);
           partyCode = clientCodes.join(', ');
+          partyName = `Broker: ${brokerName}`;
         }
+      } else {
+        // No client codes found, just show broker info
+        partyCode = brokerCode;
+        partyName = `Broker: ${brokerName}`;
       }
     }
+    
+    // Calculate total transaction value (sum of all item amounts)
+    const totalTransactionValue = items.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
+    
+    // Calculate average brokerage rate
+    const totalBrokerage = deliveryBrokerageAmount + tradingBrokerageAmount;
+    const brokerageRate = totalTransactionValue > 0 ? totalBrokerage / totalTransactionValue : 0;
     
     const billData: BillData = {
       billNumber: bill.bill_number,
@@ -258,10 +275,13 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
       deliveryAmount,
       tradingAmount,
       billType: bill.bill_type || 'party',
+      totalTransactionValue,
+      brokerageRate,
       deliveryBrokerageAmount,
       tradingBrokerageAmount,
       deliverySlab: 0, // Not available in database items
       tradingSlab: 0, // Not available in database items
+      brokerId: bill.broker_code,
       transactions
     };
     
@@ -272,10 +292,22 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
   const parseBillNotes = (bill: Bill) => {
     // If no notes, create minimal bill data from bill fields
     if (!bill.notes) {
+      const isBrokerBill = bill.bill_type === 'broker';
+      let partyCode = 'Unknown';
+      let partyName = 'Unknown';
+      
+      if (isBrokerBill) {
+        partyCode = bill.broker_code || 'Unknown';
+        partyName = bill.broker_name || 'Unknown Broker';
+      } else {
+        partyCode = bill.party_code || 'Unknown';
+        partyName = bill.party_name || 'Unknown Party';
+      }
+      
       const parsedBillData: BillData = {
         billNumber: bill.bill_number,
-        partyCode: bill.party_code || 'Unknown',
-        partyName: bill.party_name || 'Unknown Party',
+        partyCode,
+        partyName,
         billDate: bill.bill_date ? new Date(bill.bill_date).toLocaleDateString() : new Date().toLocaleDateString(),
         fileName: 'Unknown',
         totalTransactions: 0,
@@ -476,10 +508,22 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
     } catch (error) {
       console.error("Error parsing bill notes:", error);
       // Even if parsing fails, create minimal bill data from bill fields
+      const isBrokerBill = bill.bill_type === 'broker';
+      let partyCode = 'Unknown';
+      let partyName = 'Unknown';
+      
+      if (isBrokerBill) {
+        partyCode = bill.broker_code || 'Unknown';
+        partyName = bill.broker_name || 'Unknown Broker';
+      } else {
+        partyCode = bill.party_code || 'Unknown';
+        partyName = bill.party_name || 'Unknown Party';
+      }
+      
       const fallbackBillData: BillData = {
         billNumber: bill.bill_number,
-        partyCode: bill.party_code || 'Unknown',
-        partyName: bill.party_name || 'Unknown Party',
+        partyCode,
+        partyName,
         billDate: bill.bill_date ? new Date(bill.bill_date).toLocaleDateString() : new Date().toLocaleDateString(),
         fileName: 'Unknown',
         totalTransactions: 0,
@@ -504,25 +548,39 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
 
   return (
     <BillTemplate 
-      billData={billData || {
-        billNumber: bill.bill_number || 'Unknown',
-        partyCode: bill.party_code || 'Unknown',
-        partyName: bill.party_name || 'Unknown Party',
-        billDate: bill.bill_date ? new Date(bill.bill_date).toLocaleDateString() : new Date().toLocaleDateString(),
-        fileName: 'Unknown',
-        totalTransactions: 0,
-        buyAmount: 0,
-        sellAmount: 0,
-        netAmount: bill.total_amount ? Number(bill.total_amount) : 0,
-        deliveryAmount: 0,
-        tradingAmount: 0,
-        billType: bill.bill_type || 'party',
-        deliveryBrokerageAmount: 0,
-        tradingBrokerageAmount: 0,
-        deliverySlab: 0,
-        tradingSlab: 0,
-        transactions: []
-      }} 
+      billData={billData || (() => {
+        const isBrokerBill = bill.bill_type === 'broker';
+        let partyCode = 'Unknown';
+        let partyName = 'Unknown';
+        
+        if (isBrokerBill) {
+          partyCode = bill.broker_code || 'Unknown';
+          partyName = bill.broker_name || 'Unknown Broker';
+        } else {
+          partyCode = bill.party_code || 'Unknown';
+          partyName = bill.party_name || 'Unknown Party';
+        }
+        
+        return {
+          billNumber: bill.bill_number || 'Unknown',
+          partyCode,
+          partyName,
+          billDate: bill.bill_date ? new Date(bill.bill_date).toLocaleDateString() : new Date().toLocaleDateString(),
+          fileName: 'Unknown',
+          totalTransactions: 0,
+          buyAmount: 0,
+          sellAmount: 0,
+          netAmount: bill.total_amount ? Number(bill.total_amount) : 0,
+          deliveryAmount: 0,
+          tradingAmount: 0,
+          billType: bill.bill_type || 'party',
+          deliveryBrokerageAmount: 0,
+          tradingBrokerageAmount: 0,
+          deliverySlab: 0,
+          tradingSlab: 0,
+          transactions: []
+        };
+      })()} 
       open={open} 
       onOpenChange={onOpenChange} 
     />

@@ -3,7 +3,6 @@ import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { useToast } from "@/hooks/use-toast";
 
 interface BillItem {
   expiryDate: string | null;
@@ -32,7 +31,6 @@ interface BillSummary {
 interface BrokerBillData {
   brokerId: string;
   clients: string[];
-  clientPartyMap?: { [key: string]: string }; // Map of client code to party name
   items: BillItem[];
   summary: BillSummary;
 }
@@ -80,10 +78,8 @@ function combineBillsByBroker(bills: BrokerBillData[]): BrokerBillData | null {
 
 export default function BrokerBill() {
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bill, setBill] = useState<BrokerBillData | null>(null);
-  const { toast } = useToast();
 
   async function parseCsv(file: File): Promise<any[]> {
     const text = await file.text();
@@ -129,58 +125,6 @@ export default function BrokerBill() {
     }
   };
 
-  const handleSaveBill = async () => {
-    if (!bill) return;
-    
-    setSaving(true);
-    try {
-      // Ensure items have company_code extracted from securityName
-      const itemsWithCompanyCode = bill.items.map(item => {
-        // Extract company code from securityName if not already present
-        if (!item.company_code && item.securityName) {
-          // Use the same logic as in the backend
-          const match = item.securityName.match(/^[A-Z]+/i);
-          const code = (match ? match[0] : item.securityName).replace(/[^A-Z]/gi, '').toUpperCase();
-          return {
-            ...item,
-            company_code: code || null
-          };
-        }
-        return item;
-      });
-      
-      const res = await fetch("http://localhost:3001/api/bills/create-broker", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          brokerId: bill.brokerId,
-          brokerCode: bill.brokerId, // Also pass brokerCode for consistency
-          billDate: new Date().toISOString().split('T')[0], // Add today's date
-          items: itemsWithCompanyCode,
-        }),
-      });
-      
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "Failed to save bill");
-      
-      toast({
-        title: "Success",
-        description: "Broker bill saved successfully",
-      });
-      
-      // Reset the form after successful save
-      setBill(null);
-    } catch (err: any) {
-      toast({
-        title: "Error",
-        description: err?.message || "Failed to save broker bill",
-        variant: "destructive",
-      });
-    } finally {
-      setSaving(false);
-    }
-  };
-
   // Build client-wise subtotals
   const clientGroups = (() => {
     if (!bill) return [] as { clientId: string; items: BillItem[]; subAmount: number; subBrokerage: number; }[];
@@ -218,17 +162,7 @@ export default function BrokerBill() {
               <CardTitle className="text-clean">Broker: {bill.brokerId}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="space-y-2">
-                <div className="text-sm font-medium">Clients:</div>
-                {bill.clients.map(clientCode => (
-                  <div key={clientCode} className="text-sm text-muted-clean ml-4">
-                    <span className="font-medium">{clientCode}</span>
-                    {bill.clientPartyMap && bill.clientPartyMap[clientCode] && (
-                      <span> - {bill.clientPartyMap[clientCode]}</span>
-                    )}
-                  </div>
-                ))}
-              </div>
+              <div className="text-sm text-muted-clean">Clients: {bill.clients.join(", ")}</div>
 
               {/* Items table with client-wise grouping and subtotals */}
               <div className="rounded-lg border border-border overflow-hidden">
@@ -238,7 +172,6 @@ export default function BrokerBill() {
                       <th className="text-left px-4 py-2">Company</th>
                       <th className="text-left px-4 py-2">Security</th>
                       <th className="text-left px-4 py-2">Type</th>
-                      <th className="text-left px-4 py-2">Side</th>
                       <th className="text-right px-4 py-2">Qty</th>
                       <th className="text-right px-4 py-2">Price</th>
                       <th className="text-right px-4 py-2">Amount</th>
@@ -254,8 +187,7 @@ export default function BrokerBill() {
                           <tr key={`${group.clientId}-${idx}`} className="hover-clean">
                             <td className="px-4 py-2">{it.company_code || "-"} {it.company_name && it.company_name !== it.company_code ? `- ${it.company_name}` : ""}</td>
                             <td className="px-4 py-2">{it.securityName}</td>
-                            <td className="px-4 py-2">{it.type === 'D' ? 'Delivery' : it.type === 'T' ? 'Trading' : it.type || '-'}</td>
-                            <td className="px-4 py-2">{it.side}</td>
+                            <td className="px-4 py-2">{it.type}</td>
                             <td className="px-4 py-2 text-right">{it.quantity}</td>
                             <td className="px-4 py-2 text-right">{Number(it.price).toFixed(2)}</td>
                             <td className="px-4 py-2 text-right">{Number(it.amount).toFixed(2)}</td>
@@ -279,21 +211,13 @@ export default function BrokerBill() {
               </div>
 
               {/* Overall summary */}
-              <div className="flex justify-between items-center">
-                <div className="text-sm text-clean">
+              <div className="flex justify-end text-sm text-clean">
+                <div className="space-y-1">
                   <div>Total Items: {bill.summary.numItems}</div>
                   <div>Total Quantity: {bill.summary.totalQuantity}</div>
                   <div>Total Amount: {formatCurrency(bill.summary.totalAmount)}</div>
                   <div>Total Brokerage: {formatCurrency(bill.summary.totalBrokerage)}</div>
                 </div>
-                
-                <Button 
-                  onClick={handleSaveBill} 
-                  disabled={saving}
-                  className="bg-primary hover:bg-primary-hover"
-                >
-                  {saving ? "Saving..." : "Save Bill"}
-                </Button>
               </div>
             </CardContent>
           </Card>

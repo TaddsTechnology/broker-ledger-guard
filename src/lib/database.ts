@@ -120,18 +120,16 @@ export const billQueries = {
   getAll: (type?: 'party' | 'broker') => 
     type ? apiCall(`/bills?type=${type}`) : apiCall('/bills'),
   getById: (id: string) => apiCall(`/bills/${id}`),
-  getByNumber: (billNumber: string) => apiCall(`/bills/number/${billNumber}`), // Add this new method
-  getItems: (billId: string) => apiCall(`/bills/${billId}/items`),
+  getByNumber: (billNumber: string) => apiCall(`/bills/by-number/${billNumber}`),
+  getItems: (id: string) => apiCall(`/bills/${id}/items`),
   create: (data: {
     bill_number: string;
-    party_id: string | null;
-    broker_id?: string | null;
-    broker_code?: string | null;
+    party_id: string;
     bill_date: string;
     due_date?: string;
     total_amount: number;
     notes?: string;
-    bill_type?: 'party' | 'broker';
+    bill_type?: 'party' | 'broker'; // Add bill_type field
   }) =>
     apiCall('/bills', {
       method: 'POST',
@@ -139,25 +137,12 @@ export const billQueries = {
     }),
   update: (id: string, data: {
     bill_number: string;
-    party_id: string | null;
-    broker_id?: string | null;
-    broker_code?: string | null;
+    party_id: string;
     bill_date: string;
     due_date?: string;
     total_amount: number;
     notes?: string;
-    bill_type?: 'party' | 'broker';
-    items?: Array<{
-      description: string;
-      quantity: number;
-      rate: number;
-      amount: number;
-      client_code?: string;
-      company_code?: string;
-      trade_type?: string;  // Add trade_type field
-      brokerage_rate_pct?: number;
-      brokerage_amount?: number;
-    }>;
+    bill_type?: 'party' | 'broker'; // Add bill_type field
   }) =>
     apiCall(`/bills/${id}`, {
       method: 'PUT',

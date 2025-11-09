@@ -238,14 +238,9 @@ app.get('/api/bills', async (req, res) => {
     const { type } = req.query;
     
     let query = `
-      SELECT b.*, 
-             p.party_code, 
-             p.name as party_name,
-             br.broker_code as broker_code_name,
-             br.name as broker_name
+      SELECT b.*, p.party_code, p.name as party_name 
       FROM bills b 
       LEFT JOIN party_master p ON b.party_id = p.id
-      LEFT JOIN broker_master br ON b.broker_code = br.broker_code
     `;
     
     const params = [];
@@ -269,14 +264,10 @@ app.get('/api/bills/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
-      `SELECT b.*, 
-              p.party_code, 
-              p.name as party_name,
-              br.broker_code as broker_code_name,
-              br.name as broker_name
+      `SELECT b.*, p.party_code, p.name as party_name, bm.name as broker_name
        FROM bills b 
        LEFT JOIN party_master p ON b.party_id = p.id 
-       LEFT JOIN broker_master br ON b.broker_code = br.broker_code
+       LEFT JOIN broker_master bm ON bm.broker_code = b.broker_code
        WHERE b.id = $1`,
       [id]
     );
@@ -292,18 +283,14 @@ app.get('/api/bills/:id', async (req, res) => {
   }
 });
 
-app.get('/api/bills/number/:billNumber', async (req, res) => {
+app.get('/api/bills/by-number/:billNumber', async (req, res) => {
   try {
     const { billNumber } = req.params;
     const result = await pool.query(
-      `SELECT b.*, 
-              p.party_code, 
-              p.name as party_name,
-              br.broker_code as broker_code_name,
-              br.name as broker_name
+      `SELECT b.*, p.party_code, p.name as party_name, bm.name as broker_name
        FROM bills b 
        LEFT JOIN party_master p ON b.party_id = p.id 
-       LEFT JOIN broker_master br ON b.broker_code = br.broker_code
+       LEFT JOIN broker_master bm ON bm.broker_code = b.broker_code
        WHERE b.bill_number = $1`,
       [billNumber]
     );
@@ -319,34 +306,15 @@ app.get('/api/bills/number/:billNumber', async (req, res) => {
   }
 });
 
-// Get bill items
-app.get('/api/bills/:id/items', async (req, res) => {
-  try {
-    const { id } = req.params;
-    console.log('Fetching bill items for bill ID:', id);
-    const result = await pool.query(
-      `SELECT *, trade_type FROM bill_items WHERE bill_id = $1 ORDER BY created_at ASC`,
-      [id]
-    );
-    console.log('Bill items result for ID', id, ':', result.rows);
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Error fetching bill items:', error);
-    res.status(500).json({ error: 'Failed to fetch bill items', details: error.message });
-  }
-});
-
 app.post('/api/bills', async (req, res) => {
   try {
-    const { bill_number, party_id, broker_id, broker_code, bill_date, due_date, total_amount, notes, bill_type } = req.body;
+    const { bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type } = req.body;
     // Handle null party_id for broker bills
     const partyIdValue = party_id || null;
-    const brokerIdValue = broker_id || null;
-    const brokerCodeValue = broker_code || null;
-    console.log('Creating bill with data:', { bill_number, party_id: partyIdValue, broker_id: brokerIdValue, broker_code: brokerCodeValue, bill_date, due_date, total_amount, notes, bill_type });
+    console.log('Creating bill with data:', { bill_number, party_id: partyIdValue, bill_date, due_date, total_amount, notes, bill_type });
     const result = await pool.query(
-      'INSERT INTO bills (bill_number, party_id, broker_id, broker_code, bill_date, due_date, total_amount, notes, bill_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
-      [bill_number, partyIdValue, brokerIdValue, brokerCodeValue, bill_date, due_date, total_amount, notes, bill_type || 'party']
+      'INSERT INTO bills (bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [bill_number, partyIdValue, bill_date, due_date, total_amount, notes, bill_type || 'party']
     );
     res.json(result.rows[0]);
   } catch (error) {
@@ -356,62 +324,17 @@ app.post('/api/bills', async (req, res) => {
 });
 
 app.put('/api/bills/:id', async (req, res) => {
-  const client = await pool.connect();
   try {
-    await client.query('BEGIN');
-    
     const { id } = req.params;
-    const { bill_number, party_id, broker_id, broker_code, bill_date, due_date, total_amount, notes, bill_type, items } = req.body;
-    
-    console.log('Updating bill with ID:', id);
-    console.log('Bill data:', { bill_number, party_id, broker_id, broker_code, bill_date, due_date, total_amount, notes, bill_type });
-    console.log('Items data:', items);
-    
-    // Update bill
-    const billResult = await client.query(
-      'UPDATE bills SET bill_number = $1, party_id = $2, broker_id = $3, broker_code = $4, bill_date = $5, due_date = $6, total_amount = $7, notes = $8, bill_type = $9, updated_at = NOW() WHERE id = $10 RETURNING *',
-      [bill_number, party_id || null, broker_id || null, broker_code || null, bill_date, due_date, total_amount, notes, bill_type || 'party', id]
+    const { bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type } = req.body;
+    const result = await pool.query(
+      'UPDATE bills SET bill_number = $1, party_id = $2, bill_date = $3, due_date = $4, total_amount = $5, notes = $6, bill_type = $7, updated_at = NOW() WHERE id = $8 RETURNING *',
+      [bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type || 'party', id]
     );
-    
-    // If items are provided, update them as well
-    if (items && Array.isArray(items)) {
-      console.log('Deleting existing items for bill ID:', id);
-      // Delete existing items
-      await client.query('DELETE FROM bill_items WHERE bill_id = $1', [id]);
-      
-      console.log('Inserting', items.length, 'new items for bill ID:', id);
-      // Insert new items
-      for (const item of items) {
-        console.log('Inserting item:', item);
-        await client.query(
-          `INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, trade_type, brokerage_rate_pct, brokerage_amount)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-          [
-            id,
-            item.description,
-            item.quantity,
-            item.rate,
-            item.amount,
-            item.client_code || null,
-            item.company_code || null,
-            (item.trade_type || item.type || '').toString().trim().toUpperCase(), // Add trade_type
-            item.brokerage_rate_pct || null,
-            item.brokerage_amount || null
-          ]
-        );
-      }
-      console.log('Successfully inserted all items for bill ID:', id);
-    }
-    
-    await client.query('COMMIT');
-    console.log('Successfully updated bill with ID:', id);
-    res.json(billResult.rows[0]);
+    res.json(result.rows[0]);
   } catch (error) {
-    await client.query('ROLLBACK');
     console.error('Error updating bill:', error);
     res.status(500).json({ error: 'Failed to update bill' });
-  } finally {
-    client.release();
   }
 });
 
@@ -423,6 +346,21 @@ app.delete('/api/bills/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting bill:', error);
     res.status(500).json({ error: 'Failed to delete bill' });
+  }
+});
+
+// Get bill items
+app.get('/api/bills/:id/items', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM bill_items WHERE bill_id = $1 ORDER BY id ASC',
+      [id]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching bill items:', error);
+    res.status(500).json({ error: 'Failed to fetch bill items' });
   }
 });
 
@@ -650,31 +588,14 @@ app.post('/api/bills/preview', async (req, res) => {
       const mode = brokers.length === 1 ? 'single_broker' : 'multi_broker';
 
       // Build bills per broker, aggregating client rows
-      const billsRaw = await Promise.all(brokers.map(async (brokerId) => {
+      const billsRaw = brokers.map((brokerId) => {
         const bRows = brokerIdToRows[brokerId];
         const clientSet = new Set(bRows.map((r) => r.clientId).filter(Boolean));
         const companyCodeSet = new Set(bRows.map((r) => r.company_code).filter(Boolean));
 
-        // Fetch party names for all clients
-        const clientPartyMap = {};
-        for (const clientCode of Array.from(clientSet)) {
-          try {
-            const partyResult = await pool.query(
-              'SELECT party_code, name FROM party_master WHERE UPPER(party_code) = UPPER($1) LIMIT 1',
-              [clientCode]
-            );
-            if (partyResult.rows.length > 0) {
-              clientPartyMap[clientCode] = partyResult.rows[0].name;
-            }
-          } catch (e) {
-            console.error('Error fetching party name for', clientCode, e);
-          }
-        }
-
         return {
           brokerId,
           clients: Array.from(clientSet),
-          clientPartyMap, // Add party names mapping
           items: bRows.map((r) => ({
             expiryDate: r.expiryDate,
             securityName: r.securityName,
@@ -698,7 +619,7 @@ app.post('/api/bills/preview', async (req, res) => {
             numItems: bRows.length,
           },
         };
-      }));
+      });
 
       // Final safety: consolidate any duplicate brokerId entries into a single bill
       const brokerIdToBill = new Map();
@@ -742,8 +663,6 @@ app.post('/api/bills/preview', async (req, res) => {
 app.post('/api/bills/create-broker', async (req, res) => {
   try {
     const { brokerId, brokerCode, billDate, dueDate, items } = req.body || {};
-    console.log('Creating broker bill with params:', { brokerId, brokerCode, billDate, dueDate, itemsCount: items?.length });
-    
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'items are required' });
     }
@@ -759,300 +678,81 @@ app.post('/api/bills/create-broker', async (req, res) => {
     try {
       const q = await pool.query('SELECT id FROM broker_master WHERE UPPER(broker_code) = $1 LIMIT 1', [normBrokerCode]);
       broker_id = q.rows?.[0]?.id || null;
-      console.log('Found broker_id:', broker_id, 'for brokerCode:', normBrokerCode);
-    } catch (e) {
-      console.error('Error fetching broker_id:', e);
-    }
+    } catch (_) {}
 
-    // Load party slabs for involved clients to recalculate brokerage
-    const uniqueClients = Array.from(new Set(items.map(r => r.clientId).filter(Boolean)));
-    const partySlabMap = await getPartySlabs(uniqueClients);
-    
-    // Recalculate brokerage for each item based on Type and party slabs
-    const itemsWithRecalculatedBrokerage = items.map(item => {
-      const { brokerageRatePct, brokerageAmount } = computeBrokerageForRow(item, partySlabMap);
-      return { 
-        ...item, 
-        brokerage_rate_pct: brokerageRatePct, 
-        brokerage_amount: brokerageAmount,
-        amount: Number(item.amount) || (Number(item.quantity) * Number(item.price)) // Ensure amount is calculated
-      };
-    });
-
-    // Compute totals based on recalculated brokerage
-    const totalAmount = itemsWithRecalculatedBrokerage.reduce((s, it) => s + (Number(it.brokerage_amount) || 0), 0);
-    console.log('Computed total brokerage amount:', totalAmount);
+    // Compute totals
+    const totalAmount = items.reduce((s, it) => s + (Number(it.amount) || 0), 0);
 
     // Dates
     const now = new Date();
     const billDateStr = billDate || now.toISOString().slice(0, 10);
     const dueDateStr = dueDate || null;
 
-    // Check if a broker bill already exists for the same broker and date to prevent duplicates
-    // Use a more precise query to check for existing bills
-    console.log('Checking for existing bill with brokerCode:', normBrokerCode, 'billDate:', billDateStr);
-    const existingBill = await pool.query(
-      `SELECT id, total_amount FROM bills 
-       WHERE bill_type = 'broker' 
-       AND UPPER(broker_code) = UPPER($1) 
-       AND bill_date = $2 
-       LIMIT 1`,
-      [normBrokerCode, billDateStr]
-    );
-    console.log('Existing bill check result:', existingBill.rows);
+    // Upsert behavior: if a broker bill exists for same broker_code + bill_date, append to it
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    if (existingBill.rows.length > 0) {
-      // If bill exists, update the total amount and add items to existing bill
-      const billId = existingBill.rows[0].id;
-      const currentTotal = parseFloat(existingBill.rows[0].total_amount) || 0;
-      const newTotal = currentTotal + totalAmount;
-      console.log('Updating existing bill with ID:', billId, 'new total:', newTotal);
-
-      // Update bill total amount
-      await pool.query(
-        `UPDATE bills SET total_amount = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-        [newTotal, billId]
+      // Existing bill lookup
+      const existing = await client.query(
+        `SELECT id FROM bills WHERE bill_type = 'broker' AND UPPER(broker_code) = $1 AND bill_date = $2 LIMIT 1`,
+        [normBrokerCode, billDateStr]
       );
 
-      // Insert new items with recalculated brokerage
-      console.log('Inserting', itemsWithRecalculatedBrokerage.length, 'items into existing bill');
-      const insertItem = `INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, trade_type, brokerage_rate_pct, brokerage_amount)
-                          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`;
-      for (const it of itemsWithRecalculatedBrokerage) {
-        console.log('Inserting item:', it);
-        try {
-          // Ensure company_code is extracted from securityName if not provided
-          const companyInfo = it.company_code ? { company_code: it.company_code } : extractCompanyFromSecurityName(it.securityName);
-          
-          await pool.query(insertItem, [
-            billId,
-            it.securityName || `${it.company_code || ''}`,
-            Number(it.quantity) || 0,
-            Number(it.price) || 0,
-            Number(it.amount) || 0,
-            (it.clientId || '').toString().trim().toUpperCase(),
-            companyInfo.company_code || null,
-            (it.type || '').toString().trim().toUpperCase(),  // Add trade_type
-            Number(it.brokerage_rate_pct) || 0,
-            Number(it.brokerage_amount) || 0,
-          ]);
-          console.log('Successfully inserted item for bill ID:', billId);
-        } catch (insertError) {
-          console.error('Error inserting item:', insertError);
-        }
-      }
+      let billId;
+      if (existing.rows.length > 0) {
+        billId = existing.rows[0].id;
+        // Update totals
+        await client.query(`UPDATE bills SET total_amount = total_amount + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`, [totalAmount, billId]);
+      } else {
+        // Create new bill number
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        const suffix = String(Math.floor(Math.random() * 900) + 100);
+        const billNumber = `BRK${y}${m}${d}-${suffix}`;
 
-      // Create ledger entry for the broker (to track what we owe the broker)
-      try {
-        const ledgerInsert = `INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance)
-                             VALUES ($1, $2, $3, $4, $5, $6)`;
-        const particulars = `Additional brokerage for bill BRK${billDateStr.replace(/-/g, '').slice(2)}-${billId.slice(0, 3)}`;
-        // Credit to broker (we owe them this amount)
-        await pool.query(ledgerInsert, [
-          null, // party_id is null for broker entries
+        const insertBill = `INSERT INTO bills (bill_number, party_id, broker_id, broker_code, bill_date, due_date, total_amount, paid_amount, status, notes, bill_type)
+                            VALUES ($1, NULL, $2, $3, $4, $5, $6, 0.00, 'pending', NULL, 'broker') RETURNING id`;
+        const billRes = await client.query(insertBill, [
+          billNumber,
+          broker_id,
+          normBrokerCode,
           billDateStr,
-          particulars,
-          0, // debit_amount
-          totalAmount, // credit_amount (the additional brokerage amount)
-          0 // balance
+          dueDateStr,
+          totalAmount,
         ]);
-        console.log('Created broker ledger entry for additional brokerage');
-      } catch (ledgerError) {
-        console.error('Error creating broker ledger entry:', ledgerError);
+        billId = billRes.rows[0].id;
       }
 
-      // Create party ledger entries - add brokerage to each party's debit
-      try {
-        // Group items by client_code to get brokerage per party
-        const partyBrokerageMap = new Map();
-        for (const item of itemsWithRecalculatedBrokerage) {
-          const clientCode = (item.clientId || '').toString().trim().toUpperCase();
-          if (clientCode) {
-            const currentAmount = partyBrokerageMap.get(clientCode) || 0;
-            partyBrokerageMap.set(clientCode, currentAmount + (Number(item.brokerage_amount) || 0));
-          }
-        }
-
-        // Create ledger entries for each party
-        for (const [clientCode, brokerageAmount] of partyBrokerageMap.entries()) {
-          // Get party_id from party_code
-          const partyResult = await pool.query(
-            'SELECT id FROM party_master WHERE UPPER(party_code) = UPPER($1) LIMIT 1',
-            [clientCode]
-          );
-          
-          if (partyResult.rows.length > 0) {
-            const partyId = partyResult.rows[0].id;
-            
-            // Get current balance for this party
-            const balanceResult = await pool.query(
-              'SELECT balance FROM ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
-              [partyId]
-            );
-            const currentBalance = balanceResult.rows.length > 0 ? Number(balanceResult.rows[0].balance) : 0;
-            const newBalance = currentBalance + brokerageAmount;
-
-            const ledgerInsert = `INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance)
-                                 VALUES ($1, $2, $3, $4, $5, $6)`;
-            const billNumberShort = `BRK${billDateStr.replace(/-/g, '').slice(2)}-${billId.slice(0, 3)}`;
-            const particulars = `Brokerage charges - Bill ${billNumberShort}`;
-            
-            await pool.query(ledgerInsert, [
-              partyId,
-              billDateStr,
-              particulars,
-              brokerageAmount, // debit_amount - party owes this amount
-              0, // credit_amount
-              newBalance // updated balance
-            ]);
-            console.log(`Created party ledger entry for client ${clientCode}, amount: ${brokerageAmount}`);
-          }
-        }
-      } catch (partyLedgerError) {
-        console.error('Error creating party ledger entries:', partyLedgerError);
-      }
-
-      return res.json({ ok: true, bill_id: billId, message: 'Items added to existing bill' });
-    } else {
-      // Create new bill if none exists
-      console.log('No existing bill found, creating new bill for brokerCode:', normBrokerCode, 'billDate:', billDateStr);
-      const y = now.getFullYear();
-      const m = String(now.getMonth() + 1).padStart(2, '0');
-      const d = String(now.getDate()).padStart(2, '0');
-      
-      // Generate a unique bill number to prevent duplicates
-      const getRandomSuffix = () => String(Math.floor(Math.random() * 900) + 100);
-      let billNumber = `BRK${y}${m}${d}-${getRandomSuffix()}`;
-      
-      // Check if this bill number already exists and generate a new one if needed
-      let billExists = true;
-      let attempts = 0;
-      while (billExists && attempts < 10) {
-        const check = await pool.query('SELECT id FROM bills WHERE bill_number = $1 LIMIT 1', [billNumber]);
-        billExists = check.rows.length > 0;
-        if (billExists) {
-          billNumber = `BRK${y}${m}${d}-${getRandomSuffix()}`;
-          attempts++;
-        } else {
-          break;
-        }
-      }
-
-      const insertBill = `INSERT INTO bills (bill_number, party_id, broker_id, broker_code, bill_date, due_date, total_amount, paid_amount, status, notes, bill_type)
-                          VALUES ($1, NULL, $2, $3, $4, $5, $6, 0.00, 'pending', NULL, 'broker') RETURNING id`;
-      const billRes = await pool.query(insertBill, [
-        billNumber,
-        broker_id,  // This will be null if broker not found, which is correct
-        normBrokerCode,
-        billDateStr,
-        dueDateStr,
-        totalAmount,
-      ]);
-      const billId = billRes.rows[0].id;
-      console.log('Created new bill with ID:', billId, 'billNumber:', billNumber);
-
-      // Insert items with recalculated brokerage
-      console.log('Inserting', itemsWithRecalculatedBrokerage.length, 'items into new bill');
-      const insertItem = `INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, trade_type, brokerage_rate_pct, brokerage_amount)
-                          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`;
-      for (const it of itemsWithRecalculatedBrokerage) {
-        console.log('Inserting item:', it);
-        try {
-          // Ensure company_code is extracted from securityName if not provided
-          const companyInfo = it.company_code ? { company_code: it.company_code } : extractCompanyFromSecurityName(it.securityName);
-          
-          await pool.query(insertItem, [
-            billId,
-            it.securityName || `${it.company_code || ''}`,
-            Number(it.quantity) || 0,
-            Number(it.price) || 0,
-            Number(it.amount) || 0,
-            (it.clientId || '').toString().trim().toUpperCase(),
-            companyInfo.company_code || null,
-            (it.type || '').toString().trim().toUpperCase(),  // Add trade_type
-            Number(it.brokerage_rate_pct) || 0,
-            Number(it.brokerage_amount) || 0,
-          ]);
-          console.log('Successfully inserted item for bill ID:', billId);
-        } catch (insertError) {
-          console.error('Error inserting item:', insertError);
-        }
-      }
-
-      // Create ledger entry for the broker (to track what we owe the broker)
-      try {
-        const ledgerInsert = `INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance)
-                             VALUES ($1, $2, $3, $4, $5, $6)`;
-        const particulars = `Brokerage for bill ${billNumber}`;
-        // Credit to broker (we owe them this amount)
-        await pool.query(ledgerInsert, [
-          null, // party_id is null for broker entries
-          billDateStr,
-          particulars,
-          0, // debit_amount
-          totalAmount, // credit_amount (total brokerage amount)
-          0 // balance
+      const insertItem = `INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount)
+                          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
+      for (const it of items) {
+        await client.query(insertItem, [
+          billId,
+          it.securityName || `${it.company_code || ''}`,
+          Number(it.quantity) || 0,
+          Number(it.price) || 0,
+          Number(it.amount) || 0,
+          (it.clientId || '').toString().trim().toUpperCase(),
+          (it.company_code || null),
+          Number(it.brokerage_rate_pct) || 0,
+          Number(it.brokerage_amount) || 0,
         ]);
-        console.log('Created broker ledger entry for bill:', billNumber);
-      } catch (ledgerError) {
-        console.error('Error creating broker ledger entry:', ledgerError);
       }
 
-      // Create party ledger entries - add brokerage to each party's debit
-      try {
-        // Group items by client_code to get brokerage per party
-        const partyBrokerageMap = new Map();
-        for (const item of itemsWithRecalculatedBrokerage) {
-          const clientCode = (item.clientId || '').toString().trim().toUpperCase();
-          if (clientCode) {
-            const currentAmount = partyBrokerageMap.get(clientCode) || 0;
-            partyBrokerageMap.set(clientCode, currentAmount + (Number(item.brokerage_amount) || 0));
-          }
-        }
-
-        // Create ledger entries for each party
-        for (const [clientCode, brokerageAmount] of partyBrokerageMap.entries()) {
-          // Get party_id from party_code
-          const partyResult = await pool.query(
-            'SELECT id FROM party_master WHERE UPPER(party_code) = UPPER($1) LIMIT 1',
-            [clientCode]
-          );
-          
-          if (partyResult.rows.length > 0) {
-            const partyId = partyResult.rows[0].id;
-            
-            // Get current balance for this party
-            const balanceResult = await pool.query(
-              'SELECT balance FROM ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
-              [partyId]
-            );
-            const currentBalance = balanceResult.rows.length > 0 ? Number(balanceResult.rows[0].balance) : 0;
-            const newBalance = currentBalance + brokerageAmount;
-
-            const ledgerInsert = `INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance)
-                                 VALUES ($1, $2, $3, $4, $5, $6)`;
-            const particulars = `Brokerage charges - Bill ${billNumber}`;
-            
-            await pool.query(ledgerInsert, [
-              partyId,
-              billDateStr,
-              particulars,
-              brokerageAmount, // debit_amount - party owes this amount
-              0, // credit_amount
-              newBalance // updated balance
-            ]);
-            console.log(`Created party ledger entry for client ${clientCode}, amount: ${brokerageAmount}`);
-          }
-        }
-      } catch (partyLedgerError) {
-        console.error('Error creating party ledger entries:', partyLedgerError);
-      }
-
-      return res.json({ ok: true, bill_id: billId, message: 'New bill created' });
+      await client.query('COMMIT');
+      return res.json({ ok: true, bill_id: billId });
+    } catch (e) {
+      await client.query('ROLLBACK');
+      console.error('Error creating broker bill:', e);
+      return res.status(500).json({ error: 'Failed to create broker bill' });
+    } finally {
+      client.release();
     }
   } catch (error) {
     console.error('Error in create-broker:', error);
-    res.status(500).json({ error: 'Failed to create broker bill', details: error.message });
+    res.status(500).json({ error: 'Failed to create broker bill' });
   }
 });
 
@@ -1060,35 +760,325 @@ app.post('/api/bills/create-broker', async (req, res) => {
 app.get('/api/bills', async (req, res) => {
   try {
     const type = (req.query.type || '').toString();
-    console.log('Fetching bills with type:', type);
     if (type === 'broker') {
       const q = await pool.query(`
-        SELECT b.id, b.bill_number, b.broker_code, b.bill_date, b.due_date, 
-               b.total_amount, b.status, b.bill_type,
-               br.name as broker_name
+        SELECT b.id, b.bill_number, b.broker_code, bm.name AS broker_name, 
+               b.bill_date, b.due_date, b.total_amount, b.status, b.bill_type
         FROM bills b
-        LEFT JOIN broker_master br ON b.broker_code = br.broker_code
+        LEFT JOIN broker_master bm ON bm.broker_code = b.broker_code
         WHERE b.bill_type = 'broker'
         ORDER BY b.bill_date DESC, b.created_at DESC
       `);
-      console.log('Broker bills result:', q.rows);
       return res.json(q.rows || []);
     }
-    // default: return all bills (party and broker)
+    // default: return party bills
     const q = await pool.query(`
-      SELECT b.id, b.bill_number, p.party_code, p.name AS party_name, 
-             b.broker_code, br.name as broker_name,
+      SELECT b.id, b.bill_number, p.party_code, p.name AS party_name,
              b.bill_date, b.due_date, b.total_amount, b.status, b.bill_type
       FROM bills b
       LEFT JOIN party_master p ON p.id = b.party_id
-      LEFT JOIN broker_master br ON b.broker_code = br.broker_code
+      WHERE b.bill_type = 'party'
       ORDER BY b.bill_date DESC, b.created_at DESC
     `);
-    console.log('All bills result:', q.rows);
     return res.json(q.rows || []);
   } catch (e) {
     console.error('Error fetching bills:', e);
-    res.status(500).json({ error: 'Failed to fetch bills', details: e.message });
+    res.status(500).json({ error: 'Failed to fetch bills' });
+  }
+});
+
+// Process stock trades and create ledger entries
+app.post('/api/stock-trades/process', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { trades, billDate } = req.body;
+    if (!Array.isArray(trades) || trades.length === 0) {
+      return res.status(400).json({ error: 'trades array is required' });
+    }
+
+    await client.query('BEGIN');
+
+    const results = {
+      clientBills: [],
+      brokerEntries: [],
+      ledgerEntries: [],
+    };
+
+    // Collect all bill items for broker bill
+    const allBrokerBillItems = [];
+    let totalBrokerageAllClients = 0;
+    let brokerIdGlobal = null;
+
+    // Group trades by client
+    const clientGroups = {};
+    for (const trade of trades) {
+      const clientId = (trade.ClientId || trade.clientId || '').toString().trim().toUpperCase();
+      if (!clientId) continue;
+      
+      if (!clientGroups[clientId]) clientGroups[clientId] = [];
+      clientGroups[clientId].push(trade);
+    }
+
+    const now = new Date();
+    const billDateStr = billDate || now.toISOString().slice(0, 10);
+
+    // Process each client
+    for (const [clientId, clientTrades] of Object.entries(clientGroups)) {
+      // Get party details
+      const partyQuery = await client.query(
+        'SELECT id, party_code, name, trading_slab, delivery_slab FROM party_master WHERE UPPER(party_code) = $1',
+        [clientId]
+      );
+
+      if (partyQuery.rows.length === 0) {
+        console.warn(`Party not found: ${clientId}`);
+        continue;
+      }
+
+      const party = partyQuery.rows[0];
+      let clientBalance = 0;
+      let totalBrokerage = 0;
+
+      // Get current balance
+      const balanceQuery = await client.query(
+        'SELECT balance FROM ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        [party.id]
+      );
+      if (balanceQuery.rows.length > 0) {
+        clientBalance = Number(balanceQuery.rows[0].balance) || 0;
+      }
+
+      const billItems = [];
+
+      // Process each trade
+      for (const trade of clientTrades) {
+        const securityName = trade.SecurityName || trade.securityName || '';
+        const side = (trade.Side || trade.side || '').toString().toUpperCase();
+        
+        // Get quantity based on side
+        let quantity = 0;
+        if (side === 'BUY') {
+          quantity = Number(trade.BuyQty || trade.Quantity || trade.quantity || 0);
+        } else if (side === 'SELL') {
+          quantity = Number(trade.SellQty || trade.Quantity || trade.quantity || 0);
+        } else {
+          quantity = Number(trade.BuyQty || trade.SellQty || trade.Quantity || trade.quantity || 0);
+        }
+        
+        // Get price based on side
+        let price = 0;
+        if (side === 'BUY') {
+          price = Number(trade.BuyAvg || trade.Price || trade.price || 0);
+        } else if (side === 'SELL') {
+          price = Number(trade.SellAvg || trade.Price || trade.price || 0);
+        } else {
+          price = Number(trade.BuyAvg || trade.SellAvg || trade.Price || trade.price || 0);
+        }
+        
+        const type = (trade.Type || trade.type || '').toString().toUpperCase();
+        const amount = quantity * price;
+        
+        // Skip if quantity or price is 0
+        if (quantity === 0 || price === 0) {
+          console.warn(`Skipping trade with zero quantity or price: ${securityName}`);
+          continue;
+        }
+
+        // Calculate brokerage
+        const brokerageRate = type === 'T' ? Number(party.trading_slab) : Number(party.delivery_slab);
+        const brokerageAmount = (amount * brokerageRate) / 100;
+        totalBrokerage += brokerageAmount;
+
+        billItems.push({
+          description: `${securityName} - ${side}`,
+          quantity,
+          rate: price,
+          amount,
+          client_code: clientId,
+          company_code: extractCompanyFromSecurityName(securityName).company_code,
+          brokerage_rate_pct: brokerageRate,
+          brokerage_amount: brokerageAmount,
+          trade_type: type, // Store D or T
+        });
+      }
+
+      // Get current balance before adding brokerage
+      clientBalance += totalBrokerage;
+
+      // Create bill first so we can reference it in ledger
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const suffix = String(Math.floor(Math.random() * 900) + 100);
+      const billNumber = `PTY${y}${m}${d}-${suffix}`;
+
+      const billResult = await client.query(
+        'INSERT INTO bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [billNumber, party.id, billDateStr, totalBrokerage, 'party', 'pending']
+      );
+
+      const billId = billResult.rows[0].id;
+
+      // Create ledger entry with bill reference
+      const brokerageLedgerResult = await client.query(
+        'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          party.id,
+          billDateStr,
+          `Brokerage charges - Bill ${billNumber} (${clientTrades.length} trades)`,
+          totalBrokerage,
+          0,
+          clientBalance,
+          'brokerage',
+          billId
+        ]
+      );
+      results.ledgerEntries.push(brokerageLedgerResult.rows[0]);
+
+      // Track broker ID (all trades should have same broker)
+      if (!brokerIdGlobal) {
+        brokerIdGlobal = (clientTrades[0].brokerid || clientTrades[0].brokerId || 'BROKER').toString().toUpperCase();
+      }
+      
+      // Add this client's items to broker bill items
+      allBrokerBillItems.push(...billItems);
+      totalBrokerageAllClients += totalBrokerage;
+
+      // Insert bill items with trade_type
+      for (const item of billItems) {
+        await client.query(
+          'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+          [
+            billId,
+            item.description,
+            item.quantity,
+            item.rate,
+            item.amount,
+            item.client_code,
+            item.company_code,
+            item.brokerage_rate_pct,
+            item.brokerage_amount,
+            item.trade_type,
+          ]
+        );
+      }
+
+      results.clientBills.push({
+        billId,
+        billNumber,
+        clientId,
+        partyName: party.name,
+        totalBrokerage,
+        items: billItems.length,
+      });
+
+    }
+
+    // Create ONE broker bill for all clients
+    if (allBrokerBillItems.length > 0 && brokerIdGlobal) {
+      // Create broker bill FIRST
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const brokerBillNumber = `BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
+      
+      const clientList = Object.keys(clientGroups).join(', ');
+      const brokerBillResult = await client.query(
+        'INSERT INTO bills (bill_number, party_id, broker_id, broker_code, bill_date, total_amount, bill_type, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+        [
+          brokerBillNumber,
+          null,
+          null,
+          brokerIdGlobal,
+          billDateStr,
+          totalBrokerageAllClients,
+          'broker',
+          'pending',
+          `Brokerage from clients: ${clientList} - ${allBrokerBillItems.length} trades`
+        ]
+      );
+      
+      // Insert all broker bill items
+      for (const item of allBrokerBillItems) {
+        await client.query(
+          'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+          [
+            brokerBillResult.rows[0].id,
+            item.description,
+            item.quantity,
+            item.rate,
+            item.amount,
+            item.client_code,
+            item.company_code,
+            item.brokerage_rate_pct,
+            item.brokerage_amount,
+            item.trade_type,
+          ]
+        );
+      }
+
+      // Create broker ledger entry AFTER bill is created
+      let brokerBalance = 0;
+      const brokerBalanceQuery = await client.query(
+        'SELECT balance FROM ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['broker_brokerage']
+      );
+      if (brokerBalanceQuery.rows.length > 0) {
+        brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
+      }
+      brokerBalance += totalBrokerageAllClients;
+
+      const brokerLedgerResult = await client.query(
+        'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `Brokerage - Bill ${brokerBillNumber} (${Object.keys(clientGroups).length} clients, ${allBrokerBillItems.length} trades)`,
+          0,
+          totalBrokerageAllClients,
+          brokerBalance,
+          'broker_brokerage',
+          brokerBillResult.rows[0].id
+        ]
+      );
+      results.brokerEntries.push(brokerLedgerResult.rows[0]);
+
+      results.brokerBill = {
+        billId: brokerBillResult.rows[0].id,
+        billNumber: brokerBillNumber,
+        brokerId: brokerIdGlobal,
+        totalBrokerage: totalBrokerageAllClients,
+        clients: Object.keys(clientGroups).length,
+        items: allBrokerBillItems.length,
+      };
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      message: 'Stock trades processed successfully',
+      ...results,
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error processing stock trades:', error);
+    res.status(500).json({ error: 'Failed to process stock trades', details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Get broker ledger (all broker brokerage entries)
+app.get('/api/ledger/broker', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC',
+      ['broker_brokerage']
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching broker ledger:', error);
+    res.status(500).json({ error: 'Failed to fetch broker ledger' });
   }
 });
 
