@@ -151,7 +151,8 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     balance DECIMAL(15,2) NOT NULL,
     reference_type VARCHAR(50), -- 'bill', 'payment', 'adjustment'
     reference_id UUID,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create application_settings table

@@ -836,19 +836,21 @@ app.post('/api/stock-trades/process', async (req, res) => {
       }
 
       const party = partyQuery.rows[0];
-      let clientBalance = 0;
       let totalBrokerage = 0;
 
-      // Get current balance
-      const balanceQuery = await client.query(
-        'SELECT balance FROM ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
-        [party.id]
+      // Get current BROKERAGE balance (not trade settlement balance)
+      let brokerageBalance = 0;
+      const brokerageBalanceQuery = await client.query(
+        'SELECT balance FROM ledger_entries WHERE party_id = $1 AND reference_type = $2 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        [party.id, 'brokerage']
       );
-      if (balanceQuery.rows.length > 0) {
-        clientBalance = Number(balanceQuery.rows[0].balance) || 0;
+      if (brokerageBalanceQuery.rows.length > 0) {
+        brokerageBalance = Number(brokerageBalanceQuery.rows[0].balance) || 0;
       }
 
       const billItems = [];
+      let totalBuyAmount = 0;
+      let totalSellAmount = 0;
 
       // Process each trade
       for (const trade of clientTrades) {
@@ -889,6 +891,13 @@ app.post('/api/stock-trades/process', async (req, res) => {
         const brokerageAmount = (amount * brokerageRate) / 100;
         totalBrokerage += brokerageAmount;
 
+        // Track buy/sell amounts for trade settlement ledger
+        if (side === 'BUY') {
+          totalBuyAmount += amount;
+        } else if (side === 'SELL') {
+          totalSellAmount += amount;
+        }
+
         billItems.push({
           description: `${securityName} - ${side}`,
           quantity,
@@ -902,38 +911,64 @@ app.post('/api/stock-trades/process', async (req, res) => {
         });
       }
 
-      // Get current balance before adding brokerage
-      clientBalance += totalBrokerage;
+      // Calculate net trade settlement
+      const netTradeAmount = totalBuyAmount - totalSellAmount;
+      
+      // Calculate final client balance: Net Trade + Total Brokerage
+      // Client owes: (Buy - Sell) + Brokerage
+      // If Buy > Sell: Client owes money for net purchase + brokerage
+      // If Sell > Buy: Client receives money but must pay brokerage, so receives less
+      // If Buy = Sell: Client owes only the brokerage
+      const finalClientBalance = netTradeAmount + totalBrokerage;
 
-      // Create bill first so we can reference it in ledger
+      // Get current client balance (consolidated)
+      let currentClientBalance = 0;
+      const clientBalanceQuery = await client.query(
+        'SELECT balance FROM ledger_entries WHERE party_id = $1 AND reference_type = $2 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        [party.id, 'client_settlement']
+      );
+      if (clientBalanceQuery.rows.length > 0) {
+        currentClientBalance = Number(clientBalanceQuery.rows[0].balance) || 0;
+      }
+      
+      // Update the running balance
+      const newClientBalance = currentClientBalance + finalClientBalance;
+
+      // Always create new bill for each CSV upload
       const y = now.getFullYear();
       const m = String(now.getMonth() + 1).padStart(2, '0');
       const d = String(now.getDate()).padStart(2, '0');
       const suffix = String(Math.floor(Math.random() * 900) + 100);
       const billNumber = `PTY${y}${m}${d}-${suffix}`;
 
+      // Bill amount is the final amount client needs to pay (or receive if negative)
       const billResult = await client.query(
         'INSERT INTO bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-        [billNumber, party.id, billDateStr, totalBrokerage, 'party', 'pending']
+        [billNumber, party.id, billDateStr, finalClientBalance, 'party', 'pending']
       );
 
       const billId = billResult.rows[0].id;
 
-      // Create ledger entry with bill reference
-      const brokerageLedgerResult = await client.query(
+      // Create single consolidated ledger entry
+      // Debit when client owes money (buy + brokerage)
+      // Credit when client receives money (sell - brokerage)
+      const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
+      const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
+      
+      const consolidatedLedgerResult = await client.query(
         'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           party.id,
           billDateStr,
-          `Brokerage charges - Bill ${billNumber} (${clientTrades.length} trades)`,
-          totalBrokerage,
-          0,
-          clientBalance,
-          'brokerage',
+          `Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${clientTrades.length} trades)`,
+          debitAmount,
+          creditAmount,
+          newClientBalance,
+          'client_settlement',
           billId
         ]
       );
-      results.ledgerEntries.push(brokerageLedgerResult.rows[0]);
+      results.ledgerEntries.push(consolidatedLedgerResult.rows[0]);
 
       // Track broker ID (all trades should have same broker)
       if (!brokerIdGlobal) {
@@ -968,21 +1003,25 @@ app.post('/api/stock-trades/process', async (req, res) => {
         billNumber,
         clientId,
         partyName: party.name,
+        totalBuyAmount,
+        totalSellAmount,
         totalBrokerage,
+        netAmount: finalClientBalance,
         items: billItems.length,
       });
 
     }
 
-    // Create ONE broker bill for all clients
+    // Always create new broker bill for each CSV upload
     if (allBrokerBillItems.length > 0 && brokerIdGlobal) {
-      // Create broker bill FIRST
+      const clientList = Object.keys(clientGroups).join(', ');
+      
+      // Create new broker bill
       const y = now.getFullYear();
       const m = String(now.getMonth() + 1).padStart(2, '0');
       const d = String(now.getDate()).padStart(2, '0');
       const brokerBillNumber = `BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
       
-      const clientList = Object.keys(clientGroups).join(', ');
       const brokerBillResult = await client.query(
         'INSERT INTO bills (bill_number, party_id, broker_id, broker_code, bill_date, total_amount, bill_type, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
         [
@@ -997,13 +1036,14 @@ app.post('/api/stock-trades/process', async (req, res) => {
           `Brokerage from clients: ${clientList} - ${allBrokerBillItems.length} trades`
         ]
       );
+      const brokerBillId = brokerBillResult.rows[0].id;
       
       // Insert all broker bill items
       for (const item of allBrokerBillItems) {
         await client.query(
           'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
           [
-            brokerBillResult.rows[0].id,
+            brokerBillId,
             item.description,
             item.quantity,
             item.rate,
@@ -1017,7 +1057,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
         );
       }
 
-      // Create broker ledger entry AFTER bill is created
+      // Always create new broker ledger entry
       let brokerBalance = 0;
       const brokerBalanceQuery = await client.query(
         'SELECT balance FROM ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
@@ -1028,6 +1068,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
       }
       brokerBalance += totalBrokerageAllClients;
 
+      // Create new broker ledger entry
       const brokerLedgerResult = await client.query(
         'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
@@ -1038,13 +1079,13 @@ app.post('/api/stock-trades/process', async (req, res) => {
           totalBrokerageAllClients,
           brokerBalance,
           'broker_brokerage',
-          brokerBillResult.rows[0].id
+          brokerBillId
         ]
       );
       results.brokerEntries.push(brokerLedgerResult.rows[0]);
 
       results.brokerBill = {
-        billId: brokerBillResult.rows[0].id,
+        billId: brokerBillId,
         billNumber: brokerBillNumber,
         brokerId: brokerIdGlobal,
         totalBrokerage: totalBrokerageAllClients,

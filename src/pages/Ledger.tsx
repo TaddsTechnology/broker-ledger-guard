@@ -46,6 +46,7 @@ interface LedgerEntry {
   debit_amount: number;
   credit_amount: number;
   balance: number;
+  reference_type?: string;
   created_at: string;
 }
 
@@ -55,8 +56,11 @@ const Ledger = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [currentView, setCurrentView] = useState<'form' | 'list'>('list');
   const [selectedPartyId, setSelectedPartyId] = useState<string>("");
+  const [ledgerType, setLedgerType] = useState<string>("all"); // all, brokerage, trade_settlement
+  const [viewMode, setViewMode] = useState<'detailed' | 'grouped'>('grouped'); // detailed or grouped
   const [searchTerm, setSearchTerm] = useState("");
   const [filteredEntries, setFilteredEntries] = useState<LedgerEntry[]>([]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const { toast } = useToast();
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -85,18 +89,25 @@ const Ledger = () => {
   }, [selectedPartyId]);
 
   useEffect(() => {
-    if (searchTerm.trim() === "") {
-      setFilteredEntries(ledgerEntries);
-    } else {
-      const filtered = ledgerEntries.filter(
+    let entries = ledgerEntries;
+    
+    // Filter by ledger type
+    if (ledgerType !== "all") {
+      entries = entries.filter(entry => entry.reference_type === ledgerType);
+    }
+    
+    // Filter by search term
+    if (searchTerm.trim() !== "") {
+      entries = entries.filter(
         (entry) =>
           entry.particulars.toLowerCase().includes(searchTerm.toLowerCase()) ||
           (entry.party_name && entry.party_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
           (entry.party_code && entry.party_code.toLowerCase().includes(searchTerm.toLowerCase()))
       );
-      setFilteredEntries(filtered);
     }
-  }, [ledgerEntries, searchTerm]);
+    
+    setFilteredEntries(entries);
+  }, [ledgerEntries, searchTerm, ledgerType]);
 
   // Focus first input when form view opens
   useEffect(() => {
@@ -211,6 +222,73 @@ const Ledger = () => {
   const handleDeleteClick = (entry: LedgerEntry) => {
     setEntryToDelete(entry);
     setDeleteDialogOpen(true);
+  };
+
+  // Group entries by date and party
+  const groupLedgerEntries = () => {
+    const groups: { [key: string]: { 
+      date: string; 
+      party_id: string;
+      party_code: string;
+      party_name: string;
+      entries: LedgerEntry[];
+      tradeEntries: LedgerEntry[];
+      brokerageEntries: LedgerEntry[];
+      tradeBuy: number;
+      tradeSell: number;
+      tradeBalance: number;
+      brokerageTotal: number;
+      brokerageBalance: number;
+    } } = {};
+
+    filteredEntries.forEach(entry => {
+      const date = new Date(entry.entry_date).toLocaleDateString();
+      const partyKey = `${date}-${entry.party_id || 'broker'}`;
+      
+      if (!groups[partyKey]) {
+        groups[partyKey] = {
+          date,
+          party_id: entry.party_id || 'broker',
+          party_code: entry.party_code || 'Broker Entry',
+          party_name: entry.party_name || 'Brokerage Transaction',
+          entries: [],
+          tradeEntries: [],
+          brokerageEntries: [],
+          tradeBuy: 0,
+          tradeSell: 0,
+          tradeBalance: 0,
+          brokerageTotal: 0,
+          brokerageBalance: 0,
+        };
+      }
+      
+      groups[partyKey].entries.push(entry);
+      
+      if (entry.reference_type === 'trade_settlement') {
+        groups[partyKey].tradeEntries.push(entry);
+        groups[partyKey].tradeBuy += Number(entry.debit_amount) || 0;
+        groups[partyKey].tradeSell += Number(entry.credit_amount) || 0;
+        groups[partyKey].tradeBalance = Number(entry.balance) || 0;
+      } else if (entry.reference_type === 'brokerage' || entry.reference_type === 'broker_brokerage') {
+        groups[partyKey].brokerageEntries.push(entry);
+        groups[partyKey].brokerageTotal += Number(entry.debit_amount || entry.credit_amount) || 0;
+        groups[partyKey].brokerageBalance = Number(entry.balance) || 0;
+      }
+    });
+    
+    return Object.values(groups);
+  };
+
+  const toggleGroup = (groupKey: string) => {
+    setExpandedGroups(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(groupKey)) {
+        newSet.delete(groupKey);
+      } else {
+        newSet.add(groupKey);
+      }
+      return newSet;
+    });
   };
 
   const handleDeleteConfirm = async () => {
@@ -478,7 +556,7 @@ const Ledger = () => {
                 value={selectedPartyId}
                 onValueChange={(value) => setSelectedPartyId(value)}
               >
-                <SelectTrigger className="w-48 bg-secondary">
+                <SelectTrigger className="w-64 bg-secondary">
                   <SelectValue placeholder="Filter by party" />
                 </SelectTrigger>
                 <SelectContent>
@@ -490,6 +568,34 @@ const Ledger = () => {
                         {party.party_code} - {party.name}
                       </SelectItem>
                     ))}
+                </SelectContent>
+              </Select>
+              
+              <Select
+                value={ledgerType}
+                onValueChange={(value) => setLedgerType(value)}
+              >
+                <SelectTrigger className="w-56 bg-secondary">
+                  <SelectValue placeholder="Ledger type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Entries</SelectItem>
+                  <SelectItem value="trade_settlement">Trade Settlement Only</SelectItem>
+                  <SelectItem value="brokerage">Brokerage Only</SelectItem>
+                  <SelectItem value="broker_brokerage">Broker Income</SelectItem>
+                </SelectContent>
+              </Select>
+              
+              <Select
+                value={viewMode}
+                onValueChange={(value: 'detailed' | 'grouped') => setViewMode(value)}
+              >
+                <SelectTrigger className="w-44 bg-secondary">
+                  <SelectValue placeholder="View mode" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="grouped">📊 Grouped Summary</SelectItem>
+                  <SelectItem value="detailed">📋 Detailed View</SelectItem>
                 </SelectContent>
               </Select>
               
@@ -549,7 +655,175 @@ const Ledger = () => {
                     No ledger entries found. Add your first entry to get started.
                   </TableCell>
                 </TableRow>
+              ) : viewMode === 'grouped' ? (
+                // Grouped view
+                groupLedgerEntries().map((group) => {
+                  const groupKey = `${group.date}-${group.party_id}`;
+                  const isExpanded = expandedGroups.has(groupKey);
+                  const billNumbers = [...new Set(group.entries.map(e => e.bill_number).filter(Boolean))];
+                  
+                  return (
+                    <>
+                      {/* Group Summary Row */}
+                      <TableRow 
+                        key={groupKey}
+                        className="bg-blue-50 hover:bg-blue-100 cursor-pointer font-medium border-b-2"
+                        onClick={() => toggleGroup(groupKey)}
+                      >
+                        <TableCell className="text-sm font-semibold">{group.date}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg">{isExpanded ? '▼' : '▶'}</span>
+                            <div>
+                              <div className="font-bold text-base">{group.party_code}</div>
+                              <div className="text-xs text-muted-foreground">{group.party_name}</div>
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="grid grid-cols-2 gap-4">
+                            {/* Trade Settlement Summary */}
+                            {group.tradeEntries.length > 0 && (
+                              <div className="border-l-4 border-blue-400 pl-3">
+                                <div className="text-xs font-semibold text-blue-700 mb-1">TRADE SETTLEMENT</div>
+                                <div className="text-xs space-y-0.5">
+                                  <div>Buy: ₹{group.tradeBuy.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
+                                  <div>Sell: ₹{group.tradeSell.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
+                                  <div className={`font-bold ${group.tradeBalance === 0 ? 'text-green-600' : group.tradeBalance < 0 ? 'text-red-600' : 'text-orange-600'}`}>
+                                    Balance: ₹{group.tradeBalance.toLocaleString('en-IN', {maximumFractionDigits: 2})}
+                                    {group.tradeBalance === 0 && ' ✔ CLOSED'}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            
+                            {/* Brokerage Summary */}
+                            {group.brokerageEntries.length > 0 && (
+                              <div className="border-l-4 border-amber-400 pl-3">
+                                <div className="text-xs font-semibold text-amber-700 mb-1">BROKERAGE CHARGES</div>
+                                <div className="text-xs space-y-0.5">
+                                  <div>Total: ₹{group.brokerageTotal.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
+                                  <div className="font-bold text-amber-700">
+                                    Balance: ₹{group.brokerageBalance.toLocaleString('en-IN', {maximumFractionDigits: 2})}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right text-xs text-muted-foreground">
+                          {group.tradeBuy > 0 && (
+                            <div className="font-mono">₹{group.tradeBuy.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
+                          )}
+                          {group.brokerageTotal > 0 && (
+                            <div className="font-mono mt-1">₹{group.brokerageTotal.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right text-xs text-muted-foreground">
+                          {group.tradeSell > 0 && (
+                            <div className="font-mono">₹{group.tradeSell.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right text-xs font-semibold">
+                          {group.tradeBalance !== 0 && (
+                            <div className={`font-mono ${group.tradeBalance === 0 ? 'text-green-600' : group.tradeBalance < 0 ? 'text-red-600' : 'text-orange-600'}`}>
+                              ₹{group.tradeBalance.toLocaleString('en-IN', {maximumFractionDigits: 2})}
+                            </div>
+                          )}
+                          {group.brokerageBalance > 0 && (
+                            <div className="font-mono text-amber-700 mt-1">
+                              ₹{group.brokerageBalance.toLocaleString('en-IN', {maximumFractionDigits: 2})}
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-3">
+                            <div className="flex flex-col items-end gap-1">
+                              <span className="text-xs font-semibold text-blue-600">
+                                {group.entries.length} {group.entries.length === 1 ? 'bill' : 'bills'}
+                              </span>
+                              <button 
+                                className="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1 transition-colors"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleGroup(groupKey);
+                                }}
+                              >
+                                Manage bills {isExpanded ? '▲' : '▼'}
+                              </button>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                toggleGroup(groupKey);
+                              }}
+                              className="p-2 hover:bg-blue-200 rounded transition-colors"
+                              title={isExpanded ? 'Collapse' : 'Expand'}
+                            >
+                              <span className="text-xl text-blue-600">{isExpanded ? '▲' : '▼'}</span>
+                            </button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      
+                      {/* Expanded Details */}
+                      {isExpanded && group.entries.map((entry) => (
+                        <TableRow 
+                          key={entry.id}
+                          className="bg-gray-50 hover:bg-gray-100"
+                        >
+                          <TableCell className="pl-12 text-xs text-muted-foreground">
+                            {new Date(entry.entry_date).toLocaleTimeString()}
+                          </TableCell>
+                          <TableCell className="text-xs">
+                            <span className="px-2 py-1 rounded text-xs font-medium" 
+                              style={{backgroundColor: entry.reference_type === 'trade_settlement' ? '#dbeafe' : '#fef3c7'}}>
+                              {entry.reference_type === 'trade_settlement' ? 'Trade' : 'Brokerage'}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-xs">{entry.particulars}</TableCell>
+                          <TableCell className="text-right text-xs font-mono">
+                            {Number(entry.debit_amount) > 0 ? `₹${Number(entry.debit_amount).toFixed(2)}` : "-"}
+                          </TableCell>
+                          <TableCell className="text-right text-xs font-mono">
+                            {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
+                          </TableCell>
+                          <TableCell className="text-right text-xs font-mono">
+                            ₹{Number(entry.balance).toFixed(2)}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex gap-1 justify-end">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEdit(entry);
+                                }}
+                                className="h-7 w-7 p-0"
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDelete(entry);
+                                }}
+                                className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </>
+                  );
+                })
               ) : (
+                // Detailed view (original)
                 filteredEntries.map((entry, index) => (
                   <TableRow 
                     key={entry.id} 
