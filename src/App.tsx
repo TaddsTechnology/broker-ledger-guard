@@ -16,6 +16,7 @@ import CompanyMaster from "./pages/CompanyMaster";
 import SettlementMaster from "./pages/SettlementMaster";
 import Trading from "./pages/Trading";
 import Contracts from "./pages/Contracts";
+import Holdings from "./pages/Holdings";
 import Bills from "./pages/Bills";
 import Reports from "./pages/Reports";
 import Ledger from "./pages/Ledger";
@@ -75,6 +76,7 @@ const AppContent = () => {
             <Route path="/master/settlement" element={<SettlementMaster />} />
             <Route path="/trading" element={<Trading />} />
             <Route path="/contracts" element={<Contracts />} />
+            <Route path="/holdings" element={<Holdings />} />
             <Route path="/bills" element={<Bills />} />
             <Route path="/bills/broker" element={<BrokerBill />} />
             <Route path="/reports" element={<Reports />} />
@@ -143,7 +145,7 @@ const App = () => {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <Toaster duration={1000} />
+        <Toaster />
         <Sonner duration={1000} />
         <BrowserRouter>
           <SidebarProvider defaultOpen>

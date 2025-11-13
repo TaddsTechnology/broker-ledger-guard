@@ -271,7 +271,9 @@ const Ledger = () => {
         groups[partyKey].tradeBalance = Number(entry.balance) || 0;
       } else if (entry.reference_type === 'brokerage' || entry.reference_type === 'broker_brokerage') {
         groups[partyKey].brokerageEntries.push(entry);
-        groups[partyKey].brokerageTotal += Number(entry.debit_amount || entry.credit_amount) || 0;
+        // For brokerage: clients pay (debit), broker receives (credit)
+        const amount = Number(entry.debit_amount) || Number(entry.credit_amount) || 0;
+        groups[partyKey].brokerageTotal += amount;
         groups[partyKey].brokerageBalance = Number(entry.balance) || 0;
       }
     });
@@ -660,7 +662,7 @@ const Ledger = () => {
                 groupLedgerEntries().map((group) => {
                   const groupKey = `${group.date}-${group.party_id}`;
                   const isExpanded = expandedGroups.has(groupKey);
-                  const billNumbers = [...new Set(group.entries.map(e => e.bill_number).filter(Boolean))];
+                  // const billNumbers = [...new Set(group.entries.map(e => e.bill_number).filter(Boolean))];
                   
                   return (
                     <>
@@ -809,7 +811,7 @@ const Ledger = () => {
                                 size="sm"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleDelete(entry);
+                                  handleDeleteClick(entry);
                                 }}
                                 className="h-7 w-7 p-0 text-destructive hover:text-destructive"
                               >

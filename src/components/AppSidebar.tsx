@@ -16,7 +16,8 @@ import {
   Settings,
   Activity,
   DollarSign,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Package
 } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -63,6 +64,7 @@ const menuItems: MenuItem[] = [
     submenu: [
       { title: "Trade File Upload", url: "/trading", icon: TrendingUp },
       { title: "Contract Management", url: "/contracts", icon: FileText },
+      { title: "Stock Holdings", url: "/holdings", icon: Package },
     ]
   },
   {

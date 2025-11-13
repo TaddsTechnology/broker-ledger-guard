@@ -341,9 +341,9 @@ const LedgerBills = () => {
                       {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                     </TableCell>
                     <TableCell className={`text-right font-mono font-medium ${
-                      Number(entry.balance) >= 0 ? 'text-green-600' : 'text-red-600'
+                      (entry.particulars.includes('Brokerage') && !entry.party_id) ? 'text-green-600' : 'text-red-600'
                     }`}>
-                      ₹{Number(entry.balance).toFixed(2)}
+                      {(entry.particulars.includes('Brokerage') && !entry.party_id) ? '+' : '-'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button

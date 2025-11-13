@@ -345,6 +345,10 @@ app.delete('/api/bills/:id', async (req, res) => {
     res.json({ message: 'Bill deleted successfully' });
   } catch (error) {
     console.error('Error deleting bill:', error);
+    // Check if it's a foreign key constraint error (bill is referenced by contracts)
+    if (error.code === '23503') {
+      return res.status(400).json({ error: 'Cannot delete this bill. Please delete the associated contracts first.' });
+    }
     res.status(500).json({ error: 'Failed to delete bill' });
   }
 });
@@ -441,10 +445,11 @@ app.delete('/api/ledger/:id', async (req, res) => {
 app.get('/api/contracts', async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT c.*, p.party_code, p.name as party_name, s.settlement_number
+      SELECT c.*, p.party_code, p.name as party_name, s.settlement_number, b.name as broker_name
       FROM contracts c
       LEFT JOIN party_master p ON c.party_id = p.id
       LEFT JOIN settlement_master s ON c.settlement_id = s.id
+      LEFT JOIN broker_master b ON c.broker_id = b.id
       ORDER BY c.created_at DESC
     `);
     res.json(result.rows);
@@ -454,12 +459,29 @@ app.get('/api/contracts', async (req, res) => {
   }
 });
 
+app.get('/api/contracts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM contracts WHERE id = $1',
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Contract not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching contract:', error);
+    res.status(500).json({ error: 'Failed to fetch contract' });
+  }
+});
+
 app.post('/api/contracts', async (req, res) => {
   try {
-    const { contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes } = req.body;
+    const { contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, notes, company_id, trade_type } = req.body;
     const result = await pool.query(
-      'INSERT INTO contracts (contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
-      [contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes]
+      'INSERT INTO contracts (contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, notes, company_id, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *',
+      [contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, notes, company_id, trade_type]
     );
     res.json(result.rows[0]);
   } catch (error) {
@@ -471,10 +493,10 @@ app.post('/api/contracts', async (req, res) => {
 app.put('/api/contracts/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes } = req.body;
+    const { contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, notes, company_id, trade_type } = req.body;
     const result = await pool.query(
-      'UPDATE contracts SET contract_number = $1, party_id = $2, settlement_id = $3, contract_date = $4, quantity = $5, rate = $6, amount = $7, contract_type = $8, status = $9, notes = $10, updated_at = NOW() WHERE id = $11 RETURNING *',
-      [contract_number, party_id, settlement_id, contract_date, quantity, rate, amount, contract_type, status, notes, id]
+      'UPDATE contracts SET contract_number = $1, party_id = $2, settlement_id = $3, broker_id = $4, broker_code = $5, contract_date = $6, quantity = $7, rate = $8, amount = $9, contract_type = $10, brokerage_rate = $11, brokerage_amount = $12, status = $13, notes = $14, company_id = $15, trade_type = $16, updated_at = NOW() WHERE id = $17 RETURNING *',
+      [contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, notes, company_id, trade_type, id]
     );
     res.json(result.rows[0]);
   } catch (error) {
@@ -491,6 +513,295 @@ app.delete('/api/contracts/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting contract:', error);
     res.status(500).json({ error: 'Failed to delete contract' });
+  }
+});
+
+// Batch create contracts with automatic bill generation
+app.post('/api/contracts/batch', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    const { contracts, billDate } = req.body;
+    
+    if (!Array.isArray(contracts) || contracts.length === 0) {
+      return res.status(400).json({ error: 'contracts must be a non-empty array' });
+    }
+    
+    const now = new Date();
+    const billDateStr = billDate || now.toISOString().slice(0, 10);
+    
+    // Group contracts by party and broker
+    const partyGroups = {};
+    const brokerGroups = {};
+    
+    const createdContracts = [];
+    
+    for (const contract of contracts) {
+      const { party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, notes, company_id, trade_type } = contract;
+      
+      // Generate sequential contract number
+      // Get the latest contract number
+      const lastContractQuery = await client.query(
+        'SELECT contract_number FROM contracts ORDER BY created_at DESC LIMIT 1'
+      );
+      
+      let nextNumber = 1;
+      if (lastContractQuery.rows.length > 0) {
+        const lastNumber = lastContractQuery.rows[0].contract_number;
+        // Extract number from format like "001" or "CNT-001"
+        const match = lastNumber.match(/(\d+)$/);
+        if (match) {
+          nextNumber = parseInt(match[1]) + 1;
+        }
+      }
+      
+      const contract_number = String(nextNumber).padStart(3, '0');
+      
+      // Insert contract
+      const contractResult = await client.query(
+        'INSERT INTO contracts (contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, notes, company_id, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *',
+        [contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status || 'active', notes, company_id, trade_type]
+      );
+      
+      const createdContract = contractResult.rows[0];
+      createdContracts.push(createdContract);
+      
+      // Group by party for party bills
+      if (!partyGroups[party_id]) {
+        partyGroups[party_id] = [];
+      }
+      partyGroups[party_id].push(createdContract);
+      
+      // Group by broker for broker bills
+      if (broker_id) {
+        if (!brokerGroups[broker_id]) {
+          brokerGroups[broker_id] = [];
+        }
+        brokerGroups[broker_id].push(createdContract);
+      }
+    }
+    
+    const partyBills = [];
+    const brokerBills = [];
+    const ledgerEntries = [];
+    
+    // Create party bills and ledger entries
+    for (const [party_id, partyContracts] of Object.entries(partyGroups)) {
+      // Get party details
+      const partyQuery = await client.query(
+        'SELECT id, party_code, name FROM party_master WHERE id = $1',
+        [party_id]
+      );
+      
+      if (partyQuery.rows.length === 0) {
+        continue;
+      }
+      
+      const party = partyQuery.rows[0];
+      
+      // Calculate totals
+      let totalBuyAmount = 0;
+      let totalSellAmount = 0;
+      let totalBrokerage = 0;
+      
+      for (const contract of partyContracts) {
+        const amount = Number(contract.amount) || 0;
+        const brokerage = Number(contract.brokerage_amount) || 0;
+        
+        if (contract.contract_type === 'buy') {
+          totalBuyAmount += amount;
+        } else if (contract.contract_type === 'sell') {
+          totalSellAmount += amount;
+        }
+        
+        totalBrokerage += brokerage;
+      }
+      
+      // Calculate net amount: (Buy - Sell) + Brokerage
+      const netTradeAmount = totalBuyAmount - totalSellAmount;
+      const finalAmount = netTradeAmount + totalBrokerage;
+      
+      // Generate party bill number
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const suffix = String(Math.floor(Math.random() * 900) + 100);
+      const billNumber = `PTY${y}${m}${d}-${suffix}`;
+      
+      // Create party bill
+      const billResult = await client.query(
+        'INSERT INTO bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [billNumber, party_id, billDateStr, finalAmount, 'party', 'pending']
+      );
+      
+      const bill = billResult.rows[0];
+      partyBills.push(bill);
+      
+      // Update contracts with party_bill_id
+      for (const contract of partyContracts) {
+        await client.query(
+          'UPDATE contracts SET party_bill_id = $1, bill_generated = TRUE WHERE id = $2',
+          [bill.id, contract.id]
+        );
+      }
+      
+      // Create bill items
+      for (const contract of partyContracts) {
+        await client.query(
+          'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, brokerage_rate_pct, brokerage_amount) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [
+            bill.id,
+            `Contract ${contract.contract_number} - ${contract.contract_type.toUpperCase()}`,
+            contract.quantity,
+            contract.rate,
+            contract.amount,
+            contract.brokerage_rate,
+            contract.brokerage_amount
+          ]
+        );
+      }
+      
+      // Get current client balance
+      let currentBalance = 0;
+      const balanceQuery = await client.query(
+        'SELECT balance FROM ledger_entries WHERE party_id = $1 AND reference_type = $2 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        [party_id, 'client_settlement']
+      );
+      if (balanceQuery.rows.length > 0) {
+        currentBalance = Number(balanceQuery.rows[0].balance) || 0;
+      }
+      
+      const newBalance = currentBalance + finalAmount;
+      
+      // Create ledger entry
+      const debitAmount = finalAmount > 0 ? finalAmount : 0;
+      const creditAmount = finalAmount < 0 ? Math.abs(finalAmount) : 0;
+      
+      const ledgerResult = await client.query(
+        'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          party_id,
+          billDateStr,
+          `Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${partyContracts.length} contracts)`,
+          debitAmount,
+          creditAmount,
+          newBalance,
+          'client_settlement',
+          bill.id
+        ]
+      );
+      
+      ledgerEntries.push(ledgerResult.rows[0]);
+    }
+    
+    // Create broker bills
+    for (const [broker_id, brokerContracts] of Object.entries(brokerGroups)) {
+      let totalBrokerage = 0;
+      
+      for (const contract of brokerContracts) {
+        totalBrokerage += Number(contract.brokerage_amount) || 0;
+      }
+      
+      // Generate broker bill number
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const suffix = String(Math.floor(Math.random() * 900) + 100);
+      const brokerBillNumber = `BRK${y}${m}${d}-${suffix}`;
+      
+      // Get broker code
+      const brokerCode = brokerContracts[0].broker_code;
+      
+      // Create broker bill
+      const brokerBillResult = await client.query(
+        'INSERT INTO bills (bill_number, broker_id, broker_code, bill_date, total_amount, bill_type, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          brokerBillNumber,
+          broker_id,
+          brokerCode,
+          billDateStr,
+          totalBrokerage,
+          'broker',
+          'pending',
+          `Brokerage from ${brokerContracts.length} contracts`
+        ]
+      );
+      
+      const brokerBill = brokerBillResult.rows[0];
+      brokerBills.push(brokerBill);
+      
+      // Update contracts with broker_bill_id
+      for (const contract of brokerContracts) {
+        await client.query(
+          'UPDATE contracts SET broker_bill_id = $1 WHERE id = $2',
+          [brokerBill.id, contract.id]
+        );
+      }
+      
+      // Create broker bill items
+      for (const contract of brokerContracts) {
+        await client.query(
+          'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, brokerage_rate_pct, brokerage_amount) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          [
+            brokerBill.id,
+            `Contract ${contract.contract_number} - Brokerage`,
+            contract.quantity,
+            contract.rate,
+            contract.amount,
+            contract.brokerage_rate,
+            contract.brokerage_amount
+          ]
+        );
+      }
+      
+      // Get current broker balance
+      let brokerBalance = 0;
+      const brokerBalanceQuery = await client.query(
+        'SELECT balance FROM ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['broker_brokerage']
+      );
+      if (brokerBalanceQuery.rows.length > 0) {
+        brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
+      }
+      
+      brokerBalance += totalBrokerage;
+      
+      // Create broker ledger entry
+      const brokerLedgerResult = await client.query(
+        'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `Brokerage - Bill ${brokerBillNumber} (${brokerContracts.length} contracts)`,
+          0,
+          totalBrokerage,
+          brokerBalance,
+          'broker_brokerage',
+          brokerBill.id
+        ]
+      );
+      
+      ledgerEntries.push(brokerLedgerResult.rows[0]);
+    }
+    
+    await client.query('COMMIT');
+    
+    res.json({
+      success: true,
+      message: 'Contracts created and bills generated successfully',
+      contracts: createdContracts,
+      partyBills,
+      brokerBills,
+      ledgerEntries
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error creating batch contracts:', error);
+    res.status(500).json({ error: 'Failed to create contracts', details: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -998,6 +1309,65 @@ app.post('/api/stock-trades/process', async (req, res) => {
         );
       }
 
+      // Create contracts for all trades (both T and D) to update stock holdings
+      for (const item of billItems) {
+        // Create contracts for both trading (T) and delivery (D) trades
+
+        // Get company_id from company_code
+        let company_id = null;
+        if (item.company_code) {
+          const companyQuery = await client.query(
+            'SELECT id FROM company_master WHERE UPPER(company_code) = $1',
+            [item.company_code.toUpperCase()]
+          );
+          if (companyQuery.rows.length > 0) {
+            company_id = companyQuery.rows[0].id;
+          }
+        }
+
+        // Generate sequential contract number
+        const lastContractQuery = await client.query(
+          'SELECT contract_number FROM contracts ORDER BY created_at DESC LIMIT 1'
+        );
+        
+        let nextNumber = 1;
+        if (lastContractQuery.rows.length > 0) {
+          const lastNumber = lastContractQuery.rows[0].contract_number;
+          const match = lastNumber.match(/(\d+)$/);
+          if (match) {
+            nextNumber = parseInt(match[1]) + 1;
+          }
+        }
+        
+        const contract_number = String(nextNumber).padStart(3, '0');
+        
+        // Determine contract_type from description (BUY or SELL)
+        const contract_type = item.description.toUpperCase().includes('BUY') ? 'buy' : 'sell';
+
+        // Create contract - this will trigger the stock_holdings update via database trigger
+        await client.query(
+          'INSERT INTO contracts (contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, company_id, trade_type, party_bill_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)',
+          [
+            contract_number,
+            party.id,
+            null, // settlement_id not available from CSV
+            null, // broker_id
+            brokerIdGlobal,
+            billDateStr,
+            item.quantity,
+            item.rate,
+            item.amount,
+            contract_type,
+            item.brokerage_rate_pct,
+            item.brokerage_amount,
+            'active',
+            company_id,
+            item.trade_type,
+            billId
+          ]
+        );
+      }
+
       results.clientBills.push({
         billId,
         billNumber,
@@ -1120,6 +1490,52 @@ app.get('/api/ledger/broker', async (req, res) => {
   } catch (error) {
     console.error('Error fetching broker ledger:', error);
     res.status(500).json({ error: 'Failed to fetch broker ledger' });
+  }
+});
+
+// Stock Holdings API endpoints
+app.get('/api/holdings', async (req, res) => {
+  try {
+    // Include all holdings, even zero quantity ones
+    const result = await pool.query(`
+      SELECT 
+        h.*,
+        p.party_code,
+        p.name as party_name,
+        c.company_code,
+        c.name as company_name,
+        c.nse_code
+      FROM stock_holdings h
+      LEFT JOIN party_master p ON h.party_id = p.id
+      LEFT JOIN company_master c ON h.company_id = c.id
+      ORDER BY h.quantity DESC, p.name, c.name
+    `);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching holdings:', error);
+    res.status(500).json({ error: 'Failed to fetch holdings' });
+  }
+});
+
+app.get('/api/holdings/party/:partyId', async (req, res) => {
+  try {
+    const { partyId } = req.params;
+    // Include all holdings, even zero quantity ones
+    const result = await pool.query(`
+      SELECT 
+        h.*,
+        c.company_code,
+        c.name as company_name,
+        c.nse_code
+      FROM stock_holdings h
+      LEFT JOIN company_master c ON h.company_id = c.id
+      WHERE h.party_id = $1
+      ORDER BY h.quantity DESC, c.name
+    `, [partyId]);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching party holdings:', error);
+    res.status(500).json({ error: 'Failed to fetch party holdings' });
   }
 });
 
