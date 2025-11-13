@@ -23,11 +23,13 @@ interface BrokerBillViewProps {
 export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps) {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [brokerMaster, setBrokerMaster] = useState<any>(null);
 
-  // Fetch bill items when dialog opens
+  // Fetch bill items and broker master when dialog opens
   useEffect(() => {
     if (open && bill) {
       fetchBillItems();
+      fetchBrokerMaster();
     }
   }, [open, bill]);
 
@@ -47,6 +49,20 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
     setLoading(false);
   };
 
+  const fetchBrokerMaster = async () => {
+    if (!bill?.broker_code) return;
+    
+    try {
+      const response = await fetch('http://localhost:3001/api/brokers');
+      if (response.ok) {
+        const brokers = await response.json();
+        const broker = brokers.find((b: any) => b.broker_code === bill.broker_code);
+        setBrokerMaster(broker);
+      }
+    } catch (error) {
+      console.error('Error fetching broker master:', error);
+    }
+  };
 
   if (!bill) return null;
 
@@ -57,6 +73,22 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
     acc[client].push(item);
     return acc;
   }, {} as Record<string, any[]>);
+
+  // Calculate broker's actual share based on broker_master slabs
+  const calculateBrokerShare = () => {
+    if (!brokerMaster) return bill.total_amount;
+    
+    let brokerShare = 0;
+    items.forEach(item => {
+      const rate = item.trade_type === 'T' 
+        ? Number(brokerMaster.trading_slab) 
+        : Number(brokerMaster.delivery_slab);
+      brokerShare += (Number(item.amount) * rate) / 100;
+    });
+    return brokerShare;
+  };
+
+  const brokerActualShare = calculateBrokerShare();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -88,7 +120,7 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
             <div className="p-6 border rounded-lg bg-gradient-to-r from-blue-50 to-indigo-50 text-center">
               <p className="text-sm text-muted-foreground mb-2">Broker's Share (Amount to Pay)</p>
               <p className="text-4xl font-bold text-blue-600">
-                ₹{Number(bill.total_amount).toLocaleString()}
+                ₹{brokerActualShare.toLocaleString()}
               </p>
             </div>
 

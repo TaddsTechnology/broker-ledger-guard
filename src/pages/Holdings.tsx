@@ -159,31 +159,32 @@ const Holdings = () => {
 
       <div className="p-6 space-y-6">
         {/* Filter Section */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Filters</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <label className="text-sm font-medium">Client</label>
-                <Select value={selectedParty} onValueChange={setSelectedParty}>
-                  <SelectTrigger className="bg-secondary">
-                    <SelectValue placeholder="Select client" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All Clients</SelectItem>
-                    {parties.map((party) => (
-                      <SelectItem key={party.id} value={party.id}>
-                        {party.party_code} - {party.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200 p-6">
+          <div className="flex items-center justify-between gap-8">
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Filter by Client</label>
+              <Select value={selectedParty} onValueChange={setSelectedParty}>
+                <SelectTrigger className="w-72 h-10 bg-white border-gray-300 shadow-sm">
+                  <SelectValue placeholder="Select client" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Clients</SelectItem>
+                  {parties.map((party) => (
+                    <SelectItem key={party.id} value={party.id}>
+                      {party.party_code} - {party.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
-          </CardContent>
-        </Card>
+            <div className="text-right bg-white rounded-lg px-10 py-5 shadow-sm border border-green-200 min-w-[300px]">
+              <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">Total Invested</p>
+              <p className="text-3xl font-bold text-green-600 tabular-nums">
+                ₹{totals.totalInvested.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+              </p>
+            </div>
+          </div>
+        </div>
 
         {/* Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -253,11 +254,18 @@ const Holdings = () => {
               <div className="space-y-6">
                 {selectedParty === "all" ? (
                   // Group by party when showing all
-                  Object.entries(longPositionsByParty).map(([partyName, partyHoldings]) => (
+                  Object.entries(longPositionsByParty).map(([partyName, partyHoldings]) => {
+                    const partyTotalInvested = partyHoldings.reduce((sum, h) => sum + Number(h.total_invested), 0);
+                    return (
                     <div key={partyName} className="space-y-2">
-                      <h3 className="text-sm font-semibold text-primary border-b pb-2">
-                        {partyName}
-                      </h3>
+                      <div className="flex justify-between items-center border-b pb-2">
+                        <h3 className="text-sm font-semibold text-primary">
+                          {partyName}
+                        </h3>
+                        <span className="text-sm font-bold text-green-600">
+                          Total Invested: ₹{partyTotalInvested.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
                       <div className="rounded-lg border">
                         <Table>
                           <TableHeader>
@@ -300,7 +308,8 @@ const Holdings = () => {
                         </Table>
                       </div>
                     </div>
-                  ))
+                    );
+                  })
                 ) : (
                   // Single table for specific party
                   <div className="rounded-lg border">

@@ -1309,7 +1309,8 @@ app.post('/api/stock-trades/process', async (req, res) => {
       
       // Add this client's items to broker bill items
       allBrokerBillItems.push(...billItems);
-      totalBrokerageAllClients += brokerShareTotal; // Only broker's share, not total
+      // Broker bill total = full sub-brokerage from all clients
+      totalBrokerageAllClients += totalBrokerage;
 
       // Insert bill items with trade_type
       for (const item of billItems) {
@@ -1330,11 +1331,9 @@ app.post('/api/stock-trades/process', async (req, res) => {
         );
       }
 
-      // Create contracts for all trades (both T and D) to update stock holdings
+      // Update stock holdings directly (without creating contracts)
       for (const item of billItems) {
-        // Create contracts for both trading (T) and delivery (D) trades
-
-        // Get company_id from company_code (required for stock holdings)
+        // Auto-create company if doesn't exist
         let company_id = null;
         if (item.company_code) {
           const companyQuery = await client.query(
@@ -1343,43 +1342,66 @@ app.post('/api/stock-trades/process', async (req, res) => {
           );
           if (companyQuery.rows.length > 0) {
             company_id = companyQuery.rows[0].id;
+          } else {
+            // Auto-create company from CSV
+            const newCompanyResult = await client.query(
+              'INSERT INTO company_master (company_code, name, nse_code) VALUES ($1, $2, $3) RETURNING id',
+              [item.company_code.toUpperCase(), item.company_code.toUpperCase(), item.company_code.toUpperCase()]
+            );
+            company_id = newCompanyResult.rows[0].id;
+            console.log(`  ✓ Auto-created company: ${item.company_code}`);
           }
         }
 
-        // Generate sequential contract number
-        const countQuery = await client.query(
-          'SELECT COUNT(*) as count FROM contracts'
-        );
-        const nextNumber = (parseInt(countQuery.rows[0].count) || 0) + 1;
-        const contract_number = String(nextNumber).padStart(3, '0');
-        
-        // Determine contract_type from description (BUY or SELL)
-        const contract_type = item.description.toUpperCase().includes('BUY') ? 'buy' : 'sell';
-
-        // Only create contract if company exists in company_master
-        // The database trigger will automatically update stock_holdings
         if (company_id) {
-          await client.query(
-            'INSERT INTO contracts (contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, company_id, trade_type, party_bill_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)',
-            [
-              contract_number,
-              party.id,
-              null, // settlement_id not available from CSV
-              null, // broker_id
-              brokerIdGlobal,
-              billDateStr,
-              item.quantity,
-              item.rate,
-              item.amount,
-              contract_type,
-              item.brokerage_rate_pct,
-              item.brokerage_amount,
-              'active',
-              company_id,
-              item.trade_type,
-              billId
-            ]
+          // Determine if BUY or SELL
+          const isBuy = item.description.toUpperCase().includes('BUY');
+          const qtyChange = isBuy ? item.quantity : -item.quantity;
+
+          // Check if holding exists
+          const holdingQuery = await client.query(
+            'SELECT id, quantity, total_invested, avg_buy_price FROM stock_holdings WHERE party_id = $1 AND company_id = $2',
+            [party.id, company_id]
           );
+
+          if (holdingQuery.rows.length > 0) {
+            // Update existing holding
+            const holding = holdingQuery.rows[0];
+            const currentQty = Number(holding.quantity);
+            const currentInvested = Number(holding.total_invested);
+            const newQty = currentQty + qtyChange;
+
+            if (isBuy) {
+              // Add to holdings
+              const newInvested = currentInvested + item.amount;
+              const newAvgPrice = newQty > 0 ? newInvested / newQty : holding.avg_buy_price;
+              
+              await client.query(
+                'UPDATE stock_holdings SET quantity = $1, total_invested = $2, avg_buy_price = $3, last_trade_date = $4, last_updated = NOW() WHERE id = $5',
+                [newQty, newInvested, newAvgPrice, billDateStr, holding.id]
+              );
+            } else {
+              // Sell - reduce holdings
+              const newInvested = newQty > 0 ? (currentInvested / currentQty) * newQty : 0;
+              
+              await client.query(
+                'UPDATE stock_holdings SET quantity = $1, total_invested = $2, last_trade_date = $3, last_updated = NOW() WHERE id = $4',
+                [newQty, newInvested, billDateStr, holding.id]
+              );
+            }
+          } else if (isBuy) {
+            // Create new holding (only for BUY)
+            await client.query(
+              'INSERT INTO stock_holdings (party_id, company_id, quantity, avg_buy_price, total_invested, last_trade_date) VALUES ($1, $2, $3, $4, $5, $6)',
+              [party.id, company_id, item.quantity, item.rate, item.amount, billDateStr]
+            );
+          } else {
+            // Selling without holding - create negative position
+            await client.query(
+              'INSERT INTO stock_holdings (party_id, company_id, quantity, avg_buy_price, total_invested, last_trade_date) VALUES ($1, $2, $3, $4, $5, $6)',
+              [party.id, company_id, -item.quantity, item.rate, 0, billDateStr]
+            );
+          }
         }
       }
 
@@ -1423,7 +1445,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
       );
       const brokerBillId = brokerBillResult.rows[0].id;
       
-      // Insert all broker bill items
+      // Insert all broker bill items (use party's brokerage for display)
       for (const item of allBrokerBillItems) {
         await client.query(
           'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
@@ -1435,8 +1457,8 @@ app.post('/api/stock-trades/process', async (req, res) => {
             item.amount,
             item.client_code,
             item.company_code,
-            item.brokerage_rate_pct,
-            item.brokerage_amount,
+            item.brokerage_rate_pct, // Party's rate (sub-broker rate)
+            item.brokerage_amount, // Party's brokerage (what client paid)
             item.trade_type,
           ]
         );
