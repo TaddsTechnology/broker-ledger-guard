@@ -37,9 +37,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 
 interface MenuItem {
   title: string;
-  icon: any;
+  icon: React.ComponentType<{ className?: string }>;
   url?: string;
-  submenu?: { title: string; url: string; icon?: any; submenu?: { title: string; url: string; icon?: any }[] }[];
+  submenu?: { title: string; url: string; icon?: React.ComponentType<{ className?: string }>; submenu?: { title: string; url: string; icon?: React.ComponentType<{ className?: string }> }[] }[];
 }
 
 const menuItems: MenuItem[] = [
@@ -49,65 +49,57 @@ const menuItems: MenuItem[] = [
     url: "/dashboard"
   },
   {
-    title: "Master Data",
+    title: "Masters",
     icon: Database,
     submenu: [
-      { title: "Party Master", url: "/master/party", icon: Users },
-      { title: "Broker Master", url: "/master/broker", icon: Users },
-      { title: "Company Master", url: "/master/company", icon: Building2 },
-      { title: "Settlement Master", url: "/master/settlement", icon: Calendar },
+      { title: "Parties", url: "/master/party", icon: Users },
+      { title: "Brokers", url: "/master/broker", icon: DollarSign },
+      { title: "Companies", url: "/master/company", icon: Building2 },
+      { title: "Settlements", url: "/master/settlement", icon: Calendar },
     ]
   },
   {
-    title: "Trading Operations",
-    icon: Activity,
+    title: "Trading",
+    icon: TrendingUp,
     submenu: [
-      { title: "Trade File Upload", url: "/trading", icon: TrendingUp },
-      { title: "Contract Management", url: "/contracts", icon: FileText },
-      { title: "Stock Holdings", url: "/holdings", icon: Package },
+      { title: "Upload Trades", url: "/trading", icon: TrendingUp },
+      { title: "Contracts", url: "/contracts", icon: FileText },
+      { title: "Holdings", url: "/holdings", icon: Package },
     ]
   },
   {
-    title: "Financial Management",
-    icon: DollarSign,
+    title: "Billing",
+    icon: Receipt,
     submenu: [
-      { 
-        title: "Bills & Invoices", 
-        url: "/bills",
-        icon: Receipt,
-        submenu: [
-          { title: "Party Bills", url: "/bills?type=party", icon: FileText },
-          { title: "Broker Bills", url: "/bills?type=broker", icon: FileText },
-        ]
-      },
-      { 
-        title: "Payments & Ledger", 
-        url: "/ledger",
-        icon: BookOpen,
-        submenu: [
-          { title: "All Transactions", url: "/ledger", icon: BookOpen },
-          { title: "Ledger Bills", url: "/ledger/bills", icon: Receipt },
-        ]
-      },
+      { title: "Party Bills", url: "/bills?type=party", icon: Users },
+      { title: "Broker Bills", url: "/bills?type=broker", icon: DollarSign },
     ]
   },
   {
-    title: "Reports & Analytics",
-    icon: FileSpreadsheet,
+    title: "Ledger",
+    icon: BookOpen,
     submenu: [
-      { title: "Business Reports", url: "/reports", icon: BarChart3 },
-      { title: "Party Statements", url: "/reports/party", icon: Users },
-      { title: "Trading Summary", url: "/reports/trading", icon: TrendingUp },
+      { title: "Transactions", url: "/ledger", icon: BookOpen },
+      { title: "Bills", url: "/ledger/bills", icon: Receipt },
     ]
   },
-  {
-    title: "System Settings",
-    icon: Settings,
-    submenu: [
-      { title: "Application Settings", url: "/settings", icon: Settings },
-      { title: "Data Management", url: "/settings/data", icon: Database },
-    ]
-  }
+  // {
+  //   title: "Reports & Analytics",
+  //   icon: FileSpreadsheet,
+  //   submenu: [
+  //     { title: "Business Reports", url: "/reports", icon: BarChart3 },
+  //     { title: "Party Statements", url: "/reports/party", icon: Users },
+  //     { title: "Trading Summary", url: "/reports/trading", icon: TrendingUp },
+  //   ]
+  // },
+  // {
+  //   title: "System Settings",
+  //   icon: Settings,
+  //   submenu: [
+  //     { title: "Application Settings", url: "/settings", icon: Settings },
+  //     { title: "Data Management", url: "/settings/data", icon: Database },
+  //   ]
+  // }
 ];
 
 export function AppSidebar({ onLogout }: { onLogout: () => void }) {
@@ -172,7 +164,7 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
 
   const isMenuOpen = (menuTitle: string) => openMenus.includes(menuTitle) || shouldShowExpanded;
 
-  const isSubmenuActive = (submenu: { title: string; url: string; icon?: any }[]) => {
+  const isSubmenuActive = (submenu: { title: string; url: string; icon?: React.ComponentType<{ className?: string }> }[]) => {
     return submenu.some(item => location.pathname === item.url);
   };
 
@@ -188,7 +180,7 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
   };
 
   // Handle Enter key on submenu items  
-  const handleSubmenuEnter = (submenuItem: { title: string; url: string; icon?: any }) => {
+  const handleSubmenuEnter = (submenuItem: { title: string; url: string; icon?: React.ComponentType<{ className?: string }> }) => {
     // For master pages, add action=new to auto-open form
     const masterPages = ['/master/party', '/master/company', '/master/settlement'];
     if (masterPages.includes(submenuItem.url)) {
@@ -223,6 +215,7 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
         setOpenMenus(prev => [...prev, menu.title]);
       }
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname]);
 
   return (

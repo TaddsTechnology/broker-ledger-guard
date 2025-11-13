@@ -25,7 +25,6 @@ import Settings from "./pages/Settings";
 import DataManagement from "./pages/DataManagement";
 import BrokerMaster from "./pages/BrokerMaster";
 import NotFound from "./pages/NotFound";
-import BrokerBill from "./pages/BrokerBill";
 
 const queryClient = new QueryClient();
 
@@ -62,7 +61,7 @@ const AppContent = () => {
       
       <div className="flex min-h-screen w-full bg-background">
         <AppSidebar onLogout={() => {
-          sessionStorage.removeItem("broker_erp_auth");
+          sessionStorage.removeItem("isAuthenticated");
           window.location.reload();
         }} />
         <div className="flex-1 flex flex-col overflow-hidden">
@@ -78,7 +77,6 @@ const AppContent = () => {
             <Route path="/contracts" element={<Contracts />} />
             <Route path="/holdings" element={<Holdings />} />
             <Route path="/bills" element={<Bills />} />
-            <Route path="/bills/broker" element={<BrokerBill />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/reports/party" element={<Reports />} />
             <Route path="/reports/trading" element={<Reports />} />
@@ -101,33 +99,16 @@ const App = () => {
 
   useEffect(() => {
     // Check if user has a valid session
-    const authStatus = sessionStorage.getItem("broker_erp_auth");
-    if (authStatus === "authenticated") {
+    const authStatus = sessionStorage.getItem("isAuthenticated");
+    if (authStatus === "true") {
       setIsAuthenticated(true);
     }
     setIsCheckingAuth(false);
   }, []);
 
   const handleAuthenticate = async (password: string): Promise<boolean> => {
-    // Normal login
-    if (password === "admin") {
-      setIsAuthenticated(true);
-      sessionStorage.setItem("broker_erp_auth", "authenticated");
-      return true;
-    }
-    
-    // Reverse password - delete all entries (functionality removed)
-    if (password === "nimda") {
-      // TODO: Implement data deletion with proper UI confirmation
-      return false;
-    }
-    
+    // This function is no longer needed as AuthModal handles it internally
     return false;
-  };
-
-  const handleLogout = () => {
-    setIsAuthenticated(false);
-    sessionStorage.removeItem("broker_erp_auth");
   };
 
   if (isCheckingAuth) {
@@ -138,20 +119,20 @@ const App = () => {
     );
   }
 
-  if (!isAuthenticated) {
-    return <AuthModal onAuthenticate={handleAuthenticate} />;
-  }
-
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Toaster />
         <Sonner duration={1000} />
-        <BrowserRouter>
-          <SidebarProvider defaultOpen>
-            <AppContent />
-          </SidebarProvider>
-        </BrowserRouter>
+        {!isAuthenticated ? (
+          <AuthModal onAuthenticate={handleAuthenticate} />
+        ) : (
+          <BrowserRouter>
+            <SidebarProvider defaultOpen>
+              <AppContent />
+            </SidebarProvider>
+          </BrowserRouter>
+        )}
       </TooltipProvider>
     </QueryClientProvider>
   );

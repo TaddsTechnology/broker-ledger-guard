@@ -1334,7 +1334,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
       for (const item of billItems) {
         // Create contracts for both trading (T) and delivery (D) trades
 
-        // Get company_id from company_code
+        // Get company_id from company_code (required for stock holdings)
         let company_id = null;
         if (item.company_code) {
           const companyQuery = await client.query(
@@ -1347,46 +1347,40 @@ app.post('/api/stock-trades/process', async (req, res) => {
         }
 
         // Generate sequential contract number
-        const lastContractQuery = await client.query(
-          'SELECT contract_number FROM contracts ORDER BY created_at DESC LIMIT 1'
+        const countQuery = await client.query(
+          'SELECT COUNT(*) as count FROM contracts'
         );
-        
-        let nextNumber = 1;
-        if (lastContractQuery.rows.length > 0) {
-          const lastNumber = lastContractQuery.rows[0].contract_number;
-          const match = lastNumber.match(/(\d+)$/);
-          if (match) {
-            nextNumber = parseInt(match[1]) + 1;
-          }
-        }
-        
+        const nextNumber = (parseInt(countQuery.rows[0].count) || 0) + 1;
         const contract_number = String(nextNumber).padStart(3, '0');
         
         // Determine contract_type from description (BUY or SELL)
         const contract_type = item.description.toUpperCase().includes('BUY') ? 'buy' : 'sell';
 
-        // Create contract - this will trigger the stock_holdings update via database trigger
-        await client.query(
-          'INSERT INTO contracts (contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, company_id, trade_type, party_bill_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)',
-          [
-            contract_number,
-            party.id,
-            null, // settlement_id not available from CSV
-            null, // broker_id
-            brokerIdGlobal,
-            billDateStr,
-            item.quantity,
-            item.rate,
-            item.amount,
-            contract_type,
-            item.brokerage_rate_pct,
-            item.brokerage_amount,
-            'active',
-            company_id,
-            item.trade_type,
-            billId
-          ]
-        );
+        // Only create contract if company exists in company_master
+        // The database trigger will automatically update stock_holdings
+        if (company_id) {
+          await client.query(
+            'INSERT INTO contracts (contract_number, party_id, settlement_id, broker_id, broker_code, contract_date, quantity, rate, amount, contract_type, brokerage_rate, brokerage_amount, status, company_id, trade_type, party_bill_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)',
+            [
+              contract_number,
+              party.id,
+              null, // settlement_id not available from CSV
+              null, // broker_id
+              brokerIdGlobal,
+              billDateStr,
+              item.quantity,
+              item.rate,
+              item.amount,
+              contract_type,
+              item.brokerage_rate_pct,
+              item.brokerage_amount,
+              'active',
+              company_id,
+              item.trade_type,
+              billId
+            ]
+          );
+        }
       }
 
       results.clientBills.push({
@@ -1608,6 +1602,50 @@ app.post('/api/bills/:billId/payment', async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Error recording payment:', error);
     res.status(500).json({ error: 'Failed to record payment', details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Nuclear reset endpoint - DELETES ALL DATA
+app.post('/api/nuclear-reset', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    console.log('🔥 NUCLEAR RESET INITIATED - Deleting all data...');
+    
+    // Truncate all tables in correct order (respecting foreign keys)
+    const tables = [
+      'payments',
+      'bill_items',
+      'bills',
+      'ledger_entries',
+      'stock_holdings',
+      'contracts',
+      'company_master',
+      'party_master',
+      'broker_master',
+      'settlement_master'
+    ];
+    
+    for (const table of tables) {
+      await client.query(`TRUNCATE TABLE ${table} RESTART IDENTITY CASCADE`);
+      console.log(`  ✓ Cleared ${table}`);
+    }
+    
+    await client.query('COMMIT');
+    console.log('💥 NUCLEAR RESET COMPLETE - All data deleted');
+    
+    res.json({ 
+      success: true, 
+      message: 'All data has been permanently deleted',
+      tables_cleared: tables
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Nuclear reset error:', error);
+    res.status(500).json({ error: 'Failed to complete nuclear reset', details: error.message });
   } finally {
     client.release();
   }
