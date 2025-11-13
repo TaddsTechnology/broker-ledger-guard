@@ -1281,14 +1281,35 @@ app.post('/api/stock-trades/process', async (req, res) => {
       );
       results.ledgerEntries.push(consolidatedLedgerResult.rows[0]);
 
-      // Track broker ID (all trades should have same broker)
+      // Track broker ID and get broker details for their cut
       if (!brokerIdGlobal) {
         brokerIdGlobal = (clientTrades[0].brokerid || clientTrades[0].brokerId || 'BROKER').toString().toUpperCase();
       }
       
+      // Get broker details to calculate their share
+      let brokerShareTotal = 0;
+      const brokerQuery = await client.query(
+        'SELECT id, broker_code, name, trading_slab, delivery_slab FROM broker_master WHERE UPPER(broker_code) = $1',
+        [brokerIdGlobal]
+      );
+      
+      if (brokerQuery.rows.length > 0) {
+        const broker = brokerQuery.rows[0];
+        
+        // Calculate broker's share for each trade
+        for (const item of billItems) {
+          const brokerRate = item.trade_type === 'T' ? Number(broker.trading_slab) : Number(broker.delivery_slab);
+          const brokerShare = (item.amount * brokerRate) / 100;
+          brokerShareTotal += brokerShare;
+          
+          // Store broker share in item for broker bill
+          item.broker_share = brokerShare;
+        }
+      }
+      
       // Add this client's items to broker bill items
       allBrokerBillItems.push(...billItems);
-      totalBrokerageAllClients += totalBrokerage;
+      totalBrokerageAllClients += brokerShareTotal; // Only broker's share, not total
 
       // Insert bill items with trade_type
       for (const item of billItems) {
@@ -1536,6 +1557,59 @@ app.get('/api/holdings/party/:partyId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching party holdings:', error);
     res.status(500).json({ error: 'Failed to fetch party holdings' });
+  }
+});
+
+// Record broker payment
+app.post('/api/bills/:billId/payment', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { billId } = req.params;
+    const { amount, payment_date, payment_method, reference_number, notes } = req.body;
+
+    await client.query('BEGIN');
+
+    // Get bill details
+    const billResult = await client.query('SELECT * FROM bills WHERE id = $1', [billId]);
+    if (billResult.rows.length === 0) {
+      throw new Error('Bill not found');
+    }
+    const bill = billResult.rows[0];
+
+    // Generate payment number
+    const now = new Date();
+    const paymentNumber = `PAY${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(Math.floor(Math.random() * 900) + 100)}`;
+
+    // Insert payment record
+    await client.query(
+      'INSERT INTO payments (payment_number, party_id, bill_id, payment_date, amount, payment_method, reference_number, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+      [paymentNumber, bill.party_id, billId, payment_date, amount, payment_method, reference_number, notes]
+    );
+
+    // Update bill paid amount and status
+    const newPaidAmount = Number(bill.paid_amount) + Number(amount);
+    const newStatus = newPaidAmount >= Number(bill.total_amount) ? 'paid' : 'partial';
+    
+    await client.query(
+      'UPDATE bills SET paid_amount = $1, status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
+      [newPaidAmount, newStatus, billId]
+    );
+
+    await client.query('COMMIT');
+    
+    res.json({ 
+      success: true, 
+      message: 'Payment recorded successfully',
+      paymentNumber,
+      newPaidAmount,
+      newStatus
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error recording payment:', error);
+    res.status(500).json({ error: 'Failed to record payment', details: error.message });
+  } finally {
+    client.release();
   }
 });
 

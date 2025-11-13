@@ -2,13 +2,14 @@ import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Plus, Pencil, Trash2, Save, X, List, Search, Calendar, IndianRupee, Eye } from "lucide-react";
+import { Plus, Pencil, Trash2, Save, X, List, Search, Calendar, IndianRupee, Eye, Wallet } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useFormNavigation, useBusinessKeyboard } from "@/hooks/useBusinessKeyboard";
 import { billQueries, partyQueries } from "@/lib/database";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { BillView } from "@/components/BillView";
 import { BillEditor } from "@/components/BillEditor";
+import { BrokerBillView } from "@/components/BrokerBillView";
 import {
   Table,
   TableBody,
@@ -71,6 +72,8 @@ const Bills = () => {
   const [billToDelete, setBillToDelete] = useState<Bill | null>(null);
   const [viewBillId, setViewBillId] = useState<string | null>(null);
   const [billViewOpen, setBillViewOpen] = useState(false);
+  const [brokerBillViewOpen, setBrokerBillViewOpen] = useState(false);
+  const [viewingBrokerBill, setViewingBrokerBill] = useState<Bill | null>(null);
   const { toast } = useToast();
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -742,6 +745,21 @@ const Bills = () => {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
+                        {bill.bill_type === 'broker' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setViewingBrokerBill(bill);
+                              setBrokerBillViewOpen(true);
+                            }}
+                            className="hover:bg-blue-100 hover:text-blue-700"
+                            title="View & Pay Broker Bill"
+                          >
+                            <Wallet className="w-4 h-4" />
+                          </Button>
+                        )}
                         <Button
                           variant="ghost"
                           size="sm"
@@ -822,6 +840,12 @@ const Bills = () => {
           );
         })()
       )}
+      
+      <BrokerBillView
+        bill={viewingBrokerBill}
+        open={brokerBillViewOpen}
+        onOpenChange={setBrokerBillViewOpen}
+      />
     </>
   );
 };
