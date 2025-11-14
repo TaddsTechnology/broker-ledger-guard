@@ -159,7 +159,11 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
                           <tbody>
                             {clientItems.map((item, idx) => (
                               <tr key={idx} className="border-b">
-                                <td className="p-2">{item.description}</td>
+                                <td className="p-2">
+                                  {item.company_name 
+                                    ? `${item.company_code} - ${item.company_name}` 
+                                    : item.description}
+                                </td>
                                 <td className="p-2 text-right">{item.quantity}</td>
                                 <td className="p-2 text-right">
                                   ₹{Number(item.rate).toFixed(2)}

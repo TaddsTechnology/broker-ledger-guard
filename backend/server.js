@@ -358,7 +358,11 @@ app.get('/api/bills/:id/items', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
-      'SELECT * FROM bill_items WHERE bill_id = $1 ORDER BY id ASC',
+      `SELECT bi.*, cm.name as company_name, cm.nse_code as company_nse_code
+       FROM bill_items bi
+       LEFT JOIN company_master cm ON bi.company_code = cm.company_code
+       WHERE bi.bill_id = $1
+       ORDER BY bi.id ASC`,
       [id]
     );
     res.json(result.rows);
@@ -648,16 +652,38 @@ app.post('/api/contracts/batch', async (req, res) => {
       
       // Create bill items
       for (const contract of partyContracts) {
+        // Get company information if company_id exists
+        let companyName = null;
+        let companyCode = null;
+        if (contract.company_id) {
+          const companyQuery = await client.query(
+            'SELECT company_code, name FROM company_master WHERE id = $1',
+            [contract.company_id]
+          );
+          if (companyQuery.rows.length > 0) {
+            companyCode = companyQuery.rows[0].company_code;
+            companyName = companyQuery.rows[0].name;
+          }
+        }
+        
+        // Use company name if available, otherwise fall back to contract number
+        const description = companyName 
+          ? `${companyCode} - ${companyName}` 
+          : `Contract ${contract.contract_number} - ${contract.contract_type.toUpperCase()}`;
+        
         await client.query(
-          'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, brokerage_rate_pct, brokerage_amount) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, brokerage_rate_pct, brokerage_amount, company_code, client_code, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
           [
             bill.id,
-            `Contract ${contract.contract_number} - ${contract.contract_type.toUpperCase()}`,
+            description,
             contract.quantity,
             contract.rate,
             contract.amount,
             contract.brokerage_rate,
-            contract.brokerage_amount
+            contract.brokerage_amount,
+            companyCode,
+            party.party_code,
+            contract.trade_type
           ]
         );
       }
@@ -741,16 +767,50 @@ app.post('/api/contracts/batch', async (req, res) => {
       
       // Create broker bill items
       for (const contract of brokerContracts) {
+        // Get company information if company_id exists
+        let companyName = null;
+        let companyCode = null;
+        if (contract.company_id) {
+          const companyQuery = await client.query(
+            'SELECT company_code, name FROM company_master WHERE id = $1',
+            [contract.company_id]
+          );
+          if (companyQuery.rows.length > 0) {
+            companyCode = companyQuery.rows[0].company_code;
+            companyName = companyQuery.rows[0].name;
+          }
+        }
+        
+        // Get party code for client_code
+        let clientCode = null;
+        if (contract.party_id) {
+          const partyQuery = await client.query(
+            'SELECT party_code FROM party_master WHERE id = $1',
+            [contract.party_id]
+          );
+          if (partyQuery.rows.length > 0) {
+            clientCode = partyQuery.rows[0].party_code;
+          }
+        }
+        
+        // Use company name if available, otherwise fall back to contract number
+        const description = companyName 
+          ? `${companyCode} - ${companyName}` 
+          : `Contract ${contract.contract_number} - Brokerage`;
+        
         await client.query(
-          'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, brokerage_rate_pct, brokerage_amount) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+          'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, brokerage_rate_pct, brokerage_amount, company_code, client_code, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
           [
             brokerBill.id,
-            `Contract ${contract.contract_number} - Brokerage`,
+            description,
             contract.quantity,
             contract.rate,
             contract.amount,
             contract.brokerage_rate,
-            contract.brokerage_amount
+            contract.brokerage_amount,
+            companyCode,
+            clientCode,
+            contract.trade_type
           ]
         );
       }
@@ -1036,12 +1096,17 @@ app.post('/api/bills/create-broker', async (req, res) => {
         billId = billRes.rows[0].id;
       }
 
-      const insertItem = `INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount)
-                          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`;
+      const insertItem = `INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount, trade_type)
+                          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`;
       for (const it of items) {
+        // Use company_name if available, otherwise securityName or company_code
+        const description = it.company_name 
+          ? `${it.company_code} - ${it.company_name}` 
+          : (it.securityName || `${it.company_code || ''}`);
+        
         await client.query(insertItem, [
           billId,
-          it.securityName || `${it.company_code || ''}`,
+          description,
           Number(it.quantity) || 0,
           Number(it.price) || 0,
           Number(it.amount) || 0,
@@ -1049,6 +1114,7 @@ app.post('/api/bills/create-broker', async (req, res) => {
           (it.company_code || null),
           Number(it.brokerage_rate_pct) || 0,
           Number(it.brokerage_amount) || 0,
+          (it.type || it.trade_type || null),
         ]);
       }
 
