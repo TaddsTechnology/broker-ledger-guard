@@ -1739,6 +1739,1342 @@ app.post('/api/nuclear-reset', async (req, res) => {
   }
 });
 
+// ============================================================================
+// F&O INSTRUMENTS API
+// ============================================================================
+
+// Get all F&O instruments
+app.get('/api/fo/instruments', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM fo_instrument_master ORDER BY expiry_date DESC, symbol, instrument_type'
+    );
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching F&O instruments:', error);
+    res.status(500).json({ error: 'Failed to fetch instruments' });
+  }
+});
+
+// Get single F&O instrument
+app.get('/api/fo/instruments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'SELECT * FROM fo_instrument_master WHERE id = $1',
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Instrument not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching instrument:', error);
+    res.status(500).json({ error: 'Failed to fetch instrument' });
+  }
+});
+
+// Create F&O instrument
+app.post('/api/fo/instruments', async (req, res) => {
+  try {
+    const { 
+      symbol, 
+      instrument_type, 
+      expiry_date, 
+      strike_price, 
+      lot_size, 
+      segment, 
+      underlying_asset, 
+      tick_size, 
+      display_name, 
+      is_active 
+    } = req.body;
+    
+    const result = await pool.query(
+      `INSERT INTO fo_instrument_master 
+        (symbol, instrument_type, expiry_date, strike_price, lot_size, segment, underlying_asset, tick_size, display_name, is_active) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
+       RETURNING *`,
+      [
+        symbol,
+        instrument_type,
+        expiry_date,
+        strike_price,
+        lot_size,
+        segment || 'NFO',
+        underlying_asset,
+        tick_size || 0.05,
+        display_name,
+        is_active !== false
+      ]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating instrument:', error);
+    res.status(500).json({ error: 'Failed to create instrument', details: error.message });
+  }
+});
+
+// Update F&O instrument
+app.put('/api/fo/instruments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      symbol, 
+      instrument_type, 
+      expiry_date, 
+      strike_price, 
+      lot_size, 
+      segment, 
+      underlying_asset, 
+      tick_size, 
+      display_name, 
+      is_active 
+    } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE fo_instrument_master 
+       SET symbol = $1, instrument_type = $2, expiry_date = $3, strike_price = $4, 
+           lot_size = $5, segment = $6, underlying_asset = $7, tick_size = $8, 
+           display_name = $9, is_active = $10, updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $11 
+       RETURNING *`,
+      [
+        symbol,
+        instrument_type,
+        expiry_date,
+        strike_price,
+        lot_size,
+        segment,
+        underlying_asset,
+        tick_size,
+        display_name,
+        is_active,
+        id
+      ]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Instrument not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating instrument:', error);
+    res.status(500).json({ error: 'Failed to update instrument' });
+  }
+});
+
+// Delete F&O instrument
+app.delete('/api/fo/instruments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM fo_instrument_master WHERE id = $1', [id]);
+    res.json({ message: 'Instrument deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting instrument:', error);
+    res.status(500).json({ error: 'Failed to delete instrument' });
+  }
+});
+
+// Process F&O trades and create ledger entries, positions, and bills
+app.post('/api/fo/trades/process', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { trades, billDate } = req.body;
+    if (!Array.isArray(trades) || trades.length === 0) {
+      return res.status(400).json({ error: 'trades array is required' });
+    }
+
+    await client.query('BEGIN');
+
+    const results = {
+      clientBills: [],
+      brokerEntries: [],
+      ledgerEntries: [],
+    };
+
+    // Collect all bill items for broker bill
+    const allBrokerBillItems = [];
+    let totalBrokerageAllClients = 0;
+    let brokerIdGlobal = null;
+
+    // Group trades by client
+    const clientGroups = {};
+    for (const trade of trades) {
+      const clientId = (trade.ClientId || trade.clientId || '').toString().trim().toUpperCase();
+      if (!clientId) continue;
+      
+      if (!clientGroups[clientId]) clientGroups[clientId] = [];
+      clientGroups[clientId].push(trade);
+    }
+
+    const now = new Date();
+    const billDateStr = billDate || now.toISOString().slice(0, 10);
+
+    // Process each client
+    for (const [clientId, clientTrades] of Object.entries(clientGroups)) {
+      // Get party details
+      const partyQuery = await client.query(
+        'SELECT id, party_code, name, trading_slab, delivery_slab FROM fo_party_master WHERE UPPER(party_code) = $1',
+        [clientId]
+      );
+
+      if (partyQuery.rows.length === 0) {
+        console.warn(`Party not found: ${clientId}`);
+        continue;
+      }
+
+      const party = partyQuery.rows[0];
+      let totalBrokerage = 0;
+
+      const billItems = [];
+      let totalBuyAmount = 0;
+      let totalSellAmount = 0;
+
+      // Process each F&O trade
+      for (const trade of clientTrades) {
+        const symbol = (trade.Symbol || trade.symbol || '').toString().toUpperCase();
+        const instrumentType = (trade.InstrumentType || trade.instrumentType || 'FUT').toString().toUpperCase();
+        const expiryDate = trade.ExpiryDate || trade.expiryDate || '';
+        const strikePrice = Number(trade.StrikePrice || trade.strikePrice || 0);
+        const side = (trade.Side || trade.side || '').toString().toUpperCase();
+        
+        // Get quantity (in lots)
+        let lotQuantity = 0;
+        if (side === 'BUY') {
+          lotQuantity = Number(trade.BuyQty || trade.Quantity || trade.quantity || 0);
+        } else if (side === 'SELL') {
+          lotQuantity = Number(trade.SellQty || trade.Quantity || trade.quantity || 0);
+        } else {
+          lotQuantity = Number(trade.BuyQty || trade.SellQty || trade.Quantity || trade.quantity || 0);
+        }
+        
+        // Get price
+        let price = 0;
+        if (side === 'BUY') {
+          price = Number(trade.BuyAvg || trade.Price || trade.price || 0);
+        } else if (side === 'SELL') {
+          price = Number(trade.SellAvg || trade.Price || trade.price || 0);
+        } else {
+          price = Number(trade.BuyAvg || trade.SellAvg || trade.Price || trade.price || 0);
+        }
+        
+        const type = (trade.Type || trade.type || 'T').toString().toUpperCase(); // Default to Trading
+        
+        // Skip if quantity or price is 0
+        if (lotQuantity === 0 || price === 0) {
+          console.warn(`Skipping F&O trade with zero quantity or price: ${symbol}`);
+          continue;
+        }
+
+        // Find instrument in database
+        let instrument = null;
+        let lotSize = 1; // Default lot size
+        
+        // Build instrument query based on type
+        let instrumentQuery;
+        if (instrumentType === 'FUT') {
+          instrumentQuery = await client.query(
+            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND expiry_date = $3 AND is_active = true',
+            [symbol, 'FUT', expiryDate]
+          );
+        } else if (instrumentType === 'CE' || instrumentType === 'PE') {
+          instrumentQuery = await client.query(
+            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND expiry_date = $3 AND strike_price = $4 AND is_active = true',
+            [symbol, instrumentType, expiryDate, strikePrice]
+          );
+        }
+        
+        if (instrumentQuery && instrumentQuery.rows.length > 0) {
+          instrument = instrumentQuery.rows[0];
+          lotSize = Number(instrument.lot_size) || 1;
+        } else {
+          // Auto-create instrument if not found
+          console.log(`Auto-creating F&O instrument: ${symbol} ${instrumentType}`);
+          const newInstrumentResult = await client.query(
+            `INSERT INTO fo_instrument_master 
+              (symbol, instrument_type, expiry_date, strike_price, lot_size, segment, underlying_asset, display_name, is_active) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+             RETURNING *`,
+            [
+              symbol,
+              instrumentType,
+              expiryDate || null,
+              strikePrice || null,
+              lotSize, // Default lot size
+              'NFO',
+              symbol,
+              `${symbol} ${instrumentType} ${expiryDate}${strikePrice ? ' ' + strikePrice : ''}`,
+              true
+            ]
+          );
+          instrument = newInstrumentResult.rows[0];
+        }
+
+        // Calculate actual quantity (lots * lot size)
+        const actualQuantity = lotQuantity * lotSize;
+        const amount = actualQuantity * price;
+        
+        // Calculate brokerage (based on contract value)
+        const brokerageRate = type === 'T' ? Number(party.trading_slab) : Number(party.delivery_slab);
+        const brokerageAmount = (amount * brokerageRate) / 100;
+        totalBrokerage += brokerageAmount;
+
+        // Track buy/sell amounts
+        if (side === 'BUY') {
+          totalBuyAmount += amount;
+        } else if (side === 'SELL') {
+          totalSellAmount += amount;
+        }
+
+        // Create F&O contract entry
+        const contractResult = await client.query(
+          `INSERT INTO fo_contracts 
+            (party_id, instrument_id, trade_date, trade_type, quantity, price, amount, lot_size, brokerage_amount) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+           RETURNING *`,
+          [
+            party.id,
+            instrument.id,
+            billDateStr,
+            side,
+            actualQuantity,
+            price,
+            amount,
+            lotSize,
+            brokerageAmount
+          ]
+        );
+
+        // Update F&O position
+        const positionQuery = await client.query(
+          'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2 AND status = $3',
+          [party.id, instrument.id, 'open']
+        );
+
+        if (positionQuery.rows.length > 0) {
+          // Update existing position
+          const position = positionQuery.rows[0];
+          const currentQty = Number(position.quantity);
+          const currentAvgPrice = Number(position.avg_price);
+          const currentTotalInvested = currentQty * currentAvgPrice;
+          
+          let newQty, newAvgPrice;
+          
+          if (side === 'BUY') {
+            // Long position
+            newQty = currentQty + actualQuantity;
+            const newTotalInvested = currentTotalInvested + amount;
+            newAvgPrice = newQty !== 0 ? newTotalInvested / newQty : price;
+          } else {
+            // Short or reducing position
+            newQty = currentQty - actualQuantity;
+            newAvgPrice = currentAvgPrice; // Keep same avg price when selling
+          }
+          
+          // Check if position is closed
+          const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+          
+          await client.query(
+            'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
+            [newQty, newAvgPrice, positionStatus, position.id]
+          );
+        } else {
+          // Create new position
+          const positionQty = side === 'BUY' ? actualQuantity : -actualQuantity;
+          
+          await client.query(
+            `INSERT INTO fo_positions 
+              (party_id, instrument_id, quantity, avg_price, status) 
+             VALUES ($1, $2, $3, $4, $5)`,
+            [party.id, instrument.id, positionQty, price, 'open']
+          );
+        }
+
+        billItems.push({
+          description: `${instrument.display_name || symbol} - ${side}`,
+          quantity: actualQuantity,
+          rate: price,
+          amount,
+          lot_size: lotSize,
+          client_code: clientId,
+          instrument_id: instrument.id,
+          brokerage_rate_pct: brokerageRate,
+          brokerage_amount: brokerageAmount,
+          trade_type: type,
+        });
+      }
+
+      // Calculate net trade settlement
+      const netTradeAmount = totalBuyAmount - totalSellAmount;
+      const finalClientBalance = netTradeAmount + totalBrokerage;
+
+      // Get current client balance
+      let currentClientBalance = 0;
+      const clientBalanceQuery = await client.query(
+        'SELECT balance FROM fo_ledger_entries WHERE party_id = $1 AND reference_type = $2 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        [party.id, 'client_settlement']
+      );
+      if (clientBalanceQuery.rows.length > 0) {
+        currentClientBalance = Number(clientBalanceQuery.rows[0].balance) || 0;
+      }
+      
+      const newClientBalance = currentClientBalance + finalClientBalance;
+
+      // Create new F&O bill
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const suffix = String(Math.floor(Math.random() * 900) + 100);
+      const billNumber = `FO-PTY${y}${m}${d}-${suffix}`;
+
+      const billResult = await client.query(
+        'INSERT INTO fo_bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [billNumber, party.id, billDateStr, finalClientBalance, 'party', 'pending']
+      );
+
+      const billId = billResult.rows[0].id;
+
+      // Create ledger entry
+      const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
+      const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
+      
+      const consolidatedLedgerResult = await client.query(
+        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          party.id,
+          billDateStr,
+          `F&O Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${clientTrades.length} trades)`,
+          debitAmount,
+          creditAmount,
+          newClientBalance,
+          'client_settlement',
+          billId
+        ]
+      );
+      results.ledgerEntries.push(consolidatedLedgerResult.rows[0]);
+
+      // Track broker
+      if (!brokerIdGlobal) {
+        brokerIdGlobal = (clientTrades[0].brokerid || clientTrades[0].brokerId || 'BROKER').toString().toUpperCase();
+      }
+      
+      // Get broker details
+      let brokerShareTotal = 0;
+      const brokerQuery = await client.query(
+        'SELECT id, broker_code, name, trading_slab, delivery_slab FROM fo_broker_master WHERE UPPER(broker_code) = $1',
+        [brokerIdGlobal]
+      );
+      
+      if (brokerQuery.rows.length > 0) {
+        const broker = brokerQuery.rows[0];
+        
+        for (const item of billItems) {
+          const brokerRate = item.trade_type === 'T' ? Number(broker.trading_slab) : Number(broker.delivery_slab);
+          const brokerShare = (item.amount * brokerRate) / 100;
+          brokerShareTotal += brokerShare;
+          item.broker_share = brokerShare;
+        }
+      }
+      
+      allBrokerBillItems.push(...billItems);
+      totalBrokerageAllClients += totalBrokerage;
+
+      // Insert F&O bill items
+      for (const item of billItems) {
+        await client.query(
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, lot_size, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+          [
+            billId,
+            item.description,
+            item.quantity,
+            item.rate,
+            item.amount,
+            item.lot_size,
+            item.client_code,
+            item.instrument_id,
+            item.brokerage_rate_pct,
+            item.brokerage_amount,
+            item.trade_type,
+          ]
+        );
+      }
+
+      results.clientBills.push({
+        billId,
+        billNumber,
+        clientId,
+        partyName: party.name,
+        totalBuyAmount,
+        totalSellAmount,
+        totalBrokerage,
+        netAmount: finalClientBalance,
+        items: billItems.length,
+      });
+    }
+
+    // Create broker bill
+    if (allBrokerBillItems.length > 0 && brokerIdGlobal) {
+      const clientList = Object.keys(clientGroups).join(', ');
+      
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const brokerBillNumber = `FO-BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
+      
+      const brokerBillResult = await client.query(
+        'INSERT INTO fo_bills (bill_number, party_id, broker_id, broker_code, bill_date, total_amount, bill_type, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+        [
+          brokerBillNumber,
+          null,
+          null,
+          brokerIdGlobal,
+          billDateStr,
+          totalBrokerageAllClients,
+          'broker',
+          'pending',
+          `F&O Brokerage from clients: ${clientList} - ${allBrokerBillItems.length} trades`
+        ]
+      );
+      const brokerBillId = brokerBillResult.rows[0].id;
+      
+      // Insert broker bill items
+      for (const item of allBrokerBillItems) {
+        await client.query(
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, lot_size, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+          [
+            brokerBillId,
+            item.description,
+            item.quantity,
+            item.rate,
+            item.amount,
+            item.lot_size,
+            item.client_code,
+            item.instrument_id,
+            item.brokerage_rate_pct,
+            item.brokerage_amount,
+            item.trade_type,
+          ]
+        );
+      }
+
+      // Create broker ledger entry
+      let brokerBalance = 0;
+      const brokerBalanceQuery = await client.query(
+        'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['broker_brokerage']
+      );
+      if (brokerBalanceQuery.rows.length > 0) {
+        brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
+      }
+      brokerBalance += totalBrokerageAllClients;
+
+      const brokerLedgerResult = await client.query(
+        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `F&O Brokerage - Bill ${brokerBillNumber} (${Object.keys(clientGroups).length} clients, ${allBrokerBillItems.length} trades)`,
+          0,
+          totalBrokerageAllClients,
+          brokerBalance,
+          'broker_brokerage',
+          brokerBillId
+        ]
+      );
+      results.brokerEntries.push(brokerLedgerResult.rows[0]);
+    }
+
+    await client.query('COMMIT');
+    res.json(results);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error processing F&O trades:', error);
+    res.status(500).json({ error: 'Failed to process F&O trades', details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ========================================
+// F&O PARTY MASTER APIs
+// ========================================
+
+// Get all F&O parties
+app.get('/api/fo/parties', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM fo_party_master ORDER BY created_at DESC');
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching F&O parties:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O parties' });
+  }
+});
+
+// Create F&O party
+app.post('/api/fo/parties', async (req, res) => {
+  try {
+    const { party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab } = req.body;
+    const result = await pool.query(
+      'INSERT INTO fo_party_master (party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+      [party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating F&O party:', error);
+    res.status(500).json({ error: 'Failed to create F&O party' });
+  }
+});
+
+// Update F&O party
+app.put('/api/fo/parties/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab } = req.body;
+    const result = await pool.query(
+      'UPDATE fo_party_master SET party_code = $1, name = $2, nse_code = $3, ref_code = $4, address = $5, city = $6, phone = $7, trading_slab = $8, delivery_slab = $9, updated_at = NOW() WHERE id = $10 RETURNING *',
+      [party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab, id]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating F&O party:', error);
+    res.status(500).json({ error: 'Failed to update F&O party' });
+  }
+});
+
+// Delete F&O party
+app.delete('/api/fo/parties/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM fo_party_master WHERE id = $1', [id]);
+    res.json({ message: 'F&O party deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting F&O party:', error);
+    res.status(500).json({ error: 'Failed to delete F&O party' });
+  }
+});
+
+// ========================================
+// F&O BROKER MASTER APIs
+// ========================================
+
+// Get all F&O brokers
+app.get('/api/fo/brokers', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM fo_broker_master ORDER BY created_at DESC');
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching F&O brokers:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O brokers' });
+  }
+});
+
+// Create F&O broker
+app.post('/api/fo/brokers', async (req, res) => {
+  try {
+    const { broker_code, name, address, city, phone, trading_slab, delivery_slab } = req.body;
+    const result = await pool.query(
+      'INSERT INTO fo_broker_master (broker_code, name, address, city, phone, trading_slab, delivery_slab) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [broker_code, name, address, city, phone, trading_slab, delivery_slab]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating F&O broker:', error);
+    res.status(500).json({ error: 'Failed to create F&O broker' });
+  }
+});
+
+// Update F&O broker
+app.put('/api/fo/brokers/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { broker_code, name, address, city, phone, trading_slab, delivery_slab } = req.body;
+    const result = await pool.query(
+      'UPDATE fo_broker_master SET broker_code = $1, name = $2, address = $3, city = $4, phone = $5, trading_slab = $6, delivery_slab = $7, updated_at = NOW() WHERE id = $8 RETURNING *',
+      [broker_code, name, address, city, phone, trading_slab, delivery_slab, id]
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating F&O broker:', error);
+    res.status(500).json({ error: 'Failed to update F&O broker' });
+  }
+});
+
+// Delete F&O broker
+app.delete('/api/fo/brokers/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM fo_broker_master WHERE id = $1', [id]);
+    res.json({ message: 'F&O broker deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting F&O broker:', error);
+    res.status(500).json({ error: 'Failed to delete F&O broker' });
+  }
+});
+
+// ========================================
+// F&O CONTRACTS APIs
+// ========================================
+
+// Get all F&O contracts
+app.get('/api/fo/contracts', async (req, res) => {
+  try {
+    const { party_id, instrument_id } = req.query;
+    
+    let query = `
+      SELECT c.*, 
+             p.party_code, p.name as party_name,
+             i.symbol, i.instrument_type, i.expiry_date, i.strike_price, i.display_name, i.lot_size,
+             b.broker_code, bm.name as broker_name
+      FROM fo_contracts c
+      LEFT JOIN fo_party_master p ON p.id = c.party_id
+      LEFT JOIN fo_instrument_master i ON i.id = c.instrument_id
+      LEFT JOIN fo_broker_master bm ON bm.id = c.broker_id
+      LEFT JOIN fo_broker_master b ON b.id = c.broker_id
+      WHERE 1=1
+    `;
+    const params = [];
+    
+    if (party_id) {
+      params.push(party_id);
+      query += ` AND c.party_id = $${params.length}`;
+    }
+    
+    if (instrument_id) {
+      params.push(instrument_id);
+      query += ` AND c.instrument_id = $${params.length}`;
+    }
+    
+    query += ` ORDER BY c.trade_date DESC, c.created_at DESC`;
+    
+    const result = await pool.query(query, params);
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching F&O contracts:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O contracts' });
+  }
+});
+
+// Get single F&O contract
+app.get('/api/fo/contracts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `SELECT c.*, 
+              p.party_code, p.name as party_name,
+              i.symbol, i.instrument_type, i.expiry_date, i.strike_price, i.display_name, i.lot_size,
+              bm.broker_code, bm.name as broker_name
+       FROM fo_contracts c
+       LEFT JOIN fo_party_master p ON p.id = c.party_id
+       LEFT JOIN fo_instrument_master i ON i.id = c.instrument_id
+       LEFT JOIN fo_broker_master bm ON bm.id = c.broker_id
+       WHERE c.id = $1`,
+      [id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Contract not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching F&O contract:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O contract' });
+  }
+});
+
+// Create F&O contract
+app.post('/api/fo/contracts', async (req, res) => {
+  try {
+    const { 
+      contract_number, party_id, instrument_id, broker_id, broker_code,
+      trade_date, trade_type, quantity, price, amount, lot_size,
+      brokerage_rate, brokerage_amount, status, notes 
+    } = req.body;
+    
+    // For CF (Carry Forward) trades, brokerage should be 0
+    const finalBrokerageRate = trade_type === 'CF' ? 0 : brokerage_rate;
+    const finalBrokerageAmount = trade_type === 'CF' ? 0 : brokerage_amount;
+    
+    const result = await pool.query(
+      `INSERT INTO fo_contracts 
+        (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date, 
+         trade_type, quantity, price, amount, lot_size, brokerage_rate, brokerage_amount, status, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) 
+       RETURNING *`,
+      [
+        contract_number, party_id, instrument_id, broker_id, broker_code,
+        trade_date, trade_type, quantity, price, amount, lot_size,
+        finalBrokerageRate, finalBrokerageAmount, status || 'open', notes
+      ]
+    );
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating F&O contract:', error);
+    res.status(500).json({ error: 'Failed to create F&O contract' });
+  }
+});
+
+// Update F&O contract
+app.put('/api/fo/contracts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      contract_number, party_id, instrument_id, broker_id, broker_code,
+      trade_date, trade_type, quantity, price, amount, lot_size,
+      brokerage_rate, brokerage_amount, status, notes 
+    } = req.body;
+    
+    // For CF (Carry Forward) trades, brokerage should be 0
+    const finalBrokerageRate = trade_type === 'CF' ? 0 : brokerage_rate;
+    const finalBrokerageAmount = trade_type === 'CF' ? 0 : brokerage_amount;
+    
+    const result = await pool.query(
+      `UPDATE fo_contracts 
+       SET contract_number = $1, party_id = $2, instrument_id = $3, broker_id = $4, 
+           broker_code = $5, trade_date = $6, trade_type = $7, quantity = $8, 
+           price = $9, amount = $10, lot_size = $11, brokerage_rate = $12, brokerage_amount = $13, 
+           status = $14, notes = $15, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $16 
+       RETURNING *`,
+      [
+        contract_number, party_id, instrument_id, broker_id, broker_code,
+        trade_date, trade_type, quantity, price, amount, lot_size,
+        finalBrokerageRate, finalBrokerageAmount, status, notes, id
+      ]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Contract not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating F&O contract:', error);
+    res.status(500).json({ error: 'Failed to update F&O contract' });
+  }
+});
+
+// Delete F&O contract
+app.delete('/api/fo/contracts/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM fo_contracts WHERE id = $1', [id]);
+    res.json({ message: 'F&O contract deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting F&O contract:', error);
+    res.status(500).json({ error: 'Failed to delete F&O contract' });
+  }
+});
+
+// Batch create F&O contracts with bills (only for BUY trades)
+app.post('/api/fo/contracts/batch', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { contracts, billDate, generateBills } = req.body;
+    
+    if (!Array.isArray(contracts) || contracts.length === 0) {
+      return res.status(400).json({ error: 'contracts array is required' });
+    }
+
+    await client.query('BEGIN');
+
+    const now = new Date();
+    const billDateStr = billDate || now.toISOString().slice(0, 10);
+    const createdContracts = [];
+    const partyBills = [];
+    const brokerBills = [];
+
+    // Only generate bills if generateBills flag is true (for BUY trades)
+    if (generateBills) {
+      // Group contracts by party for bill generation
+      const partyGroups = {};
+      for (const contract of contracts) {
+        if (!partyGroups[contract.party_id]) {
+          partyGroups[contract.party_id] = [];
+        }
+        partyGroups[contract.party_id].push(contract);
+      }
+
+      // Process each party group
+      for (const [partyId, partyContracts] of Object.entries(partyGroups)) {
+        let totalBuyAmount = 0;
+        let totalBrokerage = 0;
+        const billItems = [];
+
+        // Create contracts and collect bill items
+        for (const contract of partyContracts) {
+          // Create contract
+          const contractResult = await client.query(
+            `INSERT INTO fo_contracts 
+              (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, 
+               quantity, price, amount, lot_size, brokerage_rate, brokerage_amount, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
+             RETURNING *`,
+            [
+              contract.party_id, contract.instrument_id, contract.broker_id, 
+              contract.broker_code, contract.trade_date, contract.trade_type,
+              contract.quantity, contract.price, contract.amount, contract.lot_size,
+              contract.brokerage_rate, contract.brokerage_amount, 'open'
+            ]
+          );
+          createdContracts.push(contractResult.rows[0]);
+
+          totalBuyAmount += parseFloat(contract.amount);
+          totalBrokerage += parseFloat(contract.brokerage_amount);
+
+          // Get instrument details
+          const instrumentResult = await client.query(
+            'SELECT * FROM fo_instrument_master WHERE id = $1',
+            [contract.instrument_id]
+          );
+          const instrument = instrumentResult.rows[0];
+
+          billItems.push({
+            contract_id: contractResult.rows[0].id,
+            instrument_id: contract.instrument_id,
+            description: `${instrument.display_name} - BUY`,
+            quantity: contract.quantity,
+            rate: contract.price,
+            amount: contract.amount,
+            lot_size: contract.lot_size,
+            brokerage_rate_pct: contract.brokerage_rate,
+            brokerage_amount: contract.brokerage_amount,
+            trade_type: 'T',
+          });
+        }
+
+        // Get party details
+        const partyResult = await client.query(
+          'SELECT * FROM fo_party_master WHERE id = $1',
+          [partyId]
+        );
+        const party = partyResult.rows[0];
+
+        // Create party bill
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        const suffix = String(Math.floor(Math.random() * 900) + 100);
+        const billNumber = `FO-PTY${y}${m}${d}-${suffix}`;
+
+        const finalBillAmount = totalBuyAmount + totalBrokerage;
+
+        const billResult = await client.query(
+          `INSERT INTO fo_bills 
+            (bill_number, party_id, bill_date, total_amount, brokerage_amount, bill_type, status) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7) 
+           RETURNING *`,
+          [billNumber, partyId, billDateStr, finalBillAmount, totalBrokerage, 'party', 'pending']
+        );
+        partyBills.push(billResult.rows[0]);
+
+        const billId = billResult.rows[0].id;
+
+        // Insert bill items
+        for (const item of billItems) {
+          await client.query(
+            `INSERT INTO fo_bill_items 
+              (bill_id, contract_id, instrument_id, description, quantity, rate, amount, 
+               lot_size, brokerage_rate_pct, brokerage_amount, trade_type) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            [
+              billId, item.contract_id, item.instrument_id, item.description,
+              item.quantity, item.rate, item.amount, item.lot_size,
+              item.brokerage_rate_pct, item.brokerage_amount, item.trade_type
+            ]
+          );
+        }
+
+        // Create ledger entry
+        const currentBalance = await client.query(
+          `SELECT balance FROM fo_ledger_entries 
+           WHERE party_id = $1 
+           ORDER BY entry_date DESC, created_at DESC 
+           LIMIT 1`,
+          [partyId]
+        );
+        const balance = currentBalance.rows.length > 0 
+          ? parseFloat(currentBalance.rows[0].balance) 
+          : 0;
+        const newBalance = balance + finalBillAmount;
+
+        await client.query(
+          `INSERT INTO fo_ledger_entries 
+            (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            partyId, billDateStr,
+            `F&O Bill ${billNumber} - BUY trades`,
+            finalBillAmount, 0, newBalance, 'client_settlement', billId
+          ]
+        );
+      }
+
+      // Create broker bill if there are contracts
+      if (contracts.length > 0 && contracts[0].broker_id) {
+        const brokerId = contracts[0].broker_id;
+        const totalBrokerBrokerage = contracts.reduce(
+          (sum, c) => sum + parseFloat(c.brokerage_amount), 0
+        );
+
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        const brokerBillNumber = `FO-BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
+
+        const brokerBillResult = await client.query(
+          `INSERT INTO fo_bills 
+            (bill_number, broker_id, bill_date, total_amount, brokerage_amount, bill_type, status) 
+           VALUES ($1, $2, $3, $4, $5, $6, $7) 
+           RETURNING *`,
+          [brokerBillNumber, brokerId, billDateStr, totalBrokerBrokerage, totalBrokerBrokerage, 'broker', 'pending']
+        );
+        brokerBills.push(brokerBillResult.rows[0]);
+      }
+    } else {
+      // Just create contracts without bills
+      for (const contract of contracts) {
+        const contractResult = await client.query(
+          `INSERT INTO fo_contracts 
+            (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, 
+             quantity, price, amount, lot_size, brokerage_rate, brokerage_amount, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
+           RETURNING *`,
+          [
+            contract.party_id, contract.instrument_id, contract.broker_id, 
+            contract.broker_code, contract.trade_date, contract.trade_type,
+            contract.quantity, contract.price, contract.amount, contract.lot_size,
+            contract.brokerage_rate, contract.brokerage_amount, 'open'
+          ]
+        );
+        createdContracts.push(contractResult.rows[0]);
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ contracts: createdContracts, partyBills, brokerBills });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error creating F&O contracts batch:', error);
+    res.status(500).json({ error: 'Failed to create F&O contracts batch', details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ========================================
+// F&O DASHBOARD APIs
+// ========================================
+
+// Get F&O dashboard statistics
+app.get('/api/fo/dashboard', async (req, res) => {
+  try {
+    const stats = await pool.query(`
+      SELECT 
+        (SELECT COUNT(*) FROM fo_bills WHERE bill_type = 'party') as total_bills,
+        (SELECT COUNT(*) FROM fo_positions WHERE status = 'open') as open_positions,
+        (SELECT COUNT(*) FROM fo_contracts) as total_contracts,
+        (SELECT COUNT(DISTINCT party_id) FROM fo_contracts) as active_parties,
+        (SELECT COALESCE(SUM(total_amount), 0) FROM fo_bills WHERE status = 'pending' AND bill_type = 'party') as pending_amount,
+        (SELECT COALESCE(SUM(total_amount), 0) FROM fo_bills WHERE bill_type = 'party') as total_billed
+    `);
+    res.json(stats.rows[0] || {});
+  } catch (error) {
+    console.error('Error fetching F&O dashboard stats:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O dashboard stats' });
+  }
+});
+
+// Get F&O positions (holdings)
+app.get('/api/fo/positions', async (req, res) => {
+  try {
+    const { party_id } = req.query;
+    
+    let query = `
+      SELECT p.*, i.symbol, i.instrument_type, i.expiry_date, i.strike_price, 
+             i.display_name, i.lot_size, pm.party_code, pm.name as party_name
+      FROM fo_positions p
+      LEFT JOIN fo_instrument_master i ON i.id = p.instrument_id
+      LEFT JOIN fo_party_master pm ON pm.id = p.party_id
+      WHERE p.status = 'open'
+    `;
+    const params = [];
+    
+    if (party_id) {
+      params.push(party_id);
+      query += ` AND p.party_id = $${params.length}`;
+    }
+    
+    query += ` ORDER BY p.last_updated DESC`;
+    
+    const result = await pool.query(query, params);
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching F&O positions:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O positions' });
+  }
+});
+
+// ========================================
+// F&O BILLS APIs
+// ========================================
+
+// Get all F&O bills
+app.get('/api/fo/bills', async (req, res) => {
+  try {
+    const type = (req.query.type || '').toString();
+    if (type === 'broker') {
+      const q = await pool.query(`
+        SELECT b.id, b.bill_number, b.broker_code, bm.name AS broker_name, 
+               b.bill_date, b.due_date, b.total_amount, b.status, b.bill_type
+        FROM fo_bills b
+        LEFT JOIN fo_broker_master bm ON bm.broker_code = b.broker_code
+        WHERE b.bill_type = 'broker'
+        ORDER BY b.bill_date DESC, b.created_at DESC
+      `);
+      return res.json(q.rows || []);
+    }
+    // default: return party bills
+    const q = await pool.query(`
+      SELECT b.id, b.bill_number, p.party_code, p.name AS party_name,
+             b.bill_date, b.due_date, b.total_amount, b.status, b.bill_type
+      FROM fo_bills b
+      LEFT JOIN fo_party_master p ON p.id = b.party_id
+      WHERE b.bill_type = 'party'
+      ORDER BY b.bill_date DESC, b.created_at DESC
+    `);
+    return res.json(q.rows || []);
+  } catch (e) {
+    console.error('Error fetching F&O bills:', e);
+    res.status(500).json({ error: 'Failed to fetch F&O bills' });
+  }
+});
+
+// Get single F&O bill by ID
+app.get('/api/fo/bills/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const billQuery = await pool.query(
+      `SELECT b.*, p.party_code, p.name AS party_name, bm.name AS broker_name
+       FROM fo_bills b
+       LEFT JOIN fo_party_master p ON p.id = b.party_id
+       LEFT JOIN fo_broker_master bm ON bm.broker_code = b.broker_code
+       WHERE b.id = $1`,
+      [id]
+    );
+    
+    if (billQuery.rows.length === 0) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+    
+    res.json(billQuery.rows[0]);
+  } catch (error) {
+    console.error('Error fetching F&O bill:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O bill' });
+  }
+});
+
+// Get F&O bill items
+app.get('/api/fo/bills/:id/items', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const itemsQuery = await pool.query(
+      `SELECT bi.*, i.symbol, i.instrument_type, i.expiry_date, i.strike_price, i.display_name
+       FROM fo_bill_items bi
+       LEFT JOIN fo_instrument_master i ON i.id = bi.instrument_id
+       WHERE bi.bill_id = $1
+       ORDER BY bi.id`,
+      [id]
+    );
+    
+    res.json(itemsQuery.rows || []);
+  } catch (error) {
+    console.error('Error fetching F&O bill items:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O bill items' });
+  }
+});
+
+// Create F&O bill
+app.post('/api/fo/bills', async (req, res) => {
+  try {
+    const { bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type } = req.body;
+    
+    const result = await pool.query(
+      `INSERT INTO fo_bills (bill_number, party_id, bill_date, due_date, total_amount, notes, bill_type, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending') RETURNING *`,
+      [bill_number, party_id, bill_date, due_date || null, total_amount, notes || null, bill_type || 'party']
+    );
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating F&O bill:', error);
+    res.status(500).json({ error: 'Failed to create F&O bill' });
+  }
+});
+
+// Update F&O bill
+app.put('/api/fo/bills/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { bill_number, party_id, bill_date, due_date, total_amount, notes, status } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE fo_bills 
+       SET bill_number = $1, party_id = $2, bill_date = $3, due_date = $4, 
+           total_amount = $5, notes = $6, status = $7, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $8 RETURNING *`,
+      [bill_number, party_id, bill_date, due_date || null, total_amount, notes || null, status || 'pending', id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Bill not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating F&O bill:', error);
+    res.status(500).json({ error: 'Failed to update F&O bill' });
+  }
+});
+
+// Delete F&O bill
+app.delete('/api/fo/bills/:id', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id } = req.params;
+    await client.query('BEGIN');
+    
+    // Delete bill items first
+    await client.query('DELETE FROM fo_bill_items WHERE bill_id = $1', [id]);
+    
+    // Delete bill
+    await client.query('DELETE FROM fo_bills WHERE id = $1', [id]);
+    
+    await client.query('COMMIT');
+    res.json({ message: 'Bill deleted successfully' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error deleting F&O bill:', error);
+    res.status(500).json({ error: 'Failed to delete F&O bill' });
+  } finally {
+    client.release();
+  }
+});
+
+// ========================================
+// F&O LEDGER APIs
+// ========================================
+
+// Get all F&O ledger entries
+app.get('/api/fo/ledger', async (req, res) => {
+  try {
+    const { party_id, reference_type } = req.query;
+    
+    let query = `
+      SELECT l.*, p.party_code, p.name AS party_name
+      FROM fo_ledger_entries l
+      LEFT JOIN fo_party_master p ON p.id = l.party_id
+      WHERE 1=1
+    `;
+    const params = [];
+    
+    if (party_id) {
+      params.push(party_id);
+      query += ` AND l.party_id = $${params.length}`;
+    }
+    
+    if (reference_type) {
+      params.push(reference_type);
+      query += ` AND l.reference_type = $${params.length}`;
+    }
+    
+    query += ` ORDER BY l.entry_date DESC, l.created_at DESC`;
+    
+    const result = await pool.query(query, params);
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching F&O ledger entries:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O ledger entries' });
+  }
+});
+
+// Get F&O ledger entries by party ID
+app.get('/api/fo/ledger/party/:party_id', async (req, res) => {
+  try {
+    const { party_id } = req.params;
+    const result = await pool.query(
+      `SELECT l.*, p.party_code, p.name AS party_name
+       FROM fo_ledger_entries l
+       LEFT JOIN fo_party_master p ON p.id = l.party_id
+       WHERE l.party_id = $1
+       ORDER BY l.entry_date DESC, l.created_at DESC`,
+      [party_id]
+    );
+    
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching F&O ledger entries:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O ledger entries' });
+  }
+});
+
+// Create F&O ledger entry
+app.post('/api/fo/ledger', async (req, res) => {
+  try {
+    const { party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id } = req.body;
+    
+    const result = await pool.query(
+      `INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [party_id || null, entry_date, particulars, debit_amount || 0, credit_amount || 0, balance, reference_type || null, reference_id || null]
+    );
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating F&O ledger entry:', error);
+    res.status(500).json({ error: 'Failed to create F&O ledger entry' });
+  }
+});
+
+// Update F&O ledger entry
+app.put('/api/fo/ledger/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { party_id, entry_date, particulars, debit_amount, credit_amount, balance } = req.body;
+    
+    const result = await pool.query(
+      `UPDATE fo_ledger_entries 
+       SET party_id = $1, entry_date = $2, particulars = $3, 
+           debit_amount = $4, credit_amount = $5, balance = $6, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $7 RETURNING *`,
+      [party_id || null, entry_date, particulars, debit_amount || 0, credit_amount || 0, balance, id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Ledger entry not found' });
+    }
+    
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating F&O ledger entry:', error);
+    res.status(500).json({ error: 'Failed to update F&O ledger entry' });
+  }
+});
+
+// Delete F&O ledger entry
+app.delete('/api/fo/ledger/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await pool.query('DELETE FROM fo_ledger_entries WHERE id = $1', [id]);
+    res.json({ message: 'Ledger entry deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting F&O ledger entry:', error);
+    res.status(500).json({ error: 'Failed to delete F&O ledger entry' });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {

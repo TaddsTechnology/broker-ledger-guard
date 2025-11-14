@@ -17,7 +17,8 @@ import {
   Activity,
   DollarSign,
   FileSpreadsheet,
-  Package
+  Package,
+  ArrowLeftRight
 } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -46,41 +47,41 @@ const menuItems: MenuItem[] = [
   {
     title: "Dashboard",
     icon: Home,
-    url: "/dashboard"
+    url: "/equity/dashboard"
   },
   {
     title: "Masters",
     icon: Database,
     submenu: [
-      { title: "Parties", url: "/master/party", icon: Users },
-      { title: "Brokers", url: "/master/broker", icon: DollarSign },
-      { title: "Companies", url: "/master/company", icon: Building2 },
-      { title: "Settlements", url: "/master/settlement", icon: Calendar },
+      { title: "Parties", url: "/equity/master/party", icon: Users },
+      { title: "Brokers", url: "/equity/master/broker", icon: DollarSign },
+      { title: "Companies", url: "/equity/master/company", icon: Building2 },
+      { title: "Settlements", url: "/equity/master/settlement", icon: Calendar },
     ]
   },
   {
     title: "Trading",
     icon: TrendingUp,
     submenu: [
-      { title: "Upload Trades", url: "/trading", icon: TrendingUp },
-      { title: "Contracts", url: "/contracts", icon: FileText },
-      { title: "Holdings", url: "/holdings", icon: Package },
+      { title: "Upload Trades", url: "/equity/trading", icon: TrendingUp },
+      { title: "Contracts", url: "/equity/contracts", icon: FileText },
+      { title: "Holdings", url: "/equity/holdings", icon: Package },
     ]
   },
   {
     title: "Billing",
     icon: Receipt,
     submenu: [
-      { title: "Party Bills", url: "/bills?type=party", icon: Users },
-      { title: "Broker Bills", url: "/bills?type=broker", icon: DollarSign },
+      { title: "Party Bills", url: "/equity/bills?type=party", icon: Users },
+      { title: "Broker Bills", url: "/equity/bills?type=broker", icon: DollarSign },
     ]
   },
   {
     title: "Ledger",
     icon: BookOpen,
     submenu: [
-      { title: "Transactions", url: "/ledger", icon: BookOpen },
-      { title: "Bills", url: "/ledger/bills", icon: Receipt },
+      { title: "Transactions", url: "/equity/ledger", icon: BookOpen },
+      { title: "Bills", url: "/equity/ledger/bills", icon: Receipt },
     ]
   },
   // {
@@ -182,7 +183,7 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
   // Handle Enter key on submenu items  
   const handleSubmenuEnter = (submenuItem: { title: string; url: string; icon?: React.ComponentType<{ className?: string }> }) => {
     // For master pages, add action=new to auto-open form
-    const masterPages = ['/master/party', '/master/company', '/master/settlement'];
+    const masterPages = ['/equity/master/party', '/equity/master/company', '/equity/master/settlement'];
     if (masterPages.includes(submenuItem.url)) {
       navigate(`${submenuItem.url}?action=new`);
     } else {
@@ -226,14 +227,35 @@ export function AppSidebar({ onLogout }: { onLogout: () => void }) {
       onMouseLeave={handleMouseLeave}
     >
       <SidebarHeader className="header-clean">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
-            <TrendingUp className="w-5 h-5 text-white" />
+        <div className="space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
+              <TrendingUp className="w-5 h-5 text-white" />
+            </div>
+            {(!isCollapsed || shouldShowExpanded) && (
+              <div className="flex flex-col animate-in fade-in-0 slide-in-from-left-2">
+                <span className="font-bold text-sm text-clean">Broker ERP</span>
+                <span className="text-xs text-muted-clean">Trading System</span>
+              </div>
+            )}
           </div>
           {(!isCollapsed || shouldShowExpanded) && (
-            <div className="flex flex-col animate-in fade-in-0 slide-in-from-left-2">
-              <span className="font-bold text-sm text-clean">Broker ERP</span>
-              <span className="text-xs text-muted-clean">Trading System</span>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 px-2 py-1.5 bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800 rounded-md">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                    <span className="text-xs font-semibold text-blue-700 dark:text-blue-300">Equity Module</span>
+                  </div>
+                  <button 
+                    onClick={() => navigate('/modules')}
+                    className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-200"
+                    title="Switch Module"
+                  >
+                    <ArrowLeftRight className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
