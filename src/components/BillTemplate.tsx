@@ -22,6 +22,7 @@ interface BillData {
   tradingBrokerageAmount?: number;
   deliverySlab?: number;
   tradingSlab?: number;
+  mainBrokerBillTotal?: number; // Main broker bill amount (Net Trade + Broker Brokerage)
   notes?: string; // Add notes property
   transactions: {
     security: string;
@@ -463,6 +464,10 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                         <td className="p-3">Brokerage Rate</td>
                         <td className="p-3 text-right">{((billData.brokerageRate || 0) * 100).toFixed(2)}%</td>
                       </tr>
+                      <tr className="border-b">
+                        <td className="p-3">Brokerage Amount</td>
+                        <td className="p-3 text-right">{(billData.netAmount || 0).toFixed(2)}</td>
+                      </tr>
                     </>
                   ) : (
                     <>
@@ -489,8 +494,15 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                     </>
                   )}
                   <tr>
-                    <td className="p-3 font-semibold">{billData.billType === 'broker' ? 'Brokerage Amount' : 'Net Amount'}</td>
-                    <td className="p-3 text-right font-semibold">{(billData.netAmount || 0).toFixed(2)}</td>
+                    <td className="p-3 font-semibold">
+                      {billData.billType === 'broker' ? 'Net Amount (Payable to Main Broker)' : 'Net Amount'}
+                    </td>
+                    <td className="p-3 text-right font-semibold">
+                      {billData.billType === 'broker' 
+                        ? (billData.mainBrokerBillTotal || 0).toFixed(2)
+                        : (billData.netAmount || 0).toFixed(2)
+                      }
+                    </td>
                   </tr>
                 </tbody>
               </table>

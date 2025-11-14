@@ -216,7 +216,7 @@ const Trading = () => {
     handleFileUpload(e.dataTransfer.files);
   }, [handleFileUpload]);
 
-  // Convert to Excel and download
+  // Convert to Excel, download, and auto-open in new tab
   const downloadAsExcel = useCallback((file: ProcessedFile) => {
     try {
       const wb = XLSX.utils.book_new();
@@ -244,7 +244,23 @@ const Trading = () => {
         // For any other file type, add .xlsx extension
         excelName = file.name.replace(/\.[^/.]+$/, "") + '.xlsx';
       }
-      XLSX.writeFile(wb, excelName);
+      
+      // Generate blob and create URL for auto-open
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      
+      // Download the file
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = excelName;
+      link.click();
+      
+      // Auto-open in new Chrome tab
+      window.open(url, '_blank');
+      
+      // Clean up URL after a delay
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (error) {
       alert('Failed to convert to Excel. Please try again.');
     }
@@ -609,8 +625,8 @@ const Trading = () => {
                           className="flex-1"
                           tabIndex={4 + index * 4}
                         >
-                          <Download className="h-4 w-4 mr-2" />
-                          Download as Excel
+                          <FileSpreadsheet className="h-4 w-4 mr-2" />
+                          Open in Excel
                         </Button>
                         <Button
                           onClick={() => addColumn(index)}

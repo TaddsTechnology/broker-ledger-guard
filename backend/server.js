@@ -723,11 +723,39 @@ app.post('/api/contracts/batch', async (req, res) => {
     
     // Create broker bills
     for (const [broker_id, brokerContracts] of Object.entries(brokerGroups)) {
-      let totalBrokerage = 0;
+      let totalBuyAmount = 0;
+      let totalSellAmount = 0;
+      let totalSubBrokerBrokerage = 0;
+      
+      // Get broker details to check broker's rate
+      const brokerDetailsQuery = await client.query(
+        'SELECT trading_slab, delivery_slab FROM broker_master WHERE id = $1',
+        [broker_id]
+      );
+      
+      const brokerTradingSlab = brokerDetailsQuery.rows.length > 0 
+        ? Number(brokerDetailsQuery.rows[0].trading_slab) 
+        : 0.03; // Default 0.03% if not found
       
       for (const contract of brokerContracts) {
-        totalBrokerage += Number(contract.brokerage_amount) || 0;
+        const amount = Number(contract.amount) || 0;
+        
+        if (contract.contract_type === 'buy') {
+          totalBuyAmount += amount;
+        } else if (contract.contract_type === 'sell') {
+          totalSellAmount += amount;
+        }
+        
+        // This is sub-broker's brokerage (1%)
+        totalSubBrokerBrokerage += Number(contract.brokerage_amount) || 0;
       }
+      
+      // Calculate net trade amount and broker's share
+      const netTradeAmount = totalBuyAmount - totalSellAmount;
+      const brokerBrokerageAmount = Math.abs(netTradeAmount) * (brokerTradingSlab / 100);
+      
+      // Main broker bill = Net trade amount + Broker's brokerage
+      const mainBrokerBillTotal = Math.abs(netTradeAmount) + brokerBrokerageAmount;
       
       // Generate broker bill number
       const y = now.getFullYear();
@@ -739,7 +767,7 @@ app.post('/api/contracts/batch', async (req, res) => {
       // Get broker code
       const brokerCode = brokerContracts[0].broker_code;
       
-      // Create broker bill
+      // Create broker bill with full amount (net trade + broker's brokerage)
       const brokerBillResult = await client.query(
         'INSERT INTO bills (bill_number, broker_id, broker_code, bill_date, total_amount, bill_type, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
@@ -747,10 +775,10 @@ app.post('/api/contracts/batch', async (req, res) => {
           broker_id,
           brokerCode,
           billDateStr,
-          totalBrokerage,
+          mainBrokerBillTotal,
           'broker',
           'pending',
-          `Brokerage from ${brokerContracts.length} contracts`
+          `Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage (${brokerTradingSlab}%): ₹${brokerBrokerageAmount.toFixed(2)}`
         ]
       );
       
@@ -825,17 +853,17 @@ app.post('/api/contracts/batch', async (req, res) => {
         brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
       }
       
-      brokerBalance += totalBrokerage;
+      brokerBalance += mainBrokerBillTotal;
       
-      // Create broker ledger entry
+      // Create broker ledger entry with full amount (trade + brokerage)
       const brokerLedgerResult = await client.query(
         'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
-          `Brokerage - Bill ${brokerBillNumber} (${brokerContracts.length} contracts)`,
+          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${brokerBrokerageAmount.toFixed(2)}`,
           0,
-          totalBrokerage,
+          mainBrokerBillTotal,
           brokerBalance,
           'broker_brokerage',
           brokerBill.id
@@ -843,6 +871,38 @@ app.post('/api/contracts/batch', async (req, res) => {
       );
       
       ledgerEntries.push(brokerLedgerResult.rows[0]);
+      
+      // Calculate sub-broker profit (difference between sub-broker brokerage and main broker brokerage)
+      const subBrokerProfit = totalSubBrokerBrokerage - brokerBrokerageAmount;
+      
+      // Get current sub-broker profit balance
+      let subBrokerProfitBalance = 0;
+      const profitBalanceQuery = await client.query(
+        'SELECT balance FROM ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['sub_broker_profit']
+      );
+      if (profitBalanceQuery.rows.length > 0) {
+        subBrokerProfitBalance = Number(profitBalanceQuery.rows[0].balance) || 0;
+      }
+      
+      subBrokerProfitBalance += subBrokerProfit;
+      
+      // Create sub-broker profit ledger entry (3rd entry)
+      const profitLedgerResult = await client.query(
+        'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalSubBrokerBrokerage.toFixed(2)}, Main Broker: ₹${brokerBrokerageAmount.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
+          0,
+          subBrokerProfit,
+          subBrokerProfitBalance,
+          'sub_broker_profit',
+          brokerBill.id
+        ]
+      );
+      
+      ledgerEntries.push(profitLedgerResult.rows[0]);
     }
     
     await client.query('COMMIT');
@@ -1489,6 +1549,38 @@ app.post('/api/stock-trades/process', async (req, res) => {
     if (allBrokerBillItems.length > 0 && brokerIdGlobal) {
       const clientList = Object.keys(clientGroups).join(', ');
       
+      // Calculate net trade amount from all trades
+      let totalBuyAmount = 0;
+      let totalSellAmount = 0;
+      for (const item of allBrokerBillItems) {
+        const isBuy = item.description && item.description.toUpperCase().includes('BUY');
+        if (isBuy) {
+          totalBuyAmount += Number(item.amount) || 0;
+        } else {
+          totalSellAmount += Number(item.amount) || 0;
+        }
+      }
+      const netTradeAmount = totalBuyAmount - totalSellAmount;
+      
+      // Get broker's trading slab to calculate broker's share
+      const brokerQuery = await client.query(
+        'SELECT trading_slab, delivery_slab FROM broker_master WHERE UPPER(broker_code) = $1',
+        [brokerIdGlobal]
+      );
+      
+      const brokerTradingSlab = brokerQuery.rows.length > 0 
+        ? Number(brokerQuery.rows[0].trading_slab) 
+        : 0.03; // Default 0.03% if not found
+      
+      // Calculate broker's brokerage amount (main broker's cut)
+      const brokerBrokerageAmount = Math.abs(netTradeAmount) * (brokerTradingSlab / 100);
+      
+      // Main broker bill total = Net Trade Amount + Broker's Brokerage
+      const mainBrokerBillTotal = Math.abs(netTradeAmount) + brokerBrokerageAmount;
+      
+      // Sub-broker profit = Total sub-broker brokerage - Broker's brokerage
+      const subBrokerProfit = totalBrokerageAllClients - brokerBrokerageAmount;
+      
       // Create new broker bill
       const y = now.getFullYear();
       const m = String(now.getMonth() + 1).padStart(2, '0');
@@ -1503,10 +1595,10 @@ app.post('/api/stock-trades/process', async (req, res) => {
           null,
           brokerIdGlobal,
           billDateStr,
-          totalBrokerageAllClients,
+          mainBrokerBillTotal,
           'broker',
           'pending',
-          `Brokerage from clients: ${clientList} - ${allBrokerBillItems.length} trades`
+          `Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage (${brokerTradingSlab}%): ₹${brokerBrokerageAmount.toFixed(2)}`
         ]
       );
       const brokerBillId = brokerBillResult.rows[0].id;
@@ -1530,7 +1622,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
         );
       }
 
-      // Always create new broker ledger entry
+      // Create ledger entry for Main Broker (Net Trade + Broker Brokerage)
       let brokerBalance = 0;
       const brokerBalanceQuery = await client.query(
         'SELECT balance FROM ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
@@ -1539,29 +1631,59 @@ app.post('/api/stock-trades/process', async (req, res) => {
       if (brokerBalanceQuery.rows.length > 0) {
         brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
       }
-      brokerBalance += totalBrokerageAllClients;
+      brokerBalance += mainBrokerBillTotal;
 
-      // Create new broker ledger entry
+      // Create Main Broker ledger entry
       const brokerLedgerResult = await client.query(
         'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
-          `Brokerage - Bill ${brokerBillNumber} (${Object.keys(clientGroups).length} clients, ${allBrokerBillItems.length} trades)`,
+          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${brokerBrokerageAmount.toFixed(2)}`,
           0,
-          totalBrokerageAllClients,
+          mainBrokerBillTotal,
           brokerBalance,
           'broker_brokerage',
           brokerBillId
         ]
       );
       results.brokerEntries.push(brokerLedgerResult.rows[0]);
+      
+      // Create Sub-Broker Profit ledger entry
+      let subBrokerProfitBalance = 0;
+      const profitBalanceQuery = await client.query(
+        'SELECT balance FROM ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['sub_broker_profit']
+      );
+      if (profitBalanceQuery.rows.length > 0) {
+        subBrokerProfitBalance = Number(profitBalanceQuery.rows[0].balance) || 0;
+      }
+      subBrokerProfitBalance += subBrokerProfit;
+      
+      const profitLedgerResult = await client.query(
+        'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${brokerBrokerageAmount.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
+          0,
+          subBrokerProfit,
+          subBrokerProfitBalance,
+          'sub_broker_profit',
+          brokerBillId
+        ]
+      );
+      results.brokerEntries.push(profitLedgerResult.rows[0]);
 
       results.brokerBill = {
         billId: brokerBillId,
         billNumber: brokerBillNumber,
         brokerId: brokerIdGlobal,
-        totalBrokerage: totalBrokerageAllClients,
+        mainBrokerBillTotal: mainBrokerBillTotal,
+        netTradeAmount: Math.abs(netTradeAmount),
+        brokerBrokerageAmount: brokerBrokerageAmount,
+        subBrokerBrokerage: totalBrokerageAllClients,
+        subBrokerProfit: subBrokerProfit,
         clients: Object.keys(clientGroups).length,
         items: allBrokerBillItems.length,
       };
@@ -1639,6 +1761,115 @@ app.get('/api/holdings/party/:partyId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching party holdings:', error);
     res.status(500).json({ error: 'Failed to fetch party holdings' });
+  }
+});
+
+// Get transaction history for holdings (date-wise buy/sell movements)
+app.get('/api/holdings/transactions', async (req, res) => {
+  try {
+    const { party_id, company_code, from_date, to_date } = req.query;
+    
+    let query = `
+      SELECT 
+        bi.id,
+        bi.bill_id,
+        b.bill_number,
+        b.bill_date,
+        b.party_id,
+        p.party_code,
+        p.name as party_name,
+        bi.company_code,
+        bi.description,
+        bi.quantity,
+        bi.rate,
+        bi.amount,
+        bi.brokerage_amount,
+        bi.trade_type,
+        bi.created_at
+      FROM bill_items bi
+      INNER JOIN bills b ON bi.bill_id = b.id
+      LEFT JOIN party_master p ON b.party_id = p.id
+      WHERE b.bill_type = 'party'
+    `;
+    
+    const params = [];
+    let paramIndex = 1;
+    
+    if (party_id) {
+      query += ` AND b.party_id = $${paramIndex}`;
+      params.push(party_id);
+      paramIndex++;
+    }
+    
+    if (company_code) {
+      query += ` AND bi.company_code = $${paramIndex}`;
+      params.push(company_code);
+      paramIndex++;
+    }
+    
+    if (from_date) {
+      query += ` AND b.bill_date >= $${paramIndex}`;
+      params.push(from_date);
+      paramIndex++;
+    }
+    
+    if (to_date) {
+      query += ` AND b.bill_date <= $${paramIndex}`;
+      params.push(to_date);
+      paramIndex++;
+    }
+    
+    query += ' ORDER BY b.bill_date ASC, bi.created_at ASC';
+    
+    const result = await pool.query(query, params);
+    
+    // Calculate running balance per company per party
+    const transactions = [];
+    const balances = {}; // Key: "party_id:company_code"
+    
+    for (const row of result.rows) {
+      const key = `${row.party_id}:${row.company_code}`;
+      if (!balances[key]) {
+        balances[key] = 0;
+      }
+      
+      // Determine if BUY or SELL from description
+      const isBuy = row.description && row.description.toUpperCase().includes('BUY');
+      const isSell = row.description && row.description.toUpperCase().includes('SELL');
+      
+      const quantity = Number(row.quantity) || 0;
+      
+      if (isBuy) {
+        balances[key] += quantity;
+      } else if (isSell) {
+        balances[key] -= quantity;
+      }
+      
+      transactions.push({
+        id: row.id,
+        bill_id: row.bill_id,
+        bill_number: row.bill_number,
+        bill_date: row.bill_date,
+        party_id: row.party_id,
+        party_code: row.party_code,
+        party_name: row.party_name,
+        company_code: row.company_code,
+        description: row.description,
+        type: isBuy ? 'BUY' : isSell ? 'SELL' : 'UNKNOWN',
+        quantity: quantity,
+        rate: Number(row.rate) || 0,
+        amount: Number(row.amount) || 0,
+        brokerage_amount: Number(row.brokerage_amount) || 0,
+        trade_type: row.trade_type,
+        balance: balances[key],
+        created_at: row.created_at
+      });
+    }
+    
+    res.json(transactions);
+  } catch (error) {
+    console.error('Error fetching transaction history:', error);
+    res.status(500).json({ error: 'Failed to fetch transaction history' });
   }
 });
 

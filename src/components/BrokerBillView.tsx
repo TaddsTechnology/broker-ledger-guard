@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Wallet, X } from "lucide-react";
+import { Wallet, X, Printer } from "lucide-react";
 
 interface Bill {
   id: string;
@@ -89,16 +89,44 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
   };
 
   const brokerActualShare = calculateBrokerShare();
+  
+  // Calculate total sub-broker brokerage (what clients paid)
+  const totalSubBrokerBrokerage = items.reduce(
+    (sum, item) => sum + (Number(item.brokerage_amount) || 0),
+    0
+  );
+  
+  // Sub-broker profit = Total client brokerage - Broker's share
+  const subBrokerProfit = totalSubBrokerBrokerage - brokerActualShare;
+
+  const handlePrint = () => {
+    window.print();
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Wallet className="w-5 h-5 text-blue-600" />
-              <span>Broker Bill - {bill.bill_number}</span>
-            </DialogTitle>
+          <DialogHeader className="space-y-0">
+            <div className="flex items-center justify-between pr-8">
+              <DialogTitle className="flex items-center gap-2">
+                <Wallet className="w-5 h-5 text-blue-600" />
+                <span>Broker Bill - {bill.bill_number}</span>
+              </DialogTitle>
+            </div>
           </DialogHeader>
+          
+          {/* Print Button - Separate from header to avoid overlap */}
+          <div className="flex justify-end -mt-2 mb-4">
+            <Button 
+              onClick={handlePrint} 
+              variant="outline" 
+              size="sm"
+              className="flex items-center gap-2"
+            >
+              <Printer className="w-4 h-4" />
+              Print
+            </Button>
+          </div>
 
           <div className="space-y-6">
             {/* Bill Header */}
@@ -117,10 +145,13 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
             </div>
 
             {/* Amount Summary */}
-            <div className="p-6 border rounded-lg bg-gradient-to-r from-blue-50 to-indigo-50 text-center">
-              <p className="text-sm text-muted-foreground mb-2">Broker's Share (Amount to Pay)</p>
-              <p className="text-4xl font-bold text-blue-600">
-                ₹{brokerActualShare.toLocaleString()}
+            <div className="p-6 border rounded-lg bg-gradient-to-r from-green-50 to-emerald-50 text-center">
+              <p className="text-sm text-muted-foreground mb-2">Your Sub-Broker Profit</p>
+              <p className="text-4xl font-bold text-green-600">
+                ₹{subBrokerProfit.toLocaleString()}
+              </p>
+              <p className="text-xs text-muted-foreground mt-2">
+                (Client Brokerage: ₹{totalSubBrokerBrokerage.toLocaleString()} - Main Broker: ₹{brokerActualShare.toLocaleString()})
               </p>
             </div>
 
@@ -131,18 +162,34 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
               </div>
             ) : Object.keys(clientGroups).length > 0 ? (
               <div className="space-y-4">
-                <h3 className="font-semibold">Brokerage Breakdown by Client</h3>
+                <h3 className="font-semibold">Sub-Broker Profit Breakdown by Client</h3>
                 {Object.entries(clientGroups).map(([client, clientItems]) => {
-                  const clientTotal = clientItems.reduce(
+                  // Calculate sub-broker profit for this client
+                  const clientSubBrokerBrokerage = clientItems.reduce(
                     (sum, item) => sum + (Number(item.brokerage_amount) || 0),
                     0
                   );
+                  
+                  // Calculate broker's share for this client
+                  let clientBrokerShare = 0;
+                  if (brokerMaster) {
+                    clientItems.forEach(item => {
+                      const rate = item.trade_type === 'T' 
+                        ? Number(brokerMaster.trading_slab) 
+                        : Number(brokerMaster.delivery_slab);
+                      clientBrokerShare += (Number(item.amount) * rate) / 100;
+                    });
+                  }
+                  
+                  // Sub-broker profit = Sub-broker brokerage - Broker's share
+                  const clientProfit = clientSubBrokerBrokerage - clientBrokerShare;
+                  
                   return (
                     <div key={client} className="border rounded-lg p-4">
                       <div className="flex justify-between items-center mb-3">
                         <h4 className="font-semibold text-primary">{client}</h4>
-                        <span className="font-semibold">
-                          Total: ₹{clientTotal.toFixed(2)}
+                        <span className="font-semibold text-green-600">
+                          Profit: ₹{clientProfit.toFixed(2)}
                         </span>
                       </div>
                       <div className="overflow-x-auto">
@@ -153,29 +200,49 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
                               <th className="text-right p-2">Quantity</th>
                               <th className="text-right p-2">Rate</th>
                               <th className="text-right p-2">Amount</th>
-                              <th className="text-right p-2">Brokerage</th>
+                              <th className="text-right p-2">Client Brokerage</th>
+                              <th className="text-right p-2">Broker Share</th>
+                              <th className="text-right p-2">Profit</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {clientItems.map((item, idx) => (
-                              <tr key={idx} className="border-b">
-                                <td className="p-2">
-                                  {item.company_name 
-                                    ? `${item.company_code} - ${item.company_name}` 
-                                    : item.description}
-                                </td>
-                                <td className="p-2 text-right">{item.quantity}</td>
-                                <td className="p-2 text-right">
-                                  ₹{Number(item.rate).toFixed(2)}
-                                </td>
-                                <td className="p-2 text-right">
-                                  ₹{Number(item.amount).toFixed(2)}
-                                </td>
-                                <td className="p-2 text-right font-semibold text-blue-600">
-                                  ₹{Number(item.brokerage_amount || 0).toFixed(2)}
-                                </td>
-                              </tr>
-                            ))}
+                            {clientItems.map((item, idx) => {
+                              // Calculate broker's share for this item
+                              const rate = brokerMaster ? (
+                                item.trade_type === 'T' 
+                                  ? Number(brokerMaster.trading_slab) 
+                                  : Number(brokerMaster.delivery_slab)
+                              ) : 0;
+                              const itemBrokerShare = (Number(item.amount) * rate) / 100;
+                              const itemClientBrokerage = Number(item.brokerage_amount || 0);
+                              const itemProfit = itemClientBrokerage - itemBrokerShare;
+                              
+                              return (
+                                <tr key={idx} className="border-b">
+                                  <td className="p-2">
+                                    {item.company_name 
+                                      ? `${item.company_code} - ${item.company_name}` 
+                                      : item.description}
+                                  </td>
+                                  <td className="p-2 text-right">{item.quantity}</td>
+                                  <td className="p-2 text-right">
+                                    ₹{Number(item.rate).toFixed(2)}
+                                  </td>
+                                  <td className="p-2 text-right">
+                                    ₹{Number(item.amount).toFixed(2)}
+                                  </td>
+                                  <td className="p-2 text-right text-gray-600">
+                                    ₹{itemClientBrokerage.toFixed(2)}
+                                  </td>
+                                  <td className="p-2 text-right text-blue-600">
+                                    ₹{itemBrokerShare.toFixed(2)}
+                                  </td>
+                                  <td className="p-2 text-right font-semibold text-green-600">
+                                    ₹{itemProfit.toFixed(2)}
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>

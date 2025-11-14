@@ -17,8 +17,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { partyQueries } from "@/lib/database";
-import { TrendingUp, TrendingDown, Package } from "lucide-react";
+import { TrendingUp, TrendingDown, Package, History } from "lucide-react";
 
 interface Party {
   id: string;
@@ -41,11 +45,36 @@ interface Holding {
   nse_code: string | null;
 }
 
+interface Transaction {
+  id: string;
+  bill_id: string;
+  bill_number: string;
+  bill_date: string;
+  party_id: string;
+  party_code: string;
+  party_name: string;
+  company_code: string;
+  description: string;
+  type: 'BUY' | 'SELL' | 'UNKNOWN';
+  quantity: number;
+  rate: number;
+  amount: number;
+  brokerage_amount: number;
+  trade_type: string;
+  balance: number;
+  created_at: string;
+}
+
 const Holdings = () => {
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [selectedParty, setSelectedParty] = useState<string>("all");
   const [isLoading, setIsLoading] = useState(true);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [isLoadingTransactions, setIsLoadingTransactions] = useState(false);
+  const [activeTab, setActiveTab] = useState("holdings");
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
   const { toast } = useToast();
 
   useEffect(() => {
@@ -56,8 +85,17 @@ const Holdings = () => {
   useEffect(() => {
     if (selectedParty) {
       fetchHoldings();
+      if (activeTab === "transactions") {
+        fetchTransactions();
+      }
     }
   }, [selectedParty]);
+
+  useEffect(() => {
+    if (activeTab === "transactions") {
+      fetchTransactions();
+    }
+  }, [activeTab]);
 
   const fetchParties = async () => {
     try {
@@ -95,6 +133,37 @@ const Holdings = () => {
       });
     }
     setIsLoading(false);
+  };
+
+  const fetchTransactions = async () => {
+    setIsLoadingTransactions(true);
+    try {
+      const params = new URLSearchParams();
+      if (selectedParty && selectedParty !== "all") {
+        params.append("party_id", selectedParty);
+      }
+      if (fromDate) {
+        params.append("from_date", fromDate);
+      }
+      if (toDate) {
+        params.append("to_date", toDate);
+      }
+      
+      const endpoint = `/api/holdings/transactions${params.toString() ? `?${params.toString()}` : ""}`;
+      const response = await fetch(`http://localhost:3001${endpoint}`);
+      if (!response.ok) throw new Error("Failed to fetch transactions");
+      
+      const result = await response.json();
+      setTransactions(result || []);
+    } catch (error) {
+      console.error("Error fetching transactions:", error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch transaction history",
+        variant: "destructive",
+      });
+    }
+    setIsLoadingTransactions(false);
   };
 
   // Calculate total portfolio value and P&L (simplified - would need current prices)
@@ -186,58 +255,72 @@ const Holdings = () => {
           </div>
         </div>
 
-        {/* Summary Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-muted-foreground">Long Positions</p>
-                  <h3 className="text-2xl font-bold">{totals.longCount}</h3>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Bought stocks
-                  </p>
-                </div>
-                <Package className="w-8 h-8 text-primary opacity-50" />
-              </div>
-            </CardContent>
-          </Card>
+        {/* Tabs: Holdings and Transaction History */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+          <TabsList className="grid w-full max-w-md grid-cols-2">
+            <TabsTrigger value="holdings" className="flex items-center gap-2">
+              <Package className="w-4 h-4" />
+              Current Holdings
+            </TabsTrigger>
+            <TabsTrigger value="transactions" className="flex items-center gap-2">
+              <History className="w-4 h-4" />
+              Transaction History
+            </TabsTrigger>
+          </TabsList>
 
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-muted-foreground">Long Quantity</p>
-                  <h3 className="text-2xl font-bold text-green-600">{totals.totalQuantity.toLocaleString()}</h3>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Shares held (long)
-                  </p>
-                </div>
-                <TrendingUp className="w-8 h-8 text-green-500 opacity-50" />
-              </div>
-            </CardContent>
-          </Card>
+          <TabsContent value="holdings" className="space-y-6">
+            {/* Summary Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-muted-foreground">Long Positions</p>
+                      <h3 className="text-2xl font-bold">{totals.longCount}</h3>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Bought stocks
+                      </p>
+                    </div>
+                    <Package className="w-8 h-8 text-primary opacity-50" />
+                  </div>
+                </CardContent>
+              </Card>
 
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-muted-foreground">Short Quantity</p>
-                  <h3 className="text-2xl font-bold text-red-600">
-                    {totals.shortQuantity.toLocaleString()}
-                  </h3>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Shares sold short
-                  </p>
-                </div>
-                <TrendingDown className="w-8 h-8 text-red-500 opacity-50" />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-muted-foreground">Long Quantity</p>
+                      <h3 className="text-2xl font-bold text-green-600">{totals.totalQuantity.toLocaleString()}</h3>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Shares held (long)
+                      </p>
+                    </div>
+                    <TrendingUp className="w-8 h-8 text-green-500 opacity-50" />
+                  </div>
+                </CardContent>
+              </Card>
 
-        {/* Long Positions Table */}
-        <Card>
+              <Card>
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-muted-foreground">Short Quantity</p>
+                      <h3 className="text-2xl font-bold text-red-600">
+                        {totals.shortQuantity.toLocaleString()}
+                      </h3>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Shares sold short
+                      </p>
+                    </div>
+                    <TrendingDown className="w-8 h-8 text-red-500 opacity-50" />
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Long Positions Table */}
+            <Card>
           <CardHeader>
             <CardTitle className="text-lg">Long Positions (Buy)</CardTitle>
           </CardHeader>
@@ -359,21 +442,69 @@ const Holdings = () => {
           </CardContent>
         </Card>
 
-        {/* Short Positions Table */}
-        {shortPositions.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg text-red-600">Short Positions (Sell)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-6">
-                {selectedParty === "all" ? (
-                  // Group by party when showing all
-                  Object.entries(shortPositionsByParty).map(([partyName, partyHoldings]) => (
-                    <div key={partyName} className="space-y-2">
-                      <h3 className="text-sm font-semibold text-primary border-b pb-2">
-                        {partyName}
-                      </h3>
+            {/* Short Positions Table */}
+            {shortPositions.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg text-red-600">Short Positions (Sell)</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-6">
+                    {selectedParty === "all" ? (
+                      // Group by party when showing all
+                      Object.entries(shortPositionsByParty).map(([partyName, partyHoldings]) => (
+                        <div key={partyName} className="space-y-2">
+                          <h3 className="text-sm font-semibold text-primary border-b pb-2">
+                            {partyName}
+                          </h3>
+                          <div className="rounded-lg border border-red-200">
+                            <Table>
+                              <TableHeader>
+                                <TableRow className="bg-red-50">
+                                  <TableHead>Stock</TableHead>
+                                  <TableHead>NSE Code</TableHead>
+                                  <TableHead className="text-right">Quantity</TableHead>
+                                  <TableHead className="text-right">Avg Price</TableHead>
+                                  <TableHead className="text-right">Total Value</TableHead>
+                                  <TableHead>Last Trade</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {partyHoldings.map((holding) => {
+                                  const totalValue = Math.abs(Number(holding.quantity)) * Number(holding.avg_buy_price);
+                                  return (
+                                    <TableRow key={holding.id} className="bg-red-50/30">
+                                      <TableCell>
+                                        <div className="font-medium">{holding.company_code}</div>
+                                        <div className="text-sm text-muted-foreground">
+                                          {holding.company_name}
+                                        </div>
+                                      </TableCell>
+                                      <TableCell className="font-mono text-sm">
+                                        {holding.nse_code || "-"}
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono text-red-600 font-bold">
+                                        {Number(holding.quantity).toLocaleString()}
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono">
+                                        ₹{Number(holding.avg_buy_price).toFixed(2)}
+                                      </TableCell>
+                                      <TableCell className="text-right font-mono font-medium text-red-600">
+                                        ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                                      </TableCell>
+                                      <TableCell className="text-sm">
+                                        {new Date(holding.last_trade_date).toLocaleDateString()}
+                                      </TableCell>
+                                    </TableRow>
+                                  );
+                                })}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      // Single table for specific party
                       <div className="rounded-lg border border-red-200">
                         <Table>
                           <TableHeader>
@@ -387,7 +518,7 @@ const Holdings = () => {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {partyHoldings.map((holding) => {
+                            {shortPositions.map((holding) => {
                               const totalValue = Math.abs(Number(holding.quantity)) * Number(holding.avg_buy_price);
                               return (
                                 <TableRow key={holding.id} className="bg-red-50/30">
@@ -418,59 +549,143 @@ const Holdings = () => {
                           </TableBody>
                         </Table>
                       </div>
-                    </div>
-                  ))
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* Transaction History Tab */}
+          <TabsContent value="transactions" className="space-y-6">
+            {/* Date Filter Section */}
+            <Card>
+              <CardContent className="pt-6">
+                <div className="flex items-end gap-4">
+                  <div className="flex-1">
+                    <Label htmlFor="fromDate" className="text-xs font-semibold uppercase">From Date</Label>
+                    <Input
+                      id="fromDate"
+                      type="date"
+                      value={fromDate}
+                      onChange={(e) => setFromDate(e.target.value)}
+                      className="mt-1"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <Label htmlFor="toDate" className="text-xs font-semibold uppercase">To Date</Label>
+                    <Input
+                      id="toDate"
+                      type="date"
+                      value={toDate}
+                      onChange={(e) => setToDate(e.target.value)}
+                      className="mt-1"
+                    />
+                  </div>
+                  <Button 
+                    onClick={fetchTransactions}
+                    className="bg-blue-600 hover:bg-blue-700"
+                  >
+                    Apply Filter
+                  </Button>
+                  <Button 
+                    onClick={() => {
+                      setFromDate("");
+                      setToDate("");
+                      setTimeout(() => fetchTransactions(), 100);
+                    }}
+                    variant="outline"
+                  >
+                    All Time
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Transaction History (Date-wise Buy/Sell)</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {isLoadingTransactions ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    Loading transaction history...
+                  </div>
+                ) : transactions.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    No transactions found.
+                  </div>
                 ) : (
-                  // Single table for specific party
-                  <div className="rounded-lg border border-red-200">
+                  <div className="rounded-lg border">
                     <Table>
                       <TableHeader>
-                        <TableRow className="bg-red-50">
-                          <TableHead>Stock</TableHead>
-                          <TableHead>NSE Code</TableHead>
+                        <TableRow className="bg-muted/50">
+                          <TableHead>Date</TableHead>
+                          <TableHead>Bill No</TableHead>
+                          <TableHead>Client</TableHead>
+                          <TableHead>Company</TableHead>
+                          <TableHead>Type</TableHead>
                           <TableHead className="text-right">Quantity</TableHead>
-                          <TableHead className="text-right">Avg Price</TableHead>
-                          <TableHead className="text-right">Total Value</TableHead>
-                          <TableHead>Last Trade</TableHead>
+                          <TableHead className="text-right">Rate</TableHead>
+                          <TableHead className="text-right">Amount</TableHead>
+                          <TableHead className="text-right">Running Balance</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {shortPositions.map((holding) => {
-                          const totalValue = Math.abs(Number(holding.quantity)) * Number(holding.avg_buy_price);
-                          return (
-                            <TableRow key={holding.id} className="bg-red-50/30">
-                              <TableCell>
-                                <div className="font-medium">{holding.company_code}</div>
-                                <div className="text-sm text-muted-foreground">
-                                  {holding.company_name}
-                                </div>
-                              </TableCell>
-                              <TableCell className="font-mono text-sm">
-                                {holding.nse_code || "-"}
-                              </TableCell>
-                              <TableCell className="text-right font-mono text-red-600 font-bold">
-                                {Number(holding.quantity).toLocaleString()}
-                              </TableCell>
-                              <TableCell className="text-right font-mono">
-                                ₹{Number(holding.avg_buy_price).toFixed(2)}
-                              </TableCell>
-                              <TableCell className="text-right font-mono font-medium text-red-600">
-                                ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
-                              </TableCell>
-                              <TableCell className="text-sm">
-                                {new Date(holding.last_trade_date).toLocaleDateString()}
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
+                        {transactions.map((txn) => (
+                          <TableRow key={txn.id}>
+                            <TableCell className="text-sm">
+                              {new Date(txn.bill_date).toLocaleDateString('en-IN')}
+                            </TableCell>
+                            <TableCell>
+                              <span className="font-mono text-xs text-blue-600 cursor-pointer hover:underline">
+                                {txn.bill_number}
+                              </span>
+                            </TableCell>
+                            <TableCell>
+                              <div className="text-xs">
+                                <div className="font-medium">{txn.party_code}</div>
+                                <div className="text-muted-foreground">{txn.party_name}</div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="font-medium text-sm">
+                              {txn.company_code}
+                            </TableCell>
+                            <TableCell>
+                              <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-semibold ${
+                                txn.type === 'BUY' ? 'bg-green-100 text-green-700' : 
+                                txn.type === 'SELL' ? 'bg-red-100 text-red-700' : 
+                                'bg-gray-100 text-gray-700'
+                              }`}>
+                                {txn.type}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right font-mono">
+                              {txn.quantity.toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-sm">
+                              ₹{txn.rate.toFixed(2)}
+                            </TableCell>
+                            <TableCell className="text-right font-mono font-medium">
+                              ₹{txn.amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                            </TableCell>
+                            <TableCell className={`text-right font-mono font-bold ${
+                              txn.balance > 0 ? 'text-green-600' : 
+                              txn.balance < 0 ? 'text-red-600' : 
+                              'text-gray-600'
+                            }`}>
+                              {txn.balance.toLocaleString()}
+                            </TableCell>
+                          </TableRow>
+                        ))}
                       </TableBody>
                     </Table>
                   </div>
                 )}
-              </div>
-            </CardContent>
-          </Card>
-        )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

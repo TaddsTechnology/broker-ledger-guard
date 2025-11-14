@@ -40,6 +40,7 @@ interface BillData {
   tradingBrokerageAmount?: number;
   deliverySlab?: number;
   tradingSlab?: number;
+  mainBrokerBillTotal?: number;
   notes?: string;
   transactions: {
     security: string;
@@ -262,6 +263,12 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
     const totalBrokerage = deliveryBrokerageAmount + tradingBrokerageAmount;
     const brokerageRate = totalTransactionValue > 0 ? totalBrokerage / totalTransactionValue : 0;
     
+    // For broker bills, netAmount should be total client brokerage (what clients paid)
+    // For party bills, netAmount is the bill total
+    const netAmount = isBrokerBill 
+      ? totalBrokerage // Total client brokerage amount
+      : (bill.total_amount ? Number(bill.total_amount) : 0); // Party bill total
+    
     const billData: BillData = {
       billNumber: bill.bill_number,
       partyCode: partyCode,
@@ -271,7 +278,7 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
       totalTransactions: items.length,
       buyAmount: items.filter(item => item.description?.toUpperCase().includes('BUY')).reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
       sellAmount: items.filter(item => item.description?.toUpperCase().includes('SELL')).reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
-      netAmount: bill.total_amount ? Number(bill.total_amount) : 0,
+      netAmount: netAmount,
       deliveryAmount,
       tradingAmount,
       billType: bill.bill_type || 'party',
@@ -282,6 +289,7 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
       deliverySlab: 0, // Not available in database items
       tradingSlab: 0, // Not available in database items
       brokerId: bill.broker_code,
+      mainBrokerBillTotal: isBrokerBill ? (bill.total_amount ? Number(bill.total_amount) : 0) : undefined,
       transactions
     };
     
