@@ -263,10 +263,10 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
     const totalBrokerage = deliveryBrokerageAmount + tradingBrokerageAmount;
     const brokerageRate = totalTransactionValue > 0 ? totalBrokerage / totalTransactionValue : 0;
     
-    // For broker bills, netAmount should be total client brokerage (what clients paid)
+    // For broker bills, netAmount should be transaction value + broker's share (what to pay main broker)
     // For party bills, netAmount is the bill total
     const netAmount = isBrokerBill 
-      ? totalBrokerage // Total client brokerage amount
+      ? (bill.total_amount ? Number(bill.total_amount) : 0) // Main broker bill total (transaction + broker share)
       : (bill.total_amount ? Number(bill.total_amount) : 0); // Party bill total
     
     const billData: BillData = {

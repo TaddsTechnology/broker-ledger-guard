@@ -199,10 +199,6 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                   <td>Trading Amount</td>
                   <td>${billData.tradingAmount.toFixed(2)}</td>
                 </tr>
-                <tr>
-                  <td>Brokerage Rate</td>
-                  <td>${((billData.brokerageRate || 0) * 100).toFixed(2)}%</td>
-                </tr>
                 ` : `
                 <tr>
                   <td>Total Transactions</td>
@@ -224,9 +220,13 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                   <td>Trading Amount</td>
                   <td>${billData.tradingAmount.toFixed(2)}</td>
                 </tr>
+                <tr>
+                  <td>Brokerage</td>
+                  <td>${((billData.deliveryBrokerageAmount || 0) + (billData.tradingBrokerageAmount || 0)).toFixed(2)}</td>
+                </tr>
                 `}
                 <tr>
-                  <td><strong>${billData.billType === 'broker' ? 'Brokerage Amount' : 'Net Amount'}</strong></td>
+                  <td><strong>${billData.billType === 'broker' ? 'Net Payable Amount' : 'Net Amount'}</strong></td>
                   <td><strong>${(billData.netAmount || 0).toFixed(2)}</strong></td>
                 </tr>
               </tbody>
@@ -246,7 +246,6 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                         <th>Price (₹)</th>
                         <th>Amount (₹)</th>
                         <th>D/T</th>
-                        ${billData.billType === 'broker' ? '<th>Brokerage (₹)</th>' : ''}
                       </tr>
                     </thead>
                     <tbody>
@@ -258,14 +257,12 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                           <td>${Number(trade.price).toFixed(2)}</td>
                           <td>${Number(trade.amount).toFixed(2)}</td>
                           <td>${trade.deliveryTrading === 'D' ? 'D' : trade.deliveryTrading === 'T' ? 'T' : ''}</td>
-                          ${billData.billType === 'broker' && trade.brokerageAmount !== undefined ? `<td>${Number(trade.brokerageAmount).toFixed(2)}</td>` : billData.billType === 'broker' ? '<td></td>' : ''}
                         </tr>
                       `).join('')}
                     </tbody>
                   </table>
                   <div class="subtotal">
                     Subtotal: ₹${Number(transaction.subtotal).toFixed(2)}
-                    ${billData.billType === 'broker' ? ` (Brokerage: ₹${transaction.trades.reduce((sum, trade) => sum + (trade.brokerageAmount || 0), 0).toFixed(2)})` : ''}
                   </div>
                 </div>
               `).join('')}
@@ -315,15 +312,15 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
       billText += `Total Transaction Value: ₹${(billData.totalTransactionValue || 0).toFixed(2)}\n`;
       billText += `Delivery Amount: ₹${billData.deliveryAmount.toFixed(2)}\n`;
       billText += `Trading Amount: ₹${billData.tradingAmount.toFixed(2)}\n`;
-      billText += `Brokerage Rate: ${((billData.brokerageRate || 0) * 100).toFixed(2)}%\n`;
     } else {
       billText += `Total Transactions: ${billData.totalTransactions}\n`;
       billText += `Buy Amount: ₹${billData.buyAmount.toFixed(2)}\n`;
       billText += `Sell Amount: ₹${billData.sellAmount.toFixed(2)}\n`;
       billText += `Delivery Amount: ₹${billData.deliveryAmount.toFixed(2)}\n`;
       billText += `Trading Amount: ₹${billData.tradingAmount.toFixed(2)}\n`;
+      billText += `Brokerage: ₹${((billData.deliveryBrokerageAmount || 0) + (billData.tradingBrokerageAmount || 0)).toFixed(2)}\n`;
     }
-    billText += `${billData.billType === 'broker' ? 'Brokerage Amount' : 'Net Amount'}: ₹${(billData.netAmount || 0).toFixed(2)}\n\n`;
+    billText += `${billData.billType === 'broker' ? 'Net Payable Amount' : 'Net Amount'}: ₹${(billData.netAmount || 0).toFixed(2)}\n\n`;
     
     billText += `${billData.billType === 'broker' ? 'BROKERAGE TRANSACTIONS' : 'DETAILED TRANSACTIONS'}\n`;
     billText += `${billData.billType === 'broker' ? '--------------------' : '---------------------'}\n\n`;
@@ -332,18 +329,9 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
       billText += `${transaction.security}:\n`;
       transaction.trades.forEach((trade, index) => {
         const dtLabel = trade.deliveryTrading ? ` (${trade.deliveryTrading === 'D' ? 'Delivery' : 'Trading'})` : '';
-        if (billData.billType === 'broker' && trade.brokerageAmount !== undefined) {
-          billText += `${index + 1}. ${trade.side} ${Number(trade.quantity).toFixed(0)} units @ ₹${Number(trade.price).toFixed(2)} = ₹${Number(trade.amount).toFixed(2)}${dtLabel} (Brokerage: ₹${Number(trade.brokerageAmount).toFixed(2)})\n`;
-        } else {
-          billText += `${index + 1}. ${trade.side} ${Number(trade.quantity).toFixed(0)} units @ ₹${Number(trade.price).toFixed(2)} = ₹${Number(trade.amount).toFixed(2)}${dtLabel}\n`;
-        }
+        billText += `${index + 1}. ${trade.side} ${Number(trade.quantity).toFixed(0)} units @ ₹${Number(trade.price).toFixed(2)} = ₹${Number(trade.amount).toFixed(2)}${dtLabel}\n`;
       });
-      if (billData.billType === 'broker') {
-        const securityBrokerage = transaction.trades.reduce((sum, trade) => sum + (trade.brokerageAmount || 0), 0);
-        billText += `   Subtotal: ₹${Number(transaction.subtotal).toFixed(2)} (Brokerage: ₹${securityBrokerage.toFixed(2)})\n\n`;
-      } else {
-        billText += `   Subtotal: ₹${Number(transaction.subtotal).toFixed(2)}\n\n`;
-      }
+      billText += `   Subtotal: ₹${Number(transaction.subtotal).toFixed(2)}\n\n`;
     });
     
     // Add notes to the text version if they exist
@@ -460,14 +448,6 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                         <td className="p-3">Trading Amount</td>
                         <td className="p-3 text-right">{billData.tradingAmount.toFixed(2)}</td>
                       </tr>
-                      <tr className="border-b">
-                        <td className="p-3">Brokerage Rate</td>
-                        <td className="p-3 text-right">{((billData.brokerageRate || 0) * 100).toFixed(2)}%</td>
-                      </tr>
-                      <tr className="border-b">
-                        <td className="p-3">Brokerage Amount</td>
-                        <td className="p-3 text-right">{(billData.netAmount || 0).toFixed(2)}</td>
-                      </tr>
                     </>
                   ) : (
                     <>
@@ -491,17 +471,18 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                         <td className="p-3">Trading Amount</td>
                         <td className="p-3 text-right">{billData.tradingAmount.toFixed(2)}</td>
                       </tr>
+                      <tr className="border-b">
+                        <td className="p-3">Brokerage</td>
+                        <td className="p-3 text-right">{((billData.deliveryBrokerageAmount || 0) + (billData.tradingBrokerageAmount || 0)).toFixed(2)}</td>
+                      </tr>
                     </>
                   )}
                   <tr>
                     <td className="p-3 font-semibold">
-                      {billData.billType === 'broker' ? 'Net Amount (Payable to Main Broker)' : 'Net Amount'}
+                      {billData.billType === 'broker' ? 'Net Payable Amount' : 'Net Amount'}
                     </td>
                     <td className="p-3 text-right font-semibold">
-                      {billData.billType === 'broker' 
-                        ? (billData.mainBrokerBillTotal || 0).toFixed(2)
-                        : (billData.netAmount || 0).toFixed(2)
-                      }
+                      {(billData.netAmount || 0).toFixed(2)}
                     </td>
                   </tr>
                 </tbody>
@@ -527,9 +508,6 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                           <th className="text-left p-2 font-semibold">Price (₹)</th>
                           <th className="text-right p-2 font-semibold">Amount (₹)</th>
                           <th className="text-left p-2 font-semibold">D/T</th>
-                          {billData.billType === 'broker' && (
-                            <th className="text-right p-2 font-semibold">Brokerage (₹)</th>
-                          )}
                         </tr>
                       </thead>
                       <tbody>
@@ -545,11 +523,6 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                                trade.deliveryTrading === 'T' ? 'T' : 
                                ''}
                             </td>
-                            {billData.billType === 'broker' && (
-                              <td className="p-2 text-right">
-                                {trade.brokerageAmount !== undefined ? Number(trade.brokerageAmount).toFixed(2) : ''}
-                              </td>
-                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -558,11 +531,6 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                   
                   <div className="text-right font-semibold mt-2">
                     Subtotal: ₹{Number(transaction.subtotal).toFixed(2)}
-                    {billData.billType === 'broker' && (
-                      <span className="ml-2">
-                        (Brokerage: ₹{transaction.trades.reduce((sum, trade) => sum + (trade.brokerageAmount || 0), 0).toFixed(2)})
-                      </span>
-                    )}
                   </div>
                 </div>
               ))}
