@@ -320,10 +320,10 @@ const LedgerBills = () => {
                     <TableCell className="text-sm">{new Date(entry.entry_date).toLocaleDateString()}</TableCell>
                     <TableCell>
                       <div className="font-medium">
-                        {entry.party_code ? entry.party_code : (entry.particulars.includes('Brokerage') ? 'Broker Entry' : 'N/A')}
+                        {entry.party_code ? entry.party_code : (entry.particulars.includes('Sub-Broker Profit') ? 'Sub-Broker' : entry.particulars.includes('Brokerage') ? 'Main Broker' : 'N/A')}
                       </div>
                       <div className="text-sm text-muted-foreground">
-                        {entry.party_name ? entry.party_name : (entry.particulars.includes('Brokerage') ? 'Broker Transaction' : 'N/A')}
+                        {entry.party_name ? entry.party_name : (entry.particulars.includes('Sub-Broker Profit') ? 'Profit Entry' : entry.particulars.includes('Brokerage') ? 'Broker Transaction' : 'N/A')}
                       </div>
                     </TableCell>
                     <TableCell className="font-medium">
@@ -341,9 +341,9 @@ const LedgerBills = () => {
                       {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                     </TableCell>
                     <TableCell className={`text-right font-mono font-medium ${
-                      (entry.particulars.includes('Brokerage') && !entry.party_id) ? 'text-green-600' : 'text-red-600'
+                      (entry.particulars.includes('Sub-Broker Profit') || (entry.particulars.includes('Brokerage') && !entry.party_id)) ? 'text-green-600' : 'text-red-600'
                     }`}>
-                      {(entry.particulars.includes('Brokerage') && !entry.party_id) ? '+' : '-'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
+                      {(entry.particulars.includes('Sub-Broker Profit') || (entry.particulars.includes('Brokerage') && !entry.party_id)) ? '+' : '-'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button
