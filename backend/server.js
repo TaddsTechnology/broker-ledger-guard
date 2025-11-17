@@ -1718,6 +1718,72 @@ app.get('/api/ledger/broker', async (req, res) => {
   }
 });
 
+// Get sub-broker profit (total earnings)
+app.get('/api/ledger/sub-broker-profit', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+        COALESCE(SUM(credit_amount), 0) as total_profit,
+        COALESCE(MAX(balance), 0) as current_balance,
+        COUNT(*) as transaction_count
+       FROM ledger_entries 
+       WHERE party_id IS NULL AND reference_type = $1`,
+      ['sub_broker_profit']
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching sub-broker profit:', error);
+    res.status(500).json({ error: 'Failed to fetch sub-broker profit' });
+  }
+});
+
+// Get Equity dashboard statistics
+app.get('/api/dashboard/stats', async (req, res) => {
+  try {
+    const stats = await pool.query(`
+      SELECT 
+        (SELECT COUNT(DISTINCT party_id) FROM contracts WHERE party_id IS NOT NULL) as active_clients,
+        (SELECT COALESCE(SUM(total_amount), 0) FROM bills WHERE bill_type = 'party') as total_billed,
+        (SELECT COALESCE(SUM(total_amount - paid_amount), 0) FROM bills WHERE bill_type = 'party' AND status != 'paid') as pending_receivables,
+        (SELECT COUNT(*) FROM bills WHERE bill_type = 'party' AND status = 'pending') as pending_bills_count,
+        (SELECT COALESCE(SUM(credit_amount), 0) 
+         FROM ledger_entries 
+         WHERE party_id IS NULL 
+         AND reference_type = 'sub_broker_profit' 
+         AND entry_date = CURRENT_DATE) as today_brokerage
+    `);
+    res.json(stats.rows[0] || {});
+  } catch (error) {
+    console.error('Error fetching dashboard stats:', error);
+    res.status(500).json({ error: 'Failed to fetch dashboard stats' });
+  }
+});
+
+// Get recent bills for dashboard
+app.get('/api/dashboard/recent-bills', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        b.id,
+        b.bill_number,
+        b.bill_date,
+        b.total_amount,
+        b.status,
+        p.party_code,
+        p.name as party_name
+      FROM bills b
+      LEFT JOIN party_master p ON b.party_id = p.id
+      WHERE b.bill_type = 'party'
+      ORDER BY b.created_at DESC
+      LIMIT 5
+    `);
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching recent bills:', error);
+    res.status(500).json({ error: 'Failed to fetch recent bills' });
+  }
+});
+
 // Stock Holdings API endpoints
 app.get('/api/holdings', async (req, res) => {
   try {
@@ -2146,7 +2212,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
     for (const [clientId, clientTrades] of Object.entries(clientGroups)) {
       // Get party details
       const partyQuery = await client.query(
-        'SELECT id, party_code, name, trading_slab, delivery_slab FROM fo_party_master WHERE UPPER(party_code) = $1',
+        'SELECT id, party_code, name, trading_slab, delivery_slab FROM party_master WHERE UPPER(party_code) = $1',
         [clientId]
       );
 
@@ -2164,10 +2230,71 @@ app.post('/api/fo/trades/process', async (req, res) => {
 
       // Process each F&O trade
       for (const trade of clientTrades) {
-        const symbol = (trade.Symbol || trade.symbol || '').toString().toUpperCase();
-        const instrumentType = (trade.InstrumentType || trade.instrumentType || 'FUT').toString().toUpperCase();
-        const expiryDate = trade.ExpiryDate || trade.expiryDate || '';
-        const strikePrice = Number(trade.StrikePrice || trade.strikePrice || 0);
+        let symbol = (trade.Symbol || trade.symbol || '').toString().toUpperCase();
+        let instrumentType = (trade.InstrumentType || trade.instrumentType || 'FUT').toString().toUpperCase();
+        let expiryDate = trade.ExpiryDate || trade.expiryDate || '';
+        let strikePrice = Number(trade.StrikePrice || trade.strikePrice || 0);
+        
+        // Parse ExpiryDate if it's in format like "25NOV2025" or "25NOV25"
+        if (expiryDate && typeof expiryDate === 'string') {
+          const expiryMatch = expiryDate.match(/(\d{2})([A-Z]{3})(\d{2,4})/);
+          if (expiryMatch) {
+            const day = expiryMatch[1];
+            const month = expiryMatch[2];
+            let year = expiryMatch[3];
+            if (year.length === 2) year = '20' + year;
+            
+            const monthMap = {
+              'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
+              'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
+              'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
+            };
+            const monthNum = monthMap[month] || '01';
+            expiryDate = `${year}-${monthNum}-${day}`;
+          }
+        }
+        
+        // Parse SecurityName if Symbol is not provided (format: NIFTY25OCT24800PE)
+        const securityName = (trade.SecurityName || trade.securityName || '').toString().toUpperCase();
+        if (securityName && !symbol) {
+          // Try to match F&O format: NIFTY25OCT24800PE
+          // Pattern: SYMBOL + DD + MMM + STRIKE + [CE|PE]
+          // Example: NIFTY 25 OCT 24800 PE = NIFTY 25th Oct strike 24800 Put
+          const foMatch = securityName.match(/^([A-Z]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$/);
+          if (foMatch) {
+            // F&O option with expiry date and strike
+            symbol = foMatch[1]; // e.g., NIFTY
+            const day = foMatch[2]; // e.g., 25
+            const month = foMatch[3]; // e.g., OCT
+            strikePrice = Number(foMatch[4]); // e.g., 24800 (full strike price)
+            instrumentType = foMatch[5]; // CE or PE
+            
+            // Convert month to number and assume current/next year
+            const monthMap = {
+              'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
+              'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
+              'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
+            };
+            const monthNum = monthMap[month] || '01';
+            
+            // Determine year (if month has passed, it's next year)
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            const currentMonth = now.getMonth() + 1;
+            const expiryMonth = parseInt(monthNum);
+            const year = (expiryMonth < currentMonth) ? currentYear + 1 : currentYear;
+            
+            expiryDate = `${year}-${monthNum}-${day}`;
+          } else {
+            // Simple stock symbol format: ADANIENT, BIOCON, VBL, etc.
+            // Just use the SecurityName as the symbol
+            symbol = securityName;
+            instrumentType = 'FUT'; // Default to FUT for stocks
+            expiryDate = ''; // No expiry for stocks
+            strikePrice = 0;
+          }
+        }
+        
         const side = (trade.Side || trade.side || '').toString().toUpperCase();
         
         // Get quantity (in lots)
@@ -2192,6 +2319,12 @@ app.post('/api/fo/trades/process', async (req, res) => {
         
         const type = (trade.Type || trade.type || 'T').toString().toUpperCase(); // Default to Trading
         
+        // Skip CF (Carry Forward) trades - they should not generate bills or brokerage
+        if (type === 'CF') {
+          console.log(`Skipping CF (Carry Forward) trade for ${symbol} - no bill generated`);
+          continue;
+        }
+        
         // Skip if quantity or price is 0
         if (lotQuantity === 0 || price === 0) {
           console.warn(`Skipping F&O trade with zero quantity or price: ${symbol}`);
@@ -2204,15 +2337,17 @@ app.post('/api/fo/trades/process', async (req, res) => {
         
         // Build instrument query based on type
         let instrumentQuery;
+        const expiryDateValue = expiryDate || null; // Convert empty string to null
+        
         if (instrumentType === 'FUT') {
           instrumentQuery = await client.query(
-            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND expiry_date = $3 AND is_active = true',
-            [symbol, 'FUT', expiryDate]
+            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND (expiry_date = $3 OR ($3 IS NULL AND expiry_date IS NULL)) AND is_active = true',
+            [symbol, 'FUT', expiryDateValue]
           );
         } else if (instrumentType === 'CE' || instrumentType === 'PE') {
           instrumentQuery = await client.query(
-            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND expiry_date = $3 AND strike_price = $4 AND is_active = true',
-            [symbol, instrumentType, expiryDate, strikePrice]
+            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND (expiry_date = $3 OR ($3 IS NULL AND expiry_date IS NULL)) AND strike_price = $4 AND is_active = true',
+            [symbol, instrumentType, expiryDateValue, strikePrice]
           );
         }
         
@@ -2222,6 +2357,31 @@ app.post('/api/fo/trades/process', async (req, res) => {
         } else {
           // Auto-create instrument if not found
           console.log(`Auto-creating F&O instrument: ${symbol} ${instrumentType}`);
+          
+          // Format display_name like NIFTY25OCT24800PE
+          let displayName = symbol;
+          if (expiryDate) {
+            // Extract day and month from expiryDate (format: YYYY-MM-DD)
+            const expiryParts = expiryDate.split('-');
+            if (expiryParts.length === 3) {
+              const monthNum = expiryParts[1];
+              const day = expiryParts[2];
+              const monthMap = {
+                '01': 'JAN', '02': 'FEB', '03': 'MAR', '04': 'APR',
+                '05': 'MAY', '06': 'JUN', '07': 'JUL', '08': 'AUG',
+                '09': 'SEP', '10': 'OCT', '11': 'NOV', '12': 'DEC'
+              };
+              const monthStr = monthMap[monthNum] || 'JAN';
+              displayName = `${symbol}${day}${monthStr}`;
+              if (strikePrice) {
+                displayName += Math.round(strikePrice).toString();
+              }
+            }
+          }
+          if (instrumentType === 'CE' || instrumentType === 'PE') {
+            displayName += instrumentType;
+          }
+          
           const newInstrumentResult = await client.query(
             `INSERT INTO fo_instrument_master 
               (symbol, instrument_type, expiry_date, strike_price, lot_size, segment, underlying_asset, display_name, is_active) 
@@ -2230,12 +2390,12 @@ app.post('/api/fo/trades/process', async (req, res) => {
             [
               symbol,
               instrumentType,
-              expiryDate || null,
+              expiryDateValue,
               strikePrice || null,
               lotSize, // Default lot size
               'NFO',
               symbol,
-              `${symbol} ${instrumentType} ${expiryDate}${strikePrice ? ' ' + strikePrice : ''}`,
+              displayName,
               true
             ]
           );
@@ -2258,24 +2418,9 @@ app.post('/api/fo/trades/process', async (req, res) => {
           totalSellAmount += amount;
         }
 
-        // Create F&O contract entry
-        const contractResult = await client.query(
-          `INSERT INTO fo_contracts 
-            (party_id, instrument_id, trade_date, trade_type, quantity, price, amount, lot_size, brokerage_amount) 
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
-           RETURNING *`,
-          [
-            party.id,
-            instrument.id,
-            billDateStr,
-            side,
-            actualQuantity,
-            price,
-            amount,
-            lotSize,
-            brokerageAmount
-          ]
-        );
+        // NOTE: We do NOT create fo_contracts here during CSV upload
+        // Contracts are created manually via the Contracts page
+        // CSV upload only creates positions and bills
 
         // Update F&O position
         const positionQuery = await client.query(
@@ -2327,7 +2472,6 @@ app.post('/api/fo/trades/process', async (req, res) => {
           quantity: actualQuantity,
           rate: price,
           amount,
-          lot_size: lotSize,
           client_code: clientId,
           instrument_id: instrument.id,
           brokerage_rate_pct: brokerageRate,
@@ -2393,7 +2537,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
       // Get broker details
       let brokerShareTotal = 0;
       const brokerQuery = await client.query(
-        'SELECT id, broker_code, name, trading_slab, delivery_slab FROM fo_broker_master WHERE UPPER(broker_code) = $1',
+        'SELECT id, broker_code, name, trading_slab, delivery_slab FROM broker_master WHERE UPPER(broker_code) = $1',
         [brokerIdGlobal]
       );
       
@@ -2414,14 +2558,13 @@ app.post('/api/fo/trades/process', async (req, res) => {
       // Insert F&O bill items
       for (const item of billItems) {
         await client.query(
-          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, lot_size, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
           [
             billId,
             item.description,
             item.quantity,
             item.rate,
             item.amount,
-            item.lot_size,
             item.client_code,
             item.instrument_id,
             item.brokerage_rate_pct,
@@ -2444,9 +2587,52 @@ app.post('/api/fo/trades/process', async (req, res) => {
       });
     }
 
-    // Create broker bill
+    // Create broker bill (matches Equity structure)
     if (allBrokerBillItems.length > 0 && brokerIdGlobal) {
       const clientList = Object.keys(clientGroups).join(', ');
+      
+      // Get broker details to calculate main broker brokerage
+      const brokerQuery = await client.query(
+        'SELECT id, broker_code, name, trading_slab, delivery_slab FROM broker_master WHERE UPPER(broker_code) = $1',
+        [brokerIdGlobal]
+      );
+      
+      let mainBrokerBillTotal = totalBrokerageAllClients; // Default to sub-broker total
+      let mainBrokerBrokerage = 0;
+      let netTradeAmount = 0;
+      let subBrokerProfit = 0;
+      let brokerId = null;
+      
+      if (brokerQuery.rows.length > 0) {
+        const broker = brokerQuery.rows[0];
+        brokerId = broker.id;
+        const brokerTradingSlab = Number(broker.trading_slab) || 0;
+        
+        // Calculate net trade amount (total buy - total sell) across all clients
+        let totalBuyAcrossClients = 0;
+        let totalSellAcrossClients = 0;
+        
+        for (const item of allBrokerBillItems) {
+          const itemAmount = Number(item.amount) || 0;
+          // Check if it's a buy or sell from the description
+          if (item.description && item.description.includes('BUY')) {
+            totalBuyAcrossClients += itemAmount;
+          } else if (item.description && item.description.includes('SELL')) {
+            totalSellAcrossClients += itemAmount;
+          }
+        }
+        
+        netTradeAmount = totalBuyAcrossClients - totalSellAcrossClients;
+        
+        // Calculate main broker's brokerage on net trade amount
+        mainBrokerBrokerage = Math.abs(netTradeAmount) * (brokerTradingSlab / 100);
+        
+        // Main broker bill = Net trade amount + Broker's brokerage
+        mainBrokerBillTotal = Math.abs(netTradeAmount) + mainBrokerBrokerage;
+        
+        // Sub-broker profit = Total collected from clients - Main broker's share
+        subBrokerProfit = totalBrokerageAllClients - mainBrokerBrokerage;
+      }
       
       const y = now.getFullYear();
       const m = String(now.getMonth() + 1).padStart(2, '0');
@@ -2458,28 +2644,30 @@ app.post('/api/fo/trades/process', async (req, res) => {
         [
           brokerBillNumber,
           null,
-          null,
+          brokerId,
           brokerIdGlobal,
           billDateStr,
-          totalBrokerageAllClients,
+          mainBrokerBillTotal,
           'broker',
           'pending',
-          `F&O Brokerage from clients: ${clientList} - ${allBrokerBillItems.length} trades`
+          `Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`
         ]
       );
       const brokerBillId = brokerBillResult.rows[0].id;
       
+      // NOTE: Contract linking is done when contracts are manually created
+      // CSV upload doesn't create contracts, so no linking needed here
+      
       // Insert broker bill items
       for (const item of allBrokerBillItems) {
         await client.query(
-          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, lot_size, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
           [
             brokerBillId,
             item.description,
             item.quantity,
             item.rate,
             item.amount,
-            item.lot_size,
             item.client_code,
             item.instrument_id,
             item.brokerage_rate_pct,
@@ -2489,7 +2677,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
         );
       }
 
-      // Create broker ledger entry
+      // Create main broker ledger entry (net trade + main broker brokerage)
       let brokerBalance = 0;
       const brokerBalanceQuery = await client.query(
         'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
@@ -2498,22 +2686,48 @@ app.post('/api/fo/trades/process', async (req, res) => {
       if (brokerBalanceQuery.rows.length > 0) {
         brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
       }
-      brokerBalance += totalBrokerageAllClients;
+      brokerBalance += mainBrokerBillTotal;
 
       const brokerLedgerResult = await client.query(
         'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
-          `F&O Brokerage - Bill ${brokerBillNumber} (${Object.keys(clientGroups).length} clients, ${allBrokerBillItems.length} trades)`,
+          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
           0,
-          totalBrokerageAllClients,
+          mainBrokerBillTotal,
           brokerBalance,
           'broker_brokerage',
           brokerBillId
         ]
       );
       results.brokerEntries.push(brokerLedgerResult.rows[0]);
+      
+      // Create sub-broker profit ledger entry
+      let subBrokerProfitBalance = 0;
+      const profitBalanceQuery = await client.query(
+        'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['sub_broker_profit']
+      );
+      if (profitBalanceQuery.rows.length > 0) {
+        subBrokerProfitBalance = Number(profitBalanceQuery.rows[0].balance) || 0;
+      }
+      subBrokerProfitBalance += subBrokerProfit;
+      
+      const profitLedgerResult = await client.query(
+        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${mainBrokerBrokerage.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
+          0,
+          subBrokerProfit,
+          subBrokerProfitBalance,
+          'sub_broker_profit',
+          brokerBillId
+        ]
+      );
+      results.brokerEntries.push(profitLedgerResult.rows[0]);
     }
 
     await client.query('COMMIT');
@@ -2528,120 +2742,9 @@ app.post('/api/fo/trades/process', async (req, res) => {
 });
 
 // ========================================
-// F&O PARTY MASTER APIs
+// NOTE: F&O uses Equity party_master and broker_master (shared)
+// Use /api/parties and /api/brokers endpoints for both modules
 // ========================================
-
-// Get all F&O parties
-app.get('/api/fo/parties', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM fo_party_master ORDER BY created_at DESC');
-    res.json(result.rows || []);
-  } catch (error) {
-    console.error('Error fetching F&O parties:', error);
-    res.status(500).json({ error: 'Failed to fetch F&O parties' });
-  }
-});
-
-// Create F&O party
-app.post('/api/fo/parties', async (req, res) => {
-  try {
-    const { party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab } = req.body;
-    const result = await pool.query(
-      'INSERT INTO fo_party_master (party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
-      [party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab]
-    );
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('Error creating F&O party:', error);
-    res.status(500).json({ error: 'Failed to create F&O party' });
-  }
-});
-
-// Update F&O party
-app.put('/api/fo/parties/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab } = req.body;
-    const result = await pool.query(
-      'UPDATE fo_party_master SET party_code = $1, name = $2, nse_code = $3, ref_code = $4, address = $5, city = $6, phone = $7, trading_slab = $8, delivery_slab = $9, updated_at = NOW() WHERE id = $10 RETURNING *',
-      [party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab, id]
-    );
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('Error updating F&O party:', error);
-    res.status(500).json({ error: 'Failed to update F&O party' });
-  }
-});
-
-// Delete F&O party
-app.delete('/api/fo/parties/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    await pool.query('DELETE FROM fo_party_master WHERE id = $1', [id]);
-    res.json({ message: 'F&O party deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting F&O party:', error);
-    res.status(500).json({ error: 'Failed to delete F&O party' });
-  }
-});
-
-// ========================================
-// F&O BROKER MASTER APIs
-// ========================================
-
-// Get all F&O brokers
-app.get('/api/fo/brokers', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM fo_broker_master ORDER BY created_at DESC');
-    res.json(result.rows || []);
-  } catch (error) {
-    console.error('Error fetching F&O brokers:', error);
-    res.status(500).json({ error: 'Failed to fetch F&O brokers' });
-  }
-});
-
-// Create F&O broker
-app.post('/api/fo/brokers', async (req, res) => {
-  try {
-    const { broker_code, name, address, city, phone, trading_slab, delivery_slab } = req.body;
-    const result = await pool.query(
-      'INSERT INTO fo_broker_master (broker_code, name, address, city, phone, trading_slab, delivery_slab) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-      [broker_code, name, address, city, phone, trading_slab, delivery_slab]
-    );
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('Error creating F&O broker:', error);
-    res.status(500).json({ error: 'Failed to create F&O broker' });
-  }
-});
-
-// Update F&O broker
-app.put('/api/fo/brokers/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { broker_code, name, address, city, phone, trading_slab, delivery_slab } = req.body;
-    const result = await pool.query(
-      'UPDATE fo_broker_master SET broker_code = $1, name = $2, address = $3, city = $4, phone = $5, trading_slab = $6, delivery_slab = $7, updated_at = NOW() WHERE id = $8 RETURNING *',
-      [broker_code, name, address, city, phone, trading_slab, delivery_slab, id]
-    );
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error('Error updating F&O broker:', error);
-    res.status(500).json({ error: 'Failed to update F&O broker' });
-  }
-});
-
-// Delete F&O broker
-app.delete('/api/fo/brokers/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    await pool.query('DELETE FROM fo_broker_master WHERE id = $1', [id]);
-    res.json({ message: 'F&O broker deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting F&O broker:', error);
-    res.status(500).json({ error: 'Failed to delete F&O broker' });
-  }
-});
 
 // ========================================
 // F&O CONTRACTS APIs
@@ -2655,13 +2758,13 @@ app.get('/api/fo/contracts', async (req, res) => {
     let query = `
       SELECT c.*, 
              p.party_code, p.name as party_name,
-             i.symbol, i.instrument_type, i.expiry_date, i.strike_price, i.display_name, i.lot_size,
+             i.symbol, i.instrument_type, i.expiry_date, i.strike_price, i.display_name,
              b.broker_code, bm.name as broker_name
       FROM fo_contracts c
-      LEFT JOIN fo_party_master p ON p.id = c.party_id
+      LEFT JOIN party_master p ON p.id = c.party_id
       LEFT JOIN fo_instrument_master i ON i.id = c.instrument_id
-      LEFT JOIN fo_broker_master bm ON bm.id = c.broker_id
-      LEFT JOIN fo_broker_master b ON b.id = c.broker_id
+      LEFT JOIN broker_master bm ON bm.id = c.broker_id
+      LEFT JOIN broker_master b ON b.id = c.broker_id
       WHERE 1=1
     `;
     const params = [];
@@ -2693,12 +2796,12 @@ app.get('/api/fo/contracts/:id', async (req, res) => {
     const result = await pool.query(
       `SELECT c.*, 
               p.party_code, p.name as party_name,
-              i.symbol, i.instrument_type, i.expiry_date, i.strike_price, i.display_name, i.lot_size,
+              i.symbol, i.instrument_type, i.expiry_date, i.strike_price, i.display_name,
               bm.broker_code, bm.name as broker_name
        FROM fo_contracts c
-       LEFT JOIN fo_party_master p ON p.id = c.party_id
+       LEFT JOIN party_master p ON p.id = c.party_id
        LEFT JOIN fo_instrument_master i ON i.id = c.instrument_id
-       LEFT JOIN fo_broker_master bm ON bm.id = c.broker_id
+       LEFT JOIN broker_master bm ON bm.id = c.broker_id
        WHERE c.id = $1`,
       [id]
     );
@@ -2719,7 +2822,7 @@ app.post('/api/fo/contracts', async (req, res) => {
   try {
     const { 
       contract_number, party_id, instrument_id, broker_id, broker_code,
-      trade_date, trade_type, quantity, price, amount, lot_size,
+      trade_date, trade_type, quantity, price, amount,
       brokerage_rate, brokerage_amount, status, notes 
     } = req.body;
     
@@ -2730,12 +2833,12 @@ app.post('/api/fo/contracts', async (req, res) => {
     const result = await pool.query(
       `INSERT INTO fo_contracts 
         (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date, 
-         trade_type, quantity, price, amount, lot_size, brokerage_rate, brokerage_amount, status, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) 
+         trade_type, quantity, price, amount, brokerage_rate, brokerage_amount, status, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) 
        RETURNING *`,
       [
         contract_number, party_id, instrument_id, broker_id, broker_code,
-        trade_date, trade_type, quantity, price, amount, lot_size,
+        trade_date, trade_type, quantity, price, amount,
         finalBrokerageRate, finalBrokerageAmount, status || 'open', notes
       ]
     );
@@ -2753,7 +2856,7 @@ app.put('/api/fo/contracts/:id', async (req, res) => {
     const { id } = req.params;
     const { 
       contract_number, party_id, instrument_id, broker_id, broker_code,
-      trade_date, trade_type, quantity, price, amount, lot_size,
+      trade_date, trade_type, quantity, price, amount,
       brokerage_rate, brokerage_amount, status, notes 
     } = req.body;
     
@@ -2765,13 +2868,13 @@ app.put('/api/fo/contracts/:id', async (req, res) => {
       `UPDATE fo_contracts 
        SET contract_number = $1, party_id = $2, instrument_id = $3, broker_id = $4, 
            broker_code = $5, trade_date = $6, trade_type = $7, quantity = $8, 
-           price = $9, amount = $10, lot_size = $11, brokerage_rate = $12, brokerage_amount = $13, 
-           status = $14, notes = $15, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $16 
+           price = $9, amount = $10, brokerage_rate = $11, brokerage_amount = $12, 
+           status = $13, notes = $14, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $15 
        RETURNING *`,
       [
         contract_number, party_id, instrument_id, broker_id, broker_code,
-        trade_date, trade_type, quantity, price, amount, lot_size,
+        trade_date, trade_type, quantity, price, amount,
         finalBrokerageRate, finalBrokerageAmount, status, notes, id
       ]
     );
@@ -2840,13 +2943,13 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
           const contractResult = await client.query(
             `INSERT INTO fo_contracts 
               (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, 
-               quantity, price, amount, lot_size, brokerage_rate, brokerage_amount, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
+               quantity, price, amount, brokerage_rate, brokerage_amount, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
              RETURNING *`,
             [
               contract.party_id, contract.instrument_id, contract.broker_id, 
               contract.broker_code, contract.trade_date, contract.trade_type,
-              contract.quantity, contract.price, contract.amount, contract.lot_size,
+              contract.quantity, contract.price, contract.amount,
               contract.brokerage_rate, contract.brokerage_amount, 'open'
             ]
           );
@@ -2869,7 +2972,6 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
             quantity: contract.quantity,
             rate: contract.price,
             amount: contract.amount,
-            lot_size: contract.lot_size,
             brokerage_rate_pct: contract.brokerage_rate,
             brokerage_amount: contract.brokerage_amount,
             trade_type: 'T',
@@ -2878,7 +2980,7 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
 
         // Get party details
         const partyResult = await client.query(
-          'SELECT * FROM fo_party_master WHERE id = $1',
+          'SELECT * FROM party_master WHERE id = $1',
           [partyId]
         );
         const party = partyResult.rows[0];
@@ -2908,11 +3010,11 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
           await client.query(
             `INSERT INTO fo_bill_items 
               (bill_id, contract_id, instrument_id, description, quantity, rate, amount, 
-               lot_size, brokerage_rate_pct, brokerage_amount, trade_type) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+               brokerage_rate_pct, brokerage_amount, trade_type) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
             [
               billId, item.contract_id, item.instrument_id, item.description,
-              item.quantity, item.rate, item.amount, item.lot_size,
+              item.quantity, item.rate, item.amount,
               item.brokerage_rate_pct, item.brokerage_amount, item.trade_type
             ]
           );
@@ -2970,13 +3072,13 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
         const contractResult = await client.query(
           `INSERT INTO fo_contracts 
             (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, 
-             quantity, price, amount, lot_size, brokerage_rate, brokerage_amount, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
+             quantity, price, amount, brokerage_rate, brokerage_amount, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
            RETURNING *`,
           [
             contract.party_id, contract.instrument_id, contract.broker_id, 
             contract.broker_code, contract.trade_date, contract.trade_type,
-            contract.quantity, contract.price, contract.amount, contract.lot_size,
+            contract.quantity, contract.price, contract.amount,
             contract.brokerage_rate, contract.brokerage_amount, 'open'
           ]
         );
@@ -3004,17 +3106,68 @@ app.get('/api/fo/dashboard', async (req, res) => {
   try {
     const stats = await pool.query(`
       SELECT 
-        (SELECT COUNT(*) FROM fo_bills WHERE bill_type = 'party') as total_bills,
+        (SELECT COUNT(DISTINCT party_id) FROM fo_contracts WHERE party_id IS NOT NULL) as active_clients,
+        (SELECT COALESCE(SUM(total_amount), 0) FROM fo_bills WHERE bill_type = 'party') as total_billed,
+        (SELECT COALESCE(SUM(total_amount - paid_amount), 0) FROM fo_bills WHERE bill_type = 'party' AND status != 'paid') as pending_receivables,
+        (SELECT COUNT(*) FROM fo_bills WHERE bill_type = 'party' AND status = 'pending') as pending_bills_count,
         (SELECT COUNT(*) FROM fo_positions WHERE status = 'open') as open_positions,
-        (SELECT COUNT(*) FROM fo_contracts) as total_contracts,
-        (SELECT COUNT(DISTINCT party_id) FROM fo_contracts) as active_parties,
-        (SELECT COALESCE(SUM(total_amount), 0) FROM fo_bills WHERE status = 'pending' AND bill_type = 'party') as pending_amount,
-        (SELECT COALESCE(SUM(total_amount), 0) FROM fo_bills WHERE bill_type = 'party') as total_billed
+        (SELECT COALESCE(SUM(credit_amount), 0) 
+         FROM fo_ledger_entries 
+         WHERE party_id IS NULL 
+         AND reference_type = 'sub_broker_profit' 
+         AND entry_date = CURRENT_DATE) as today_brokerage
     `);
     res.json(stats.rows[0] || {});
   } catch (error) {
     console.error('Error fetching F&O dashboard stats:', error);
     res.status(500).json({ error: 'Failed to fetch F&O dashboard stats' });
+  }
+});
+
+// Get recent F&O contracts for dashboard
+app.get('/api/fo/dashboard/recent-contracts', async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        c.id,
+        c.contract_number,
+        c.trade_date,
+        c.trade_type,
+        c.quantity,
+        c.amount,
+        p.party_code,
+        p.name as party_name,
+        i.display_name as instrument_name,
+        i.symbol
+      FROM fo_contracts c
+      LEFT JOIN party_master p ON c.party_id = p.id
+      LEFT JOIN fo_instrument_master i ON c.instrument_id = i.id
+      ORDER BY c.created_at DESC
+      LIMIT 5
+    `);
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching recent contracts:', error);
+    res.status(500).json({ error: 'Failed to fetch recent contracts' });
+  }
+});
+
+// Get FO sub-broker profit (total earnings)
+app.get('/api/fo/ledger/sub-broker-profit', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT 
+        COALESCE(SUM(credit_amount), 0) as total_profit,
+        COALESCE(MAX(balance), 0) as current_balance,
+        COUNT(*) as transaction_count
+       FROM fo_ledger_entries 
+       WHERE party_id IS NULL AND reference_type = $1`,
+      ['sub_broker_profit']
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching FO sub-broker profit:', error);
+    res.status(500).json({ error: 'Failed to fetch FO sub-broker profit' });
   }
 });
 
@@ -3028,7 +3181,7 @@ app.get('/api/fo/positions', async (req, res) => {
              i.display_name, i.lot_size, pm.party_code, pm.name as party_name
       FROM fo_positions p
       LEFT JOIN fo_instrument_master i ON i.id = p.instrument_id
-      LEFT JOIN fo_party_master pm ON pm.id = p.party_id
+      LEFT JOIN party_master pm ON pm.id = p.party_id
       WHERE p.status = 'open'
     `;
     const params = [];
@@ -3048,6 +3201,122 @@ app.get('/api/fo/positions', async (req, res) => {
   }
 });
 
+// Get F&O transaction history (date-wise buy/sell movements)
+app.get('/api/fo/positions/transactions', async (req, res) => {
+  try {
+    const { party_id, instrument_id, from_date, to_date } = req.query;
+    
+    let query = `
+      SELECT 
+        bi.id,
+        bi.bill_id,
+        b.bill_number,
+        b.bill_date,
+        b.party_id,
+        p.party_code,
+        p.name as party_name,
+        bi.instrument_id,
+        i.symbol,
+        i.display_name,
+        i.instrument_type,
+        bi.description,
+        bi.quantity,
+        bi.rate,
+        bi.amount,
+        bi.brokerage_amount,
+        bi.trade_type,
+        bi.created_at
+      FROM fo_bill_items bi
+      INNER JOIN fo_bills b ON bi.bill_id = b.id
+      LEFT JOIN party_master p ON b.party_id = p.id
+      LEFT JOIN fo_instrument_master i ON bi.instrument_id = i.id
+      WHERE b.bill_type = 'party'
+    `;
+    
+    const params = [];
+    let paramIndex = 1;
+    
+    if (party_id) {
+      query += ` AND b.party_id = $${paramIndex}`;
+      params.push(party_id);
+      paramIndex++;
+    }
+    
+    if (instrument_id) {
+      query += ` AND bi.instrument_id = $${paramIndex}`;
+      params.push(instrument_id);
+      paramIndex++;
+    }
+    
+    if (from_date) {
+      query += ` AND b.bill_date >= $${paramIndex}`;
+      params.push(from_date);
+      paramIndex++;
+    }
+    
+    if (to_date) {
+      query += ` AND b.bill_date <= $${paramIndex}`;
+      params.push(to_date);
+      paramIndex++;
+    }
+    
+    query += ' ORDER BY b.bill_date ASC, bi.created_at ASC';
+    
+    const result = await pool.query(query, params);
+    
+    // Calculate running balance per instrument per party
+    const transactions = [];
+    const balances = {}; // Key: "party_id:instrument_id"
+    
+    for (const row of result.rows) {
+      const key = `${row.party_id}:${row.instrument_id}`;
+      if (!balances[key]) {
+        balances[key] = 0;
+      }
+      
+      // Determine if BUY or SELL from description
+      const isBuy = row.description && row.description.toUpperCase().includes('BUY');
+      const isSell = row.description && row.description.toUpperCase().includes('SELL');
+      
+      const quantity = Number(row.quantity) || 0;
+      
+      if (isBuy) {
+        balances[key] += quantity;
+      } else if (isSell) {
+        balances[key] -= quantity;
+      }
+      
+      transactions.push({
+        id: row.id,
+        bill_id: row.bill_id,
+        bill_number: row.bill_number,
+        bill_date: row.bill_date,
+        party_id: row.party_id,
+        party_code: row.party_code,
+        party_name: row.party_name,
+        instrument_id: row.instrument_id,
+        symbol: row.symbol,
+        display_name: row.display_name,
+        instrument_type: row.instrument_type,
+        description: row.description,
+        type: isBuy ? 'BUY' : isSell ? 'SELL' : 'UNKNOWN',
+        quantity: quantity,
+        rate: Number(row.rate) || 0,
+        amount: Number(row.amount) || 0,
+        brokerage_amount: Number(row.brokerage_amount) || 0,
+        trade_type: row.trade_type,
+        balance: balances[key],
+        created_at: row.created_at
+      });
+    }
+    
+    res.json(transactions);
+  } catch (error) {
+    console.error('Error fetching F&O transaction history:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O transaction history' });
+  }
+});
+
 // ========================================
 // F&O BILLS APIs
 // ========================================
@@ -3061,7 +3330,7 @@ app.get('/api/fo/bills', async (req, res) => {
         SELECT b.id, b.bill_number, b.broker_code, bm.name AS broker_name, 
                b.bill_date, b.due_date, b.total_amount, b.status, b.bill_type
         FROM fo_bills b
-        LEFT JOIN fo_broker_master bm ON bm.broker_code = b.broker_code
+        LEFT JOIN broker_master bm ON bm.broker_code = b.broker_code
         WHERE b.bill_type = 'broker'
         ORDER BY b.bill_date DESC, b.created_at DESC
       `);
@@ -3072,7 +3341,7 @@ app.get('/api/fo/bills', async (req, res) => {
       SELECT b.id, b.bill_number, p.party_code, p.name AS party_name,
              b.bill_date, b.due_date, b.total_amount, b.status, b.bill_type
       FROM fo_bills b
-      LEFT JOIN fo_party_master p ON p.id = b.party_id
+      LEFT JOIN party_master p ON p.id = b.party_id
       WHERE b.bill_type = 'party'
       ORDER BY b.bill_date DESC, b.created_at DESC
     `);
@@ -3090,8 +3359,8 @@ app.get('/api/fo/bills/:id', async (req, res) => {
     const billQuery = await pool.query(
       `SELECT b.*, p.party_code, p.name AS party_name, bm.name AS broker_name
        FROM fo_bills b
-       LEFT JOIN fo_party_master p ON p.id = b.party_id
-       LEFT JOIN fo_broker_master bm ON bm.broker_code = b.broker_code
+       LEFT JOIN party_master p ON p.id = b.party_id
+       LEFT JOIN broker_master bm ON bm.broker_code = b.broker_code
        WHERE b.id = $1`,
       [id]
     );
@@ -3170,6 +3439,47 @@ app.put('/api/fo/bills/:id', async (req, res) => {
   }
 });
 
+// Get F&O bill profit information (for broker bills)
+app.get('/api/fo/bills/:id/profit', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Get profit entry from ledger for this bill
+    const profitQuery = await pool.query(
+      `SELECT credit_amount, particulars
+       FROM fo_ledger_entries
+       WHERE reference_id = $1 AND reference_type = 'sub_broker_profit'
+       LIMIT 1`,
+      [id]
+    );
+    
+    if (profitQuery.rows.length === 0) {
+      return res.json({ profit: 0, client_brokerage: 0, main_broker_brokerage: 0 });
+    }
+    
+    const profitEntry = profitQuery.rows[0];
+    const profit = Number(profitEntry.credit_amount) || 0;
+    
+    // Parse particulars to extract client and main broker brokerage
+    // Format: "Sub-Broker Profit - Bill FO-BRK20251117-950 - Sub-broker: ₹1000.00, Main Broker: ₹500.00, Profit: ₹500.00"
+    const particulars = profitEntry.particulars || '';
+    const clientBrokerageMatch = particulars.match(/Sub-broker: ₹([\d,.]+)/i);
+    const mainBrokerMatch = particulars.match(/Main Broker: ₹([\d,.]+)/i);
+    
+    const clientBrokerage = clientBrokerageMatch ? parseFloat(clientBrokerageMatch[1].replace(/,/g, '')) : 0;
+    const mainBrokerBrokerage = mainBrokerMatch ? parseFloat(mainBrokerMatch[1].replace(/,/g, '')) : 0;
+    
+    res.json({
+      profit,
+      client_brokerage: clientBrokerage,
+      main_broker_brokerage: mainBrokerBrokerage
+    });
+  } catch (error) {
+    console.error('Error fetching F&O bill profit:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O bill profit' });
+  }
+});
+
 // Delete F&O bill
 app.delete('/api/fo/bills/:id', async (req, res) => {
   const client = await pool.connect();
@@ -3206,7 +3516,7 @@ app.get('/api/fo/ledger', async (req, res) => {
     let query = `
       SELECT l.*, p.party_code, p.name AS party_name
       FROM fo_ledger_entries l
-      LEFT JOIN fo_party_master p ON p.id = l.party_id
+      LEFT JOIN party_master p ON p.id = l.party_id
       WHERE 1=1
     `;
     const params = [];
@@ -3238,7 +3548,7 @@ app.get('/api/fo/ledger/party/:party_id', async (req, res) => {
     const result = await pool.query(
       `SELECT l.*, p.party_code, p.name AS party_name
        FROM fo_ledger_entries l
-       LEFT JOIN fo_party_master p ON p.id = l.party_id
+       LEFT JOIN party_master p ON p.id = l.party_id
        WHERE l.party_id = $1
        ORDER BY l.entry_date DESC, l.created_at DESC`,
       [party_id]

@@ -324,6 +324,13 @@ All colors MUST be HSL.
   
   /* Super Clean Component Styles */
   
+  /* Hide elements when printing */
+  @media print {
+    .no-print {
+      display: none !important;
+    }
+  }
+  
   /* Clean Button Styles */
   .btn-primary {
     @apply bg-primary text-primary-foreground border-0 shadow-none;

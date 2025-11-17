@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { FOBillView } from "@/components/fo/FOBillView";
+import { FOBrokerBillView } from "@/components/fo/FOBrokerBillView";
 
 interface Party {
   id: string;
@@ -61,6 +62,8 @@ const FOLedgerBills = () => {
   const [filteredEntries, setFilteredEntries] = useState<LedgerEntry[]>([]);
   const [viewBillId, setViewBillId] = useState<string | null>(null);
   const [billViewOpen, setBillViewOpen] = useState(false);
+  const [viewBillType, setViewBillType] = useState<'party' | 'broker' | 'main_broker'>('party');
+  const [viewBillData, setViewBillData] = useState<any>(null);
   const { toast } = useToast();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -137,16 +140,20 @@ const FOLedgerBills = () => {
       }
       
       // Try to extract bill number from particulars
-      // Look for patterns like "Bill PTY20251104-215" or "Bill BRK20251104-215"
-      const billNumberMatch = entry.particulars.match(/Bill\s+((?:PTY|BRK)\d{8}-\d{3})/i);
+      // Look for patterns like "Bill FO-PTY20251104-215" or "Bill FO-BRK20251104-215"
+      const billNumberMatch = entry.particulars.match(/Bill\s+(FO-(?:PTY|BRK)\d{8}-\d{3})/i);
       if (billNumberMatch) {
         enhancedEntry.bill_number = billNumberMatch[1];
         
         // If we don't have bill_id yet, try to find it by bill number
         if (!enhancedEntry.bill_id) {
           try {
-            // Search F&O bills by bill number
-            const response = await fetch('http://localhost:3001/api/fo/bills');
+            // Determine if it's a broker bill or party bill
+            const isBrokerBill = billNumberMatch[1].includes('BRK');
+            const billType = isBrokerBill ? 'broker' : 'party';
+            
+            // Search F&O bills by bill number and type
+            const response = await fetch(`http://localhost:3001/api/fo/bills?type=${billType}`);
             const bills = await response.json();
             const bill = (Array.isArray(bills) ? bills : []).find((b: any) => b.bill_number === billNumberMatch[1]);
             if (bill && bill.id) {
@@ -196,15 +203,71 @@ const FOLedgerBills = () => {
 
   const handleViewBill = async (entry: LedgerEntry) => {
     if (entry.bill_id) {
-      setViewBillId(entry.bill_id);
-      setBillViewOpen(true);
+      // Determine bill type from entry based on reference_type
+      let billType: 'party' | 'broker' | 'main_broker' = 'party';
+      
+      if (entry.bill_number && entry.bill_number.includes('BRK')) {
+        // It's a broker bill - check if it's main broker or sub-broker profit
+        if (entry.reference_type === 'broker_brokerage') {
+          billType = 'main_broker'; // Main broker bill (no profit shown)
+        } else if (entry.reference_type === 'sub_broker_profit') {
+          billType = 'broker'; // Sub-broker profit bill (with profit)
+        } else {
+          billType = 'broker'; // Default to sub-broker
+        }
+      } else {
+        billType = 'party'; // Party bill
+      }
+      
+      try {
+        // Fetch the full bill data
+        const response = await fetch(`http://localhost:3001/api/fo/bills/${entry.bill_id}`);
+        if (response.ok) {
+          const bill = await response.json();
+          setViewBillData(bill);
+          setViewBillType(billType);
+          setViewBillId(entry.bill_id);
+          setBillViewOpen(true);
+        } else {
+          toast({
+            title: "Bill Not Found",
+            description: "Could not fetch bill details",
+            variant: "destructive",
+          });
+        }
+      } catch (error) {
+        console.error('Error fetching bill:', error);
+        toast({
+          title: "Error",
+          description: "Failed to fetch bill details",
+          variant: "destructive",
+        });
+      }
     } else if (entry.bill_number) {
       try {
-        // Try to fetch the F&O bill by number
-        const response = await fetch('http://localhost:3001/api/fo/bills');
+        // Determine bill type based on bill number and reference_type
+        let billType: 'party' | 'broker' | 'main_broker' = 'party';
+        
+        if (entry.bill_number.includes('BRK')) {
+          // It's a broker bill - check reference type
+          if (entry.reference_type === 'broker_brokerage') {
+            billType = 'main_broker';
+          } else if (entry.reference_type === 'sub_broker_profit') {
+            billType = 'broker';
+          } else {
+            billType = 'broker';
+          }
+        } else {
+          billType = 'party';
+        }
+        
+        // Try to fetch the F&O bill by number and type
+        const response = await fetch(`http://localhost:3001/api/fo/bills?type=${billType}`);
         const bills = await response.json();
         const bill = (Array.isArray(bills) ? bills : []).find((b: any) => b.bill_number === entry.bill_number);
         if (bill && bill.id) {
+          setViewBillData(bill);
+          setViewBillType(billType);
           setViewBillId(bill.id);
           setBillViewOpen(true);
         } else {
@@ -328,18 +391,24 @@ const FOLedgerBills = () => {
                     <TableCell className="text-sm">{new Date(entry.entry_date).toLocaleDateString()}</TableCell>
                     <TableCell>
                       <div className="font-medium">
-                        {entry.party_code ? entry.party_code : (entry.particulars.includes('Brokerage') ? 'Broker Entry' : 'N/A')}
+                        {entry.party_code ? entry.party_code : (entry.reference_type === 'sub_broker_profit' ? 'Sub-Broker' : entry.reference_type === 'broker_brokerage' ? 'Main Broker' : entry.particulars.includes('Brokerage') ? 'Broker Entry' : 'N/A')}
                       </div>
                       <div className="text-sm text-muted-foreground">
-                        {entry.party_name ? entry.party_name : (entry.particulars.includes('Brokerage') ? 'Broker Transaction' : 'N/A')}
+                        {entry.party_name ? entry.party_name : (entry.reference_type === 'sub_broker_profit' ? 'Profit Entry' : 'Broker Transaction')}
                       </div>
                     </TableCell>
                     <TableCell className="font-medium">
                       {entry.particulars}
                       {entry.bill_number && (
-                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleViewBill(entry);
+                          }}
+                          className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 hover:bg-blue-200 transition-colors cursor-pointer"
+                        >
                           Bill: {entry.bill_number}
-                        </span>
+                        </button>
                       )}
                     </TableCell>
                     <TableCell className="text-right font-mono text-accent">
@@ -349,9 +418,9 @@ const FOLedgerBills = () => {
                       {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                     </TableCell>
                     <TableCell className={`text-right font-mono font-medium ${
-                      (entry.particulars.includes('Brokerage') && !entry.party_id) ? 'text-green-600' : 'text-red-600'
+                      entry.party_id ? 'text-red-600' : 'text-green-600'
                     }`}>
-                      {(entry.particulars.includes('Brokerage') && !entry.party_id) ? '+' : '-'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
+                      {entry.party_id ? '-' : '+'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button
@@ -372,9 +441,27 @@ const FOLedgerBills = () => {
         </div>
       </div>
       
-      {viewBillId && (
+      {viewBillId && viewBillType === 'party' && viewBillData && (
         <FOBillView
+          bill={viewBillData}
           billId={viewBillId}
+          open={billViewOpen}
+          onOpenChange={setBillViewOpen}
+        />
+      )}
+      
+      {viewBillId && viewBillType === 'main_broker' && viewBillData && (
+        <FOBillView
+          bill={viewBillData}
+          billId={viewBillId}
+          open={billViewOpen}
+          onOpenChange={setBillViewOpen}
+        />
+      )}
+      
+      {viewBillId && viewBillType === 'broker' && viewBillData && (
+        <FOBrokerBillView
+          bill={viewBillData}
           open={billViewOpen}
           onOpenChange={setBillViewOpen}
         />

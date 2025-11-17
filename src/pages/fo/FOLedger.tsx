@@ -843,7 +843,9 @@ const FOLedger = () => {
                     </TableCell>
                     <TableCell className="font-medium">
                       {entry.particulars}
-                      {entry.particulars.includes('Brokerage for bill') && (
+                      {(entry.particulars.includes('Brokerage for bill') || 
+                        entry.particulars.includes('Main Broker Bill') || 
+                        entry.particulars.includes('Sub-Broker Profit')) && (
                         <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                           Broker Bill
                         </span>
@@ -856,9 +858,9 @@ const FOLedger = () => {
                       {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                     </TableCell>
                     <TableCell className={`text-right font-mono font-medium ${
-                      Number(entry.balance) >= 0 ? 'text-green-600' : 'text-red-600'
+                      entry.party_id ? 'text-red-600' : 'text-green-600'
                     }`}>
-                      ₹{Number(entry.balance).toFixed(2)}
+                      {entry.party_id ? '-' : '+'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex gap-2 justify-end">

@@ -300,7 +300,15 @@ const FOBills = () => {
     if (!billToDelete) return;
 
     try {
-      await billQueries.delete(billToDelete.id);
+      // Use F&O API endpoint
+      const response = await fetch(`http://localhost:3001/api/fo/bills/${billToDelete.id}`, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to delete bill');
+      }
+      
       toast({ 
         title: "Success", 
         description: `Bill "${billToDelete.bill_number}" deleted successfully`,

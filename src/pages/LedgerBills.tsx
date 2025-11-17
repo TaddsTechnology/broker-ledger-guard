@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { BillView } from "@/components/BillView";
+import { BrokerBillView } from "@/components/BrokerBillView";
 
 interface Party {
   id: string;
@@ -61,6 +62,8 @@ const LedgerBills = () => {
   const [filteredEntries, setFilteredEntries] = useState<LedgerEntry[]>([]);
   const [viewBillId, setViewBillId] = useState<string | null>(null);
   const [billViewOpen, setBillViewOpen] = useState(false);
+  const [viewBillType, setViewBillType] = useState<'party' | 'broker' | 'main_broker'>('party');
+  const [viewBillData, setViewBillData] = useState<any>(null);
   const { toast } = useToast();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -190,13 +193,72 @@ const LedgerBills = () => {
 
   const handleViewBill = async (entry: LedgerEntry) => {
     if (entry.bill_id) {
-      setViewBillId(entry.bill_id);
-      setBillViewOpen(true);
+      // Determine bill type from entry based on reference_type
+      let billType: 'party' | 'broker' | 'main_broker' = 'party';
+      
+      if (entry.bill_number && entry.bill_number.includes('BRK')) {
+        // It's a broker bill - check if it's main broker or sub-broker profit
+        if (entry.reference_type === 'broker_brokerage') {
+          billType = 'main_broker'; // Main broker bill (no profit shown)
+        } else if (entry.reference_type === 'sub_broker_profit') {
+          billType = 'broker'; // Sub-broker profit bill (with profit)
+        } else if (entry.particulars.includes('Main Broker Bill')) {
+          billType = 'main_broker';
+        } else if (entry.particulars.includes('Sub-Broker Profit')) {
+          billType = 'broker';
+        } else {
+          billType = 'broker'; // Default to sub-broker
+        }
+      } else {
+        billType = 'party'; // Party bill
+      }
+      
+      try {
+        // Fetch the full bill data
+        const bill = await billQueries.getById(entry.bill_id);
+        if (bill) {
+          setViewBillData(bill);
+          setViewBillType(billType);
+          setViewBillId(entry.bill_id);
+          setBillViewOpen(true);
+        } else {
+          toast({
+            title: "Bill Not Found",
+            description: "Could not fetch bill details",
+            variant: "destructive",
+          });
+        }
+      } catch (error) {
+        console.error('Error fetching bill:', error);
+        toast({
+          title: "Error",
+          description: "Failed to fetch bill details",
+          variant: "destructive",
+        });
+      }
     } else if (entry.bill_number) {
       try {
+        // Determine bill type based on bill number and reference_type/particulars
+        let billType: 'party' | 'broker' | 'main_broker' = 'party';
+        
+        if (entry.bill_number.includes('BRK')) {
+          // It's a broker bill - check reference type or particulars
+          if (entry.reference_type === 'broker_brokerage' || entry.particulars.includes('Main Broker Bill')) {
+            billType = 'main_broker';
+          } else if (entry.reference_type === 'sub_broker_profit' || entry.particulars.includes('Sub-Broker Profit')) {
+            billType = 'broker';
+          } else {
+            billType = 'broker';
+          }
+        } else {
+          billType = 'party';
+        }
+        setViewBillType(billType);
+        
         // Try to fetch the bill by number
         const bill = await billQueries.getByNumber(entry.bill_number);
         if (bill && bill.id) {
+          setViewBillData(bill);
           setViewBillId(bill.id);
           setBillViewOpen(true);
         } else {
@@ -329,9 +391,15 @@ const LedgerBills = () => {
                     <TableCell className="font-medium">
                       {entry.particulars}
                       {entry.bill_number && (
-                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleViewBill(entry);
+                          }}
+                          className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 hover:bg-blue-200 transition-colors cursor-pointer"
+                        >
                           Bill: {entry.bill_number}
-                        </span>
+                        </button>
                       )}
                     </TableCell>
                     <TableCell className="text-right font-mono text-accent">
@@ -364,9 +432,27 @@ const LedgerBills = () => {
         </div>
       </div>
       
-      {viewBillId && (
+      {viewBillId && viewBillType === 'party' && viewBillData && (
         <BillView
+          bill={viewBillData}
           billId={viewBillId}
+          open={billViewOpen}
+          onOpenChange={setBillViewOpen}
+        />
+      )}
+      
+      {viewBillId && viewBillType === 'main_broker' && viewBillData && (
+        <BillView
+          bill={viewBillData}
+          billId={viewBillId}
+          open={billViewOpen}
+          onOpenChange={setBillViewOpen}
+        />
+      )}
+      
+      {viewBillId && viewBillType === 'broker' && viewBillData && (
+        <BrokerBillView
+          bill={viewBillData}
           open={billViewOpen}
           onOpenChange={setBillViewOpen}
         />

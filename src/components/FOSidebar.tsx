@@ -73,13 +73,9 @@ const menuItems: MenuItem[] = [
     url: "/fo/contracts"
   },
   {
-    title: "Trading",
-    icon: LineChart,
-    submenu: [
-      { title: "Futures", url: "/fo/futures", icon: TrendingUpIcon },
-      { title: "Options", url: "/fo/options", icon: TrendingDown },
-      { title: "Positions", url: "/fo/positions", icon: Package },
-    ]
+    title: "Positions",
+    icon: Package,
+    url: "/fo/positions"
   },
   {
     title: "Bills",
@@ -95,15 +91,6 @@ const menuItems: MenuItem[] = [
     submenu: [
       { title: "Transactions", url: "/fo/ledger", icon: BookOpen },
       { title: "Bills", url: "/fo/ledger/bills", icon: Receipt },
-    ]
-  },
-  {
-    title: "Reports",
-    icon: BarChart3,
-    submenu: [
-      { title: "MTM Report", url: "/fo/reports/mtm", icon: Activity },
-      { title: "Expiry Calendar", url: "/fo/reports/expiry", icon: Calendar },
-      { title: "P&L Report", url: "/fo/reports/pnl", icon: BarChart3 },
     ]
   },
 ];

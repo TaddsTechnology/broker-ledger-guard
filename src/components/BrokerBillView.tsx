@@ -116,7 +116,8 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
           </DialogHeader>
           
           {/* Print Button - Separate from header to avoid overlap */}
-          <div className="flex justify-end -mt-2 mb-4">
+          {/* Hidden in actual print using .no-print class */}
+          <div className="flex justify-end -mt-2 mb-4 no-print">
             <Button 
               onClick={handlePrint} 
               variant="outline" 

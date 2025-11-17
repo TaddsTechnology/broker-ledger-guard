@@ -97,10 +97,10 @@ export function FOBillView({ bill: propBill, billId, open, onOpenChange }: { bil
     setLoading(true);
     setError(null);
     try {
-      // Fetch bill details
-      const billData = await billQueries.getById(billId!);
-      
-      if (billData && billData.id) {
+      // Fetch FO bill details
+      const response = await fetch(`http://localhost:3001/api/fo/bills/${billId}`);
+      if (response.ok) {
+        const billData = await response.json();
         setBill(billData);
         // Fetch and process bill data with items
         await fetchAndProcessBillData(billData);
@@ -120,17 +120,23 @@ export function FOBillView({ bill: propBill, billId, open, onOpenChange }: { bil
 
   const fetchAndProcessBillData = async (bill: Bill) => {
     try {
-      // First try to fetch actual bill items from database
-      const items = await billQueries.getItems(bill.id);
-      console.log('Fetched bill items:', items);
-      
-      // If we have items, use them to build the bill data
-      if (items && items.length > 0) {
-        const billData = await buildBillDataFromItems(bill, items);
-        setBillData(billData);
+      // Fetch FO bill items from FO API
+      const response = await fetch(`http://localhost:3001/api/fo/bills/${bill.id}/items`);
+      if (response.ok) {
+        const items = await response.json();
+        console.log('Fetched FO bill items:', items);
+        
+        // If we have items, use them to build the bill data
+        if (items && items.length > 0) {
+          const billData = await buildBillDataFromItems(bill, items);
+          setBillData(billData);
+        } else {
+          // Fall back to parsing notes if no items found
+          console.log('No items found, falling back to parsing notes');
+          parseBillNotes(bill);
+        }
       } else {
-        // Fall back to parsing notes if no items found
-        console.log('No items found, falling back to parsing notes');
+        console.log('Failed to fetch items, falling back to parsing notes');
         parseBillNotes(bill);
       }
     } catch (error) {

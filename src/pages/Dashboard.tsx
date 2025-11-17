@@ -1,36 +1,57 @@
+import { useState, useEffect } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Users, Building2, TrendingUp, Receipt } from "lucide-react";
+import { Users, Building2, TrendingUp, Receipt, DollarSign } from "lucide-react";
 
 const Dashboard = () => {
+  const [subBrokerProfit, setSubBrokerProfit] = useState<any>(null);
+  const [dashboardStats, setDashboardStats] = useState<any>(null);
+  const [recentBills, setRecentBills] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    try {
+      const [profitRes, statsRes, billsRes] = await Promise.all([
+        fetch('http://localhost:3001/api/ledger/sub-broker-profit'),
+        fetch('http://localhost:3001/api/dashboard/stats'),
+        fetch('http://localhost:3001/api/dashboard/recent-bills')
+      ]);
+      
+      setSubBrokerProfit(await profitRes.json());
+      setDashboardStats(await statsRes.json());
+      setRecentBills(await billsRes.json());
+    } catch (error) {
+      console.error('Error fetching dashboard data:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const stats = [
     {
-      title: "Total Parties",
-      value: "3",
+      title: "Active Clients",
+      value: isLoading ? "..." : String(dashboardStats?.active_clients || 0),
       icon: Users,
-      description: "Active trading parties",
-      trend: "+12% from last month",
+      description: "Trading parties",
+      trend: "Total unique clients",
     },
     {
-      title: "Companies",
-      value: "3",
+      title: "Total Billed",
+      value: isLoading ? "..." : `₹${(Number(dashboardStats?.total_billed || 0) / 100000).toFixed(1)}L`,
       icon: Building2,
-      description: "Listed companies",
-      trend: "NSE & BSE",
+      description: "Total bills generated",
+      trend: "All time",
     },
     {
-      title: "Today's Volume",
-      value: "₹2.4M",
-      icon: TrendingUp,
-      description: "Trading volume",
-      trend: "+8.2% vs yesterday",
-    },
-    {
-      title: "Pending Bills",
-      value: "0",
+      title: "Pending Receivables",
+      value: isLoading ? "..." : `₹${(Number(dashboardStats?.pending_receivables || 0) / 100000).toFixed(1)}L`,
       icon: Receipt,
-      description: "Awaiting generation",
-      trend: "All settlements current",
+      description: "Unpaid bills",
+      trend: `${dashboardStats?.pending_bills_count || 0} bills pending`,
     },
   ];
 
@@ -42,6 +63,33 @@ const Dashboard = () => {
       />
       
       <div className="p-6 space-y-6">
+        {/* Sub-Broker Earnings Card */}
+        <Card className="bg-gradient-to-br from-green-50 to-emerald-50 border-green-200">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <DollarSign className="h-5 w-5 text-green-600" />
+              My Brokerage Earnings (Sub-Broker)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <div className="text-2xl font-bold text-green-600">Loading...</div>
+            ) : (
+              <>
+                <div className="text-4xl font-bold text-green-600">
+                  ₹{Number(subBrokerProfit?.current_balance || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                </div>
+                <p className="text-sm text-green-700 mt-2">
+                  Total Profit: ₹{Number(subBrokerProfit?.total_profit || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                </p>
+                <p className="text-xs text-green-600 mt-1">
+                  {subBrokerProfit?.transaction_count || 0} transactions
+                </p>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Stats Grid */}
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           {stats.map((stat) => (
@@ -91,28 +139,48 @@ const Dashboard = () => {
           </CardContent>
         </Card>
 
-        {/* Recent Activity */}
+        {/* Recent Bills */}
         <Card className="bg-card border-border">
           <CardHeader>
-            <CardTitle>Recent Activity</CardTitle>
-            <CardDescription>Latest system events</CardDescription>
+            <CardTitle>Recent Bills</CardTitle>
+            <CardDescription>Latest party bills generated</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              {[
-                { action: "Party Master", detail: "ABC Trading Pvt Ltd added", time: "2 hours ago" },
-                { action: "Settlement", detail: "Settlement #2024001 created", time: "5 hours ago" },
-                { action: "Company Master", detail: "TCS data updated", time: "1 day ago" },
-              ].map((activity, i) => (
-                <div key={i} className="flex items-center justify-between py-2 border-b border-border last:border-0">
-                  <div>
-                    <div className="font-medium text-sm">{activity.action}</div>
-                    <div className="text-xs text-muted-foreground">{activity.detail}</div>
+            {isLoading ? (
+              <div className="text-center py-4 text-muted-foreground">Loading...</div>
+            ) : recentBills.length === 0 ? (
+              <div className="text-center py-4 text-muted-foreground">No bills yet</div>
+            ) : (
+              <div className="space-y-3">
+                {recentBills.map((bill) => (
+                  <div key={bill.id} className="flex items-center justify-between py-2 border-b border-border last:border-0">
+                    <div className="flex-1">
+                      <div className="font-medium text-sm">{bill.bill_number}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {bill.party_code} - {bill.party_name}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-mono text-sm font-medium">
+                        ₹{Number(bill.total_amount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {new Date(bill.bill_date).toLocaleDateString('en-IN')}
+                      </div>
+                    </div>
+                    <div className="ml-3">
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${
+                        bill.status === 'paid' ? 'bg-green-100 text-green-700' :
+                        bill.status === 'partial' ? 'bg-yellow-100 text-yellow-700' :
+                        'bg-red-100 text-red-700'
+                      }`}>
+                        {bill.status}
+                      </span>
+                    </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">{activity.time}</div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

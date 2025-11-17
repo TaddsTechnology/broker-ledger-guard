@@ -1,63 +1,6 @@
 -- F&O (Futures & Options) Database Schema
--- This schema is completely separate from equity with its own tables
-
--- ============================================================================
--- F&O PARTY MASTER
--- ============================================================================
--- Stores parties/clients for F&O trading (separate from equity)
-CREATE TABLE IF NOT EXISTS fo_party_master (
-  id SERIAL PRIMARY KEY,
-  party_code VARCHAR(50) UNIQUE NOT NULL,
-  name VARCHAR(200) NOT NULL,
-  nse_code VARCHAR(50),
-  trading_slab DECIMAL(5, 2) DEFAULT 0.05,
-  delivery_slab DECIMAL(5, 2) DEFAULT 0.10,
-  address TEXT,
-  city VARCHAR(100),
-  state VARCHAR(100),
-  pincode VARCHAR(20),
-  phone VARCHAR(20),
-  email VARCHAR(100),
-  pan VARCHAR(20),
-  aadhar VARCHAR(20),
-  bank_name VARCHAR(100),
-  bank_account VARCHAR(50),
-  bank_ifsc VARCHAR(20),
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_fo_party_code ON fo_party_master(party_code);
-CREATE INDEX IF NOT EXISTS idx_fo_party_active ON fo_party_master(is_active);
-
--- ============================================================================
--- F&O BROKER MASTER
--- ============================================================================
--- Stores brokers for F&O trading (separate from equity)
-CREATE TABLE IF NOT EXISTS fo_broker_master (
-  id SERIAL PRIMARY KEY,
-  broker_code VARCHAR(50) UNIQUE NOT NULL,
-  name VARCHAR(200) NOT NULL,
-  trading_slab DECIMAL(5, 2) DEFAULT 0.02,
-  delivery_slab DECIMAL(5, 2) DEFAULT 0.05,
-  address TEXT,
-  city VARCHAR(100),
-  state VARCHAR(100),
-  pincode VARCHAR(20),
-  phone VARCHAR(20),
-  email VARCHAR(100),
-  pan VARCHAR(20),
-  bank_name VARCHAR(100),
-  bank_account VARCHAR(50),
-  bank_ifsc VARCHAR(20),
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_fo_broker_code ON fo_broker_master(broker_code);
-CREATE INDEX IF NOT EXISTS idx_fo_broker_active ON fo_broker_master(is_active);
+-- NOTE: F&O shares party_master and broker_master with Equity (not separate tables)
+-- This creates a unified client/broker management system across both modules
 
 -- ============================================================================
 -- F&O INSTRUMENT MASTER
@@ -92,14 +35,14 @@ CREATE INDEX IF NOT EXISTS idx_fo_instrument_active ON fo_instrument_master(is_a
 CREATE TABLE IF NOT EXISTS fo_contracts (
   id SERIAL PRIMARY KEY,
   contract_number VARCHAR(50) UNIQUE,
-  party_id INTEGER REFERENCES fo_party_master(id) ON DELETE CASCADE,
+  party_id UUID REFERENCES party_master(id) ON DELETE CASCADE,
   instrument_id INTEGER REFERENCES fo_instrument_master(id),
-  broker_id INTEGER REFERENCES fo_broker_master(id),
+  broker_id UUID REFERENCES broker_master(id) ON DELETE SET NULL,
   broker_code VARCHAR(50),
+  broker_bill_id INTEGER REFERENCES fo_bills(id) ON DELETE SET NULL,  -- Link to broker bill
   trade_date DATE NOT NULL,                       -- Trade date
   trade_type VARCHAR(10) NOT NULL,                -- 'BUY', 'SELL', or 'CF' (Carry Forward)
-  quantity INTEGER NOT NULL,                      -- Actual quantity (lots * lot_size)
-  lot_size INTEGER,                               -- Lot size for reference
+  quantity INTEGER NOT NULL,                      -- Actual quantity
   price DECIMAL(10, 2) NOT NULL,                  -- Price per unit
   amount DECIMAL(15, 2) NOT NULL,                 -- quantity * price
   brokerage_rate DECIMAL(5, 2),                   -- Brokerage percentage or flat
@@ -115,6 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_fo_contracts_party ON fo_contracts(party_id);
 CREATE INDEX IF NOT EXISTS idx_fo_contracts_date ON fo_contracts(trade_date);
 CREATE INDEX IF NOT EXISTS idx_fo_contracts_status ON fo_contracts(status);
 CREATE INDEX IF NOT EXISTS idx_fo_contracts_instrument ON fo_contracts(instrument_id);
+CREATE INDEX IF NOT EXISTS idx_fo_contracts_broker_bill ON fo_contracts(broker_bill_id);
 
 -- ============================================================================
 -- F&O POSITIONS
@@ -122,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_fo_contracts_instrument ON fo_contracts(instrumen
 -- Tracks current open positions for each party
 CREATE TABLE IF NOT EXISTS fo_positions (
   id SERIAL PRIMARY KEY,
-  party_id INTEGER REFERENCES fo_party_master(id) ON DELETE CASCADE,
+  party_id UUID REFERENCES party_master(id) ON DELETE CASCADE,
   instrument_id INTEGER REFERENCES fo_instrument_master(id),
   quantity INTEGER NOT NULL DEFAULT 0,            -- Net position (positive=long, negative=short)
   avg_price DECIMAL(10, 2),                       -- Average entry price
@@ -147,7 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_fo_positions_instrument ON fo_positions(instrumen
 CREATE TABLE IF NOT EXISTS fo_mtm_history (
   id SERIAL PRIMARY KEY,
   position_id INTEGER REFERENCES fo_positions(id) ON DELETE CASCADE,
-  party_id INTEGER REFERENCES fo_party_master(id),
+  party_id UUID REFERENCES party_master(id) ON DELETE CASCADE,
   instrument_id INTEGER REFERENCES fo_instrument_master(id),
   mtm_date DATE NOT NULL,                         -- MTM calculation date
   opening_quantity INTEGER,                       -- Opening position
@@ -171,8 +115,8 @@ CREATE INDEX IF NOT EXISTS idx_fo_mtm_position ON fo_mtm_history(position_id);
 CREATE TABLE IF NOT EXISTS fo_bills (
   id SERIAL PRIMARY KEY,
   bill_number VARCHAR(50) UNIQUE NOT NULL,
-  party_id INTEGER REFERENCES fo_party_master(id),
-  broker_id INTEGER REFERENCES fo_broker_master(id),
+  party_id UUID REFERENCES party_master(id) ON DELETE SET NULL,
+  broker_id UUID REFERENCES broker_master(id) ON DELETE SET NULL,
   broker_code VARCHAR(50),
   bill_date DATE NOT NULL,
   due_date DATE,
@@ -206,7 +150,6 @@ CREATE TABLE IF NOT EXISTS fo_bill_items (
   rate DECIMAL(10, 2),                           -- Price per unit
   amount DECIMAL(15, 2),                         -- Total transaction value
   client_code VARCHAR(50),                        -- Party/client code
-  lot_size INTEGER,                               -- Lot size for reference
   brokerage_rate_pct DECIMAL(5, 2),
   brokerage_amount DECIMAL(10, 2),
   trade_type VARCHAR(10),                         -- 'T' (Trading) or 'D' (Delivery)
@@ -220,16 +163,16 @@ CREATE INDEX IF NOT EXISTS idx_fo_bill_items_contract ON fo_bill_items(contract_
 -- ============================================================================
 -- F&O LEDGER ENTRIES
 -- ============================================================================
--- Ledger for F&O transactions (separate from equity)
+-- Ledger for F&O transactions (separate ledger, but uses Equity party_master)
 CREATE TABLE IF NOT EXISTS fo_ledger_entries (
   id SERIAL PRIMARY KEY,
-  party_id INTEGER REFERENCES fo_party_master(id),
+  party_id UUID REFERENCES party_master(id) ON DELETE SET NULL,
   entry_date DATE NOT NULL,
   particulars TEXT NOT NULL,
   debit_amount DECIMAL(15, 2) DEFAULT 0,
   credit_amount DECIMAL(15, 2) DEFAULT 0,
   balance DECIMAL(15, 2) NOT NULL,
-  reference_type VARCHAR(50),                     -- 'client_settlement', 'broker_brokerage', 'payment', etc.
+  reference_type VARCHAR(50),                     -- 'client_settlement', 'broker_brokerage', 'sub_broker_profit', 'payment', etc.
   reference_id INTEGER,                           -- ID of related record
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -247,7 +190,7 @@ CREATE TABLE IF NOT EXISTS fo_payments (
   id SERIAL PRIMARY KEY,
   payment_number VARCHAR(50) UNIQUE NOT NULL,
   bill_id INTEGER REFERENCES fo_bills(id),
-  party_id INTEGER REFERENCES fo_party_master(id),
+  party_id UUID REFERENCES party_master(id) ON DELETE SET NULL,
   payment_date DATE NOT NULL,
   amount DECIMAL(15, 2) NOT NULL,
   payment_method VARCHAR(50),                     -- 'cash', 'cheque', 'bank_transfer', etc.
@@ -306,16 +249,15 @@ ON CONFLICT (expiry_date) DO NOTHING;
 -- COMMENTS
 -- ============================================================================
 
-COMMENT ON TABLE fo_party_master IS 'F&O parties/clients - separate from equity';
-COMMENT ON TABLE fo_broker_master IS 'F&O brokers - separate from equity';
+-- NOTE: party_master and broker_master are shared with Equity module (no separate fo_ versions)
 COMMENT ON TABLE fo_instrument_master IS 'Master table for F&O instruments (Futures, Calls, Puts)';
-COMMENT ON TABLE fo_contracts IS 'Individual F&O trades/contracts';
-COMMENT ON TABLE fo_positions IS 'Current open positions by party and instrument';
-COMMENT ON TABLE fo_mtm_history IS 'Daily mark-to-market P&L calculations';
-COMMENT ON TABLE fo_bills IS 'F&O bills for parties and brokers';
+COMMENT ON TABLE fo_contracts IS 'F&O trades - uses Equity party_master and broker_master (shared)';
+COMMENT ON TABLE fo_positions IS 'F&O positions - uses Equity party_master (shared)';
+COMMENT ON TABLE fo_mtm_history IS 'Daily mark-to-market P&L calculations - uses Equity party_master';
+COMMENT ON TABLE fo_bills IS 'F&O bills - uses Equity party_master and broker_master (shared)';
 COMMENT ON TABLE fo_bill_items IS 'Line items in F&O bills';
-COMMENT ON TABLE fo_ledger_entries IS 'F&O ledger separate from equity';
-COMMENT ON TABLE fo_payments IS 'Payment tracking for F&O bills';
+COMMENT ON TABLE fo_ledger_entries IS 'F&O ledger (separate from equity) - uses Equity party_master';
+COMMENT ON TABLE fo_payments IS 'Payment tracking for F&O bills - uses Equity party_master';
 COMMENT ON TABLE fo_expiry_calendar IS 'Pre-defined expiry dates for quick reference';
 
 COMMENT ON COLUMN fo_instrument_master.instrument_type IS 'FUT=Futures, CE=Call European, PE=Put European';

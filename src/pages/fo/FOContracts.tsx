@@ -49,7 +49,6 @@ interface Instrument {
   instrument_type: string;
   expiry_date: string;
   strike_price: number | null;
-  lot_size: number;
   display_name: string;
 }
 
@@ -65,7 +64,6 @@ interface Contract {
   expiry_date?: string;
   strike_price?: number;
   display_name?: string;
-  lot_size?: number;
   broker_id: string;
   broker_code?: string;
   broker_name?: string;
@@ -112,7 +110,6 @@ const FOContracts = () => {
     instrument_id: string;
     trade_type: "BUY" | "SELL" | "CF";
     trade_date: string;
-    lot_size: string;
     quantity: string;
     price: string;
   }
@@ -122,7 +119,6 @@ const FOContracts = () => {
       instrument_id: "",
       trade_type: "BUY",
       trade_date: new Date().toISOString().split('T')[0],
-      lot_size: "1",
       quantity: "",
       price: "",
     }
@@ -178,14 +174,15 @@ const FOContracts = () => {
 
   const fetchParties = async () => {
     try {
-      const response = await fetch('http://localhost:3001/api/fo/parties');
+      // Use Equity API - parties are shared between Equity and F&O
+      const response = await fetch('http://localhost:3001/api/parties');
       const result = await response.json();
       setParties(Array.isArray(result) ? result : []);
     } catch (error) {
-      console.error('Error fetching F&O parties:', error);
+      console.error('Error fetching parties:', error);
       toast({
         title: "Error",
-        description: "Failed to fetch F&O parties",
+        description: "Failed to fetch parties",
         variant: "destructive",
       });
     }
@@ -193,7 +190,8 @@ const FOContracts = () => {
 
   const fetchBrokers = async () => {
     try {
-      const response = await fetch('http://localhost:3001/api/fo/brokers');
+      // Use Equity API - brokers are shared between Equity and F&O
+      const response = await fetch('http://localhost:3001/api/brokers');
       const result = await response.json();
       setBrokers(Array.isArray(result) ? result : []);
     } catch (error) {
@@ -232,7 +230,6 @@ const FOContracts = () => {
       instrument_id: "",
       trade_type: "BUY",
       trade_date: new Date().toISOString().split('T')[0],
-      lot_size: "1",
       quantity: "",
       price: "",
     }]);
@@ -245,7 +242,6 @@ const FOContracts = () => {
       instrument_id: "",
       trade_type: "BUY",
       trade_date: new Date().toISOString().split('T')[0],
-      lot_size: "1",
       quantity: "",
       price: "",
     };
@@ -297,11 +293,9 @@ const FOContracts = () => {
       // BUY and SELL generate settlement bills with brokerage
       // CF has NO brokerage and NO bills (just rollover tracking)
       const contractsData = contractRows.map(row => {
-        const lotSize = parseInt(row.lot_size) || 1;
         const quantity = parseInt(row.quantity) || 0;
-        const actualQty = lotSize * quantity;
         const price = parseFloat(row.price) || 0;
-        const amount = actualQty * price;
+        const amount = quantity * price;
         
         // CF has 0 brokerage, BUY/SELL have brokerage
         const brokerageRate = row.trade_type === 'CF' ? 0 : (party?.trading_slab || 0);
@@ -316,10 +310,9 @@ const FOContracts = () => {
           broker_code: broker?.broker_code,
           trade_date: row.trade_date,
           trade_type: row.trade_type,
-          quantity: actualQty,
+          quantity,
           price,
           amount,
-          lot_size: lotSize,
           brokerage_rate: brokerageRate,
           brokerage_amount: brokerageAmount,
           notes: null,
@@ -605,21 +598,18 @@ const FOContracts = () => {
                       <TableHead className="w-[280px]">Instrument</TableHead>
                       <TableHead className="w-[120px]">Type</TableHead>
                       <TableHead className="w-[140px]">Date</TableHead>
-                      <TableHead className="w-[100px]">Lot Size</TableHead>
-                      <TableHead className="w-[100px]">Quantity</TableHead>
-                      <TableHead className="w-[110px]">Price</TableHead>
-                      <TableHead className="w-[130px]">Amount</TableHead>
+                      <TableHead className="w-[120px]">Quantity</TableHead>
+                      <TableHead className="w-[120px]">Price</TableHead>
+                      <TableHead className="w-[140px]">Amount</TableHead>
                       <TableHead className="w-[150px]">Brokerage</TableHead>
                       <TableHead className="w-[80px]">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {contractRows.map((row) => {
-                      const lotSize = parseInt(row.lot_size) || 1;
                       const quantity = parseInt(row.quantity) || 0;
-                      const actualQty = lotSize * quantity;
                       const price = parseFloat(row.price) || 0;
-                      const amount = actualQty * price;
+                      const amount = quantity * price;
                       const party = parties.find(p => p.id === commonFields.party_id);
                       // CF has no brokerage, BUY/SELL have brokerage
                       const brokerageRate = row.trade_type === 'CF' ? 0 : (party?.trading_slab || 0);
@@ -670,27 +660,13 @@ const FOContracts = () => {
                           <TableCell>
                             <Input
                               type="number"
-                              value={row.lot_size}
-                              onChange={(e) => {
-                                const value = e.target.value.replace(/[^0-9]/g, '');
-                                updateContractRow(row.id, "lot_size", value || "1");
-                              }}
-                              placeholder="Lot"
-                              className="h-9"
-                              min="1"
-                              step="1"
-                            />
-                          </TableCell>
-                          <TableCell>
-                            <Input
-                              type="number"
                               value={row.quantity}
                               onChange={(e) => {
                                 // Only allow whole numbers (integers)
                                 const value = e.target.value.replace(/[^0-9]/g, '');
                                 updateContractRow(row.id, "quantity", value);
                               }}
-                              placeholder="Lots"
+                              placeholder="Quantity"
                               className="h-9"
                               min="1"
                               step="1"
@@ -708,11 +684,6 @@ const FOContracts = () => {
                           </TableCell>
                           <TableCell className="font-mono text-sm">
                             ₹{amount.toFixed(2)}
-                            {actualQty !== quantity && (
-                              <div className="text-xs text-muted-foreground">
-                                ({actualQty.toLocaleString()} units)
-                              </div>
-                            )}
                           </TableCell>
                           <TableCell className="font-mono text-sm text-amber-600">
                             {row.trade_type === 'CF' ? (
@@ -748,10 +719,8 @@ const FOContracts = () => {
                   {contractRows.length} {contractRows.length === 1 ? "item" : "items"} • Total: ₹
                   {contractRows
                     .reduce((sum, row) => {
-                      const lotSize = parseInt(row.lot_size) || 1;
                       const quantity = parseInt(row.quantity) || 0;
-                      const actualQty = lotSize * quantity;
-                      const amount = actualQty * (parseFloat(row.price) || 0);
+                      const amount = quantity * (parseFloat(row.price) || 0);
                       return sum + amount;
                     }, 0)
                     .toFixed(2)}
