@@ -163,7 +163,7 @@ export const useTableNavigation = (items: any[], selectedIndex: number, setSelec
   }, [handleKeyDown]);
 };
 
-// Enhanced form field navigation (Tab/Enter sequence)
+// Enhanced form field navigation (Tab/Enter/Arrow keys for business apps)
 export const useFormNavigation = (formRef: React.RefObject<HTMLFormElement>, onSubmit?: () => void) => {
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (!formRef.current) return;
@@ -174,11 +174,12 @@ export const useFormNavigation = (formRef: React.RefObject<HTMLFormElement>, onS
     )) as HTMLElement[];
     
     const currentIndex = formElements.indexOf(target);
+    if (currentIndex === -1) return; // Target not in form
     
+    // Enter key - Move to next field (business app style)
     if (e.key === 'Enter' && target.tagName !== 'TEXTAREA' && target.tagName !== 'BUTTON') {
       e.preventDefault();
       
-      // Move to next field
       const nextIndex = currentIndex + 1;
       if (nextIndex < formElements.length) {
         formElements[nextIndex].focus();
@@ -188,8 +189,70 @@ export const useFormNavigation = (formRef: React.RefObject<HTMLFormElement>, onS
       }
     }
     
+    // Arrow Down - Move to next field (↓ = aage)
+    else if (e.key === 'ArrowDown' && target.tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      const nextIndex = currentIndex + 1;
+      if (nextIndex < formElements.length) {
+        formElements[nextIndex].focus();
+      }
+    }
+    
+    // Arrow Up - Move to previous field (↑ = peeche)
+    else if (e.key === 'ArrowUp' && target.tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      const prevIndex = currentIndex - 1;
+      if (prevIndex >= 0) {
+        formElements[prevIndex].focus();
+      }
+    }
+    
+    // Arrow Right - Move to next field (→ = aage, horizontal navigation)
+    else if (e.key === 'ArrowRight') {
+      // Only if cursor is at end of input (for text inputs)
+      if (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'text') {
+        const input = target as HTMLInputElement;
+        if (input.selectionStart === input.value.length) {
+          e.preventDefault();
+          const nextIndex = currentIndex + 1;
+          if (nextIndex < formElements.length) {
+            formElements[nextIndex].focus();
+          }
+        }
+      } else if (target.tagName === 'SELECT' || target.tagName === 'BUTTON') {
+        // For non-text elements, always move
+        e.preventDefault();
+        const nextIndex = currentIndex + 1;
+        if (nextIndex < formElements.length) {
+          formElements[nextIndex].focus();
+        }
+      }
+    }
+    
+    // Arrow Left - Move to previous field (← = peeche, horizontal navigation)
+    else if (e.key === 'ArrowLeft') {
+      // Only if cursor is at start of input (for text inputs)
+      if (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'text') {
+        const input = target as HTMLInputElement;
+        if (input.selectionStart === 0) {
+          e.preventDefault();
+          const prevIndex = currentIndex - 1;
+          if (prevIndex >= 0) {
+            formElements[prevIndex].focus();
+          }
+        }
+      } else if (target.tagName === 'SELECT' || target.tagName === 'BUTTON') {
+        // For non-text elements, always move
+        e.preventDefault();
+        const prevIndex = currentIndex - 1;
+        if (prevIndex >= 0) {
+          formElements[prevIndex].focus();
+        }
+      }
+    }
+    
+    // Tab - Let browser handle but ensure visibility
     if (e.key === 'Tab') {
-      // Let browser handle tab navigation but ensure it's visible
       setTimeout(() => {
         const focusedElement = document.activeElement as HTMLElement;
         if (focusedElement) {

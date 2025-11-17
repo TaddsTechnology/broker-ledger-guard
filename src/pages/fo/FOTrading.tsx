@@ -10,6 +10,7 @@ import { Upload, FileText, Download, X, CheckCircle, AlertCircle, FileSpreadshee
 import * as XLSX from "xlsx";
 import { useToast } from "@/hooks/use-toast";
 import { partyQueries, brokerQueries } from "@/lib/database";
+import { useBusinessKeyboard } from "@/hooks/useBusinessKeyboard";
 
 interface Party {
   id: string;
@@ -53,6 +54,24 @@ const FOTrading = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileRefs = useRef<(HTMLDivElement | null)[]>([]);
   const { toast } = useToast();
+
+  // Keyboard shortcuts
+  useBusinessKeyboard({
+    onUp: () => {
+      if (selectedFileIndex > 0) {
+        const newIndex = selectedFileIndex - 1;
+        setSelectedFileIndex(newIndex);
+        fileRefs.current[newIndex]?.focus();
+      }
+    },
+    onDown: () => {
+      if (selectedFileIndex < uploadedFiles.length - 1) {
+        const newIndex = selectedFileIndex + 1;
+        setSelectedFileIndex(newIndex);
+        fileRefs.current[newIndex]?.focus();
+      }
+    },
+  });
 
   // Fetch parties and brokers on component mount
   useEffect(() => {
