@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Plus, Trash2, Save, X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { billQueries, foBillQueries } from "@/lib/database";
+import { foBillQueries } from "@/lib/database";
 
 interface BillItem {
   id?: string;
@@ -40,11 +40,10 @@ interface Bill {
   bill_type?: 'party' | 'broker';
 }
 
-interface BillEditorProps {
+interface FOBillEditorProps {
   bill: Bill;
   onSave: (updatedBill: Bill) => void;
   onCancel: () => void;
-  variant?: 'equity' | 'fo';
 }
 
 // Function to parse notes and extract bill items
@@ -100,9 +99,8 @@ function parseNotesToItems(notes: string | null): BillItem[] {
   return items;
 }
 
-export function BillEditor({ bill, onSave, onCancel, variant = 'equity' }: BillEditorProps) {
+export function FOBillEditor({ bill, onSave, onCancel }: FOBillEditorProps) {
   const { toast } = useToast();
-  const queryLayer = variant === 'fo' ? foBillQueries : billQueries;
   
   // Format dates properly for input fields (YYYY-MM-DD)
   const formatDateForInput = (dateStr: string | null) => {
@@ -134,7 +132,7 @@ export function BillEditor({ bill, onSave, onCancel, variant = 'equity' }: BillE
   const fetchBillItems = async () => {
     try {
       setLoading(true);
-      const billItems = await queryLayer.getItems(bill.id);
+      const billItems = await foBillQueries.getItems(bill.id);
       console.log('Fetched bill items:', billItems);
       
       // If no items in database, try to parse from notes
@@ -228,7 +226,7 @@ export function BillEditor({ bill, onSave, onCancel, variant = 'equity' }: BillE
         }))
       };
 
-      await queryLayer.update(bill.id, updatedBill);
+      await foBillQueries.update(bill.id, updatedBill);
       
       onSave(updatedBill);
       

@@ -151,6 +151,62 @@ export const billQueries = {
   delete: (id: string) => apiCall(`/bills/${id}`, { method: 'DELETE' }),
 };
 
+// F&O Bills operations
+export const foBillQueries = {
+  getAll: (type?: 'party' | 'broker') =>
+    type ? apiCall(`/fo/bills?type=${type}`) : apiCall('/fo/bills'),
+  getById: (id: string) => apiCall(`/fo/bills/${id}`),
+  getItems: (id: string) => apiCall(`/fo/bills/${id}/items`),
+  create: (data: {
+    bill_number: string;
+    party_id?: string | null;
+    bill_date: string;
+    due_date?: string | null;
+    total_amount: number;
+    notes?: string | null;
+    bill_type?: 'party' | 'broker';
+  }) =>
+    apiCall('/fo/bills', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  update: (id: string, data: {
+    bill_number: string;
+    party_id?: string | null;
+    bill_date: string;
+    due_date?: string | null;
+    total_amount: number;
+    notes?: string | null;
+    status?: string;
+  }) =>
+    apiCall(`/fo/bills/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  delete: (id: string) => apiCall(`/fo/bills/${id}`, { method: 'DELETE' }),
+};
+
+// Add function to fetch outstanding bills for a party
+export const getOutstandingBills = async (partyId: string) => {
+  try {
+    const response = await apiCall(`/bills/outstanding/${partyId}`);
+    return response;
+  } catch (error) {
+    console.error('Error fetching outstanding bills:', error);
+    throw error;
+  }
+};
+
+export const getOutstandingFoBills = async (partyId: string) => {
+  try {
+    const response = await apiCall(`/fo/bills/outstanding/${partyId}`);
+    return response;
+  } catch (error) {
+    console.error('Error fetching F&O outstanding bills:', error);
+    throw error;
+  }
+};
+
 // Ledger operations
 export const ledgerQueries = {
   getAll: () => apiCall('/ledger'),

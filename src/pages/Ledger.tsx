@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Plus, Save, X, List, Search, Calendar, IndianRupee, Pencil, Trash2 } from "lucide-react";
@@ -659,7 +659,7 @@ const Ledger = () => {
                 </TableRow>
               ) : viewMode === 'grouped' ? (
                 // Grouped view
-                groupLedgerEntries().map((group) => {
+                groupLedgerEntries().map((group, index) => {
                   const groupKey = `${group.date}-${group.party_id}`;
                   const isExpanded = expandedGroups.has(groupKey);
                   // const billNumbers = [...new Set(group.entries.map(e => e.bill_number).filter(Boolean))];
@@ -889,6 +889,9 @@ const Ledger = () => {
       </div>
     </div>
   );
+
+  // Add function to open payment dialog
+  // Add function to handle payment success
 
   // Main render based on current view
   return (

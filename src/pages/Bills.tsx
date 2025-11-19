@@ -800,19 +800,20 @@ const Bills = () => {
     </div>
   );
 
-  // Main render based on current view
+  // Render main view based on current state
   return (
     <>
-      {currentView === 'form' ? renderFormView() : 
-       currentView === 'edit' && editingBill ? (
-        <BillEditor 
-          bill={editingBill} 
-          onSave={handleSaveEditedBill} 
-          onCancel={() => {
-            setCurrentView('list');
-            setEditingBill(null);
-          }} 
-        />
+      {currentView === 'form' ? renderFormView() : currentView === 'edit' ? (
+        editingBill && (
+          <BillEditor 
+            bill={editingBill} 
+            onSave={handleSaveEditedBill} 
+            onCancel={() => {
+              setCurrentView('list');
+              setEditingBill(null);
+            }} 
+          />
+        )
       ) : renderListView()}
       
       <ConfirmDialog

@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS fo_ledger_entries (
 CREATE INDEX IF NOT EXISTS idx_fo_ledger_party ON fo_ledger_entries(party_id);
 CREATE INDEX IF NOT EXISTS idx_fo_ledger_date ON fo_ledger_entries(entry_date);
 CREATE INDEX IF NOT EXISTS idx_fo_ledger_type ON fo_ledger_entries(reference_type);
+CREATE INDEX IF NOT EXISTS idx_fo_ledger_reference_id ON fo_ledger_entries(reference_id);
 
 -- ============================================================================
 -- F&O PAYMENTS
@@ -189,12 +190,11 @@ CREATE INDEX IF NOT EXISTS idx_fo_ledger_type ON fo_ledger_entries(reference_typ
 CREATE TABLE IF NOT EXISTS fo_payments (
   id SERIAL PRIMARY KEY,
   payment_number VARCHAR(50) UNIQUE NOT NULL,
-  bill_id INTEGER REFERENCES fo_bills(id),
+  bill_id INTEGER REFERENCES fo_bills(id) ON DELETE SET NULL,
   party_id UUID REFERENCES party_master(id) ON DELETE SET NULL,
   payment_date DATE NOT NULL,
   amount DECIMAL(15, 2) NOT NULL,
   payment_method VARCHAR(50),                     -- 'cash', 'cheque', 'bank_transfer', etc.
-  reference_number VARCHAR(100),                  -- Cheque/transaction reference
   notes TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

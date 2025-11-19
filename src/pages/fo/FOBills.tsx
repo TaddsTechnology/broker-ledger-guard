@@ -8,8 +8,8 @@ import { useFormNavigation, useBusinessKeyboard } from "@/hooks/useBusinessKeybo
 import { billQueries, partyQueries } from "@/lib/database";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FOBillView } from "@/components/fo/FOBillView";
-import { BillEditor } from "@/components/BillEditor";
 import { FOBrokerBillView } from "@/components/fo/FOBrokerBillView";
+import { FOBillEditor } from "@/components/FOBillEditor";
 import {
   Table,
   TableBody,
@@ -143,16 +143,22 @@ const FOBills = () => {
     setIsLoading(true);
     try {
       const type = searchParams.get('type') as 'party' | 'broker' | null;
-      const response = await fetch(`http://localhost:3001/api/fo/bills${type ? `?type=${type}` : ""}`);  
+      const response = await fetch(`http://localhost:3001/api/fo/bills${type ? `?type=${type}` : ""}`);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch bills: ${response.statusText}`);
+      }
+      
       const result = await response.json();
       setBills(Array.isArray(result) ? result : []);
     } catch (error) {
       console.error('Error fetching bills:', error);
       toast({
         title: "Error",
-        description: "Failed to fetch bills",
+        description: error instanceof Error ? error.message : "Failed to fetch bills",
         variant: "destructive",
       });
+      setBills([]); // Set to empty array on error
     }
     setIsLoading(false);
   };
@@ -187,6 +193,16 @@ const FOBills = () => {
   const handleSubmit = async (e?: React.FormEvent) => {
     e?.preventDefault();
 
+    // Validate required fields
+    if (!formData.bill_number || !formData.party_id || !formData.total_amount) {
+      toast({
+        title: "Validation Error",
+        description: "Please fill in all required fields",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const billData = {
       bill_number: formData.bill_number,
       party_id: formData.party_id,
@@ -198,61 +214,59 @@ const FOBills = () => {
     };
 
     try {
+      let response;
       if (editingBill) {
-        await (await fetch(`http://localhost:3001/api/fo/bills/${editingBill.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(billData) })).json();
-        toast({ title: "Success", description: "Bill updated successfully" });
-        setCurrentView('list');
-        resetForm();
-        const type = searchParams.get('type') as 'party' | 'broker' | null;
-        const response = await fetch(`http://localhost:3001/api/fo/bills${type ? `?type=${type}` : ""}`);
-        const result = await response.json();
-        setBills(Array.isArray(result) ? result : []);
+        // Update existing bill
+        response = await fetch(`http://localhost:3001/api/fo/bills/${editingBill.id}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(billData),
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to update bill: ${response.statusText}`);
+        }
+        
+        toast({ 
+          title: "Success", 
+          description: "Bill updated successfully",
+          variant: "default"
+        });
       } else {
-        await (await fetch("http://localhost:3001/api/fo/bills", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(billData) })).json();
+        // Create new bill
+        response = await fetch("http://localhost:3001/api/fo/bills", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(billData),
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to create bill: ${response.statusText}`);
+        }
+        
         toast({ 
           title: "Success", 
           description: "Bill created successfully",
           variant: "default"
         });
-        resetForm();
-        
-        // Show success message and ask if user wants to continue
-        toast({
-          title: "Add Another?",
-          description: "Bill created successfully! Would you like to add another bill?",
-          action: (
-            <div className="flex gap-2 mt-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  setCurrentView('list');
-                  toast({ title: "Switched to list view" });
-                }}
-              >
-                View List
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => {
-                  // Stay in form for next entry
-                  toast({ title: "Ready for next entry" });
-                }}
-              >
-                Add Another
-              </Button>
-            </div>
-          ),
-        });
-        const type2 = searchParams.get('type') as 'party' | 'broker' | null;
-        const result2 = await billQueries.getAll(type2 || undefined);
-        setBills(result2 || []);
       }
+      
+      // Refresh the bills list
+      const result = await response.json();
+      await fetchBills();
+      
+      // Reset form and switch to list view
+      resetForm();
+      setCurrentView('list');
     } catch (error) {
       console.error('Error saving bill:', error);
       toast({
         title: "Error",
-        description: "Failed to save bill",
+        description: error instanceof Error ? error.message : "Failed to save bill",
         variant: "destructive",
       });
     }
@@ -274,18 +288,25 @@ const FOBills = () => {
 
   const handleEditBill = async (bill: Bill) => {
     try {
-      // Try to fetch the bill details to ensure we have the latest data
-      const updatedBill = await billQueries.getById(bill.id);
+      // Fetch the latest bill data from the API
+      const response = await fetch(`http://localhost:3001/api/fo/bills/${bill.id}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch bill details');
+      }
+      const updatedBill = await response.json();
+      
+      // Load the data into the edit view
       setEditingBill(updatedBill);
       setCurrentView('edit');
     } catch (error) {
       console.error("Error fetching bill details:", error);
       toast({
         title: "Error",
-        description: "Failed to load bill details. Please try again.",
+        description: "Failed to load bill details. Using cached data.",
         variant: "destructive",
       });
-      // Still proceed with the existing bill data
+      
+      // Fallback to using the provided bill data
       setEditingBill(bill);
       setCurrentView('edit');
     }
@@ -306,7 +327,7 @@ const FOBills = () => {
       });
       
       if (!response.ok) {
-        throw new Error('Failed to delete bill');
+        throw new Error(`Failed to delete bill: ${response.statusText}`);
       }
       
       toast({ 
@@ -314,33 +335,41 @@ const FOBills = () => {
         description: `Bill "${billToDelete.bill_number}" deleted successfully`,
         variant: "default"
       });
-      const type = searchParams.get('type') as 'party' | 'broker' | null;
-      const result = await (await fetch(`http://localhost:3001/api/fo/bills${type ? `?type=${type}` : ""}`)).json();
-      setBills(result || []);
+      
+      // Refresh the bills list
+      await fetchBills();
     } catch (error) {
       console.error('Error deleting bill:', error);
       toast({
         title: "Error",
-        description: "Failed to delete bill",
+        description: error instanceof Error ? error.message : "Failed to delete bill",
         variant: "destructive",
       });
+    } finally {
+      setDeleteDialogOpen(false);
+      setBillToDelete(null);
     }
   };
 
   const handleSaveEditedBill = async (updatedBill: Bill) => {
     try {
-      await billQueries.update(updatedBill.id, updatedBill);
-      toast({ title: "Success", description: "Bill updated successfully" });
+      // Refresh the bills list
+      await fetchBills();
+      
+      // Reset view and show success message
       setCurrentView('list');
       setEditingBill(null);
-      const type = searchParams.get('type') as 'party' | 'broker' | null;
-      const result = await (await fetch(`http://localhost:3001/api/fo/bills${type ? `?type=${type}` : ""}`)).json();
-      setBills(result || []);
+      
+      toast({
+        title: "Success",
+        description: "Bill updated successfully",
+        variant: "default"
+      });
     } catch (error) {
       console.error('Error saving bill:', error);
       toast({
         title: "Error",
-        description: "Failed to save bill",
+        description: error instanceof Error ? error.message : "Failed to save bill",
         variant: "destructive",
       });
     }
@@ -373,7 +402,7 @@ const FOBills = () => {
       }
     },
     onCancel: () => {
-      if (currentView === 'form' || currentView === 'edit') {
+      if (currentView === 'form') {
         setCurrentView('list');
         resetForm();
       }
@@ -816,7 +845,7 @@ const FOBills = () => {
     <>
       {currentView === 'form' ? renderFormView() : 
        currentView === 'edit' && editingBill ? (
-        <BillEditor 
+        <FOBillEditor 
           bill={editingBill} 
           onSave={handleSaveEditedBill} 
           onCancel={() => {

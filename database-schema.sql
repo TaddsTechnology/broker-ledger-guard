@@ -135,10 +135,12 @@ CREATE TABLE IF NOT EXISTS payments (
     payment_date DATE NOT NULL,
     amount DECIMAL(15,2) NOT NULL,
     payment_method VARCHAR(50) DEFAULT 'cash',
-    reference_number VARCHAR(100),
     notes TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Add unique constraint for idempotency
+ALTER TABLE payments ADD CONSTRAINT unique_payment_id UNIQUE (id);
 
 -- Create ledger_entries table
 CREATE TABLE IF NOT EXISTS ledger_entries (
@@ -154,6 +156,11 @@ CREATE TABLE IF NOT EXISTS ledger_entries (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Add columns for payment linking
+ALTER TABLE ledger_entries ADD COLUMN linked_payment_id UUID REFERENCES payments(id);
+ALTER TABLE ledger_entries ADD COLUMN account_type VARCHAR(20) DEFAULT 'party'; -- 'party', 'bank'
+ALTER TABLE ledger_entries ADD COLUMN account_id VARCHAR(50); -- party_code or bank identifier
 
 -- Create application_settings table
 CREATE TABLE IF NOT EXISTS application_settings (
@@ -184,6 +191,12 @@ CREATE INDEX IF NOT EXISTS idx_payments_party_id ON payments(party_id);
 CREATE INDEX IF NOT EXISTS idx_payments_bill_id ON payments(bill_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_entries_party_id ON ledger_entries(party_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_entries_entry_date ON ledger_entries(entry_date);
+CREATE INDEX IF NOT EXISTS idx_ledger_entries_reference_type ON ledger_entries(reference_type);
+
+-- Add indexes for new columns
+CREATE INDEX IF NOT EXISTS idx_ledger_entries_linked_payment_id ON ledger_entries(linked_payment_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_entries_account_type ON ledger_entries(account_type);
+CREATE INDEX IF NOT EXISTS idx_ledger_entries_account_id ON ledger_entries(account_id);
 
 -- Create contracts table
 CREATE TABLE IF NOT EXISTS contracts (
@@ -243,6 +256,7 @@ CREATE INDEX IF NOT EXISTS idx_payments_party_id ON payments(party_id);
 CREATE INDEX IF NOT EXISTS idx_payments_bill_id ON payments(bill_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_entries_party_id ON ledger_entries(party_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_entries_entry_date ON ledger_entries(entry_date);
+CREATE INDEX IF NOT EXISTS idx_ledger_entries_reference_type ON ledger_entries(reference_type);
 CREATE INDEX IF NOT EXISTS idx_contracts_contract_number ON contracts(contract_number);
 CREATE INDEX IF NOT EXISTS idx_contracts_party_id ON contracts(party_id);
 CREATE INDEX IF NOT EXISTS idx_contracts_settlement_id ON contracts(settlement_id);

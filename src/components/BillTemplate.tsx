@@ -438,15 +438,15 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                     <>
                       <tr className="border-b">
                         <td className="p-3">Total Transaction Value</td>
-                        <td className="p-3 text-right">{(billData.totalTransactionValue || 0).toFixed(2)}</td>
+                        <td className="p-3 text-right">₹{(billData.totalTransactionValue || 0).toFixed(2)}</td>
                       </tr>
                       <tr className="border-b">
                         <td className="p-3">Delivery Amount</td>
-                        <td className="p-3 text-right">{billData.deliveryAmount.toFixed(2)}</td>
+                        <td className="p-3 text-right">₹{billData.deliveryAmount.toFixed(2)}</td>
                       </tr>
                       <tr className="border-b">
                         <td className="p-3">Trading Amount</td>
-                        <td className="p-3 text-right">{billData.tradingAmount.toFixed(2)}</td>
+                        <td className="p-3 text-right">₹{billData.tradingAmount.toFixed(2)}</td>
                       </tr>
                     </>
                   ) : (
@@ -457,23 +457,23 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                       </tr>
                       <tr className="border-b">
                         <td className="p-3">Buy Amount</td>
-                        <td className="p-3 text-right">{billData.buyAmount.toFixed(2)}</td>
+                        <td className="p-3 text-right">₹{billData.buyAmount.toFixed(2)}</td>
                       </tr>
                       <tr className="border-b">
                         <td className="p-3">Sell Amount</td>
-                        <td className="p-3 text-right">{billData.sellAmount.toFixed(2)}</td>
+                        <td className="p-3 text-right">₹{billData.sellAmount.toFixed(2)}</td>
                       </tr>
                       <tr className="border-b">
                         <td className="p-3">Delivery Amount</td>
-                        <td className="p-3 text-right">{billData.deliveryAmount.toFixed(2)}</td>
+                        <td className="p-3 text-right">₹{billData.deliveryAmount.toFixed(2)}</td>
                       </tr>
                       <tr className="border-b">
                         <td className="p-3">Trading Amount</td>
-                        <td className="p-3 text-right">{billData.tradingAmount.toFixed(2)}</td>
+                        <td className="p-3 text-right">₹{billData.tradingAmount.toFixed(2)}</td>
                       </tr>
                       <tr className="border-b">
                         <td className="p-3">Brokerage</td>
-                        <td className="p-3 text-right">{((billData.deliveryBrokerageAmount || 0) + (billData.tradingBrokerageAmount || 0)).toFixed(2)}</td>
+                        <td className="p-3 text-right">₹{((billData.deliveryBrokerageAmount || 0) + (billData.tradingBrokerageAmount || 0)).toFixed(2)}</td>
                       </tr>
                     </>
                   )}
@@ -482,7 +482,7 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                       {billData.billType === 'broker' ? 'Net Payable Amount' : 'Net Amount'}
                     </td>
                     <td className="p-3 text-right font-semibold">
-                      {(billData.netAmount || 0).toFixed(2)}
+                      ₹{(billData.netAmount || 0).toFixed(2)}
                     </td>
                   </tr>
                 </tbody>
@@ -516,8 +516,8 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                             <td className="p-2">{tradeIndex + 1}</td>
                             <td className="p-2">{trade.side}</td>
                             <td className="p-2">{Number(trade.quantity).toFixed(0)}</td>
-                            <td className="p-2">{Number(trade.price).toFixed(2)}</td>
-                            <td className="p-2 text-right">{Number(trade.amount).toFixed(2)}</td>
+                            <td className="p-2">₹{Number(trade.price).toFixed(2)}</td>
+                            <td className="p-2 text-right">₹{Number(trade.amount).toFixed(2)}</td>
                             <td className="p-2">
                               {trade.deliveryTrading === 'D' ? 'D' : 
                                trade.deliveryTrading === 'T' ? 'T' : 

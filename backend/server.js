@@ -372,6 +372,66 @@ app.get('/api/bills/:id/items', async (req, res) => {
   }
 });
 
+// Add endpoint to get outstanding bills for a party
+app.get('/api/bills/outstanding/:partyId', async (req, res) => {
+  try {
+    const { partyId } = req.params;
+    
+    // Validate party exists
+    const partyResult = await pool.query(
+      'SELECT id FROM party_master WHERE id = $1',
+      [partyId]
+    );
+    
+    if (partyResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Party not found' });
+    }
+    
+    // Get bills that are not fully paid
+    const result = await pool.query(
+      `SELECT id, bill_number, total_amount, paid_amount, status
+       FROM bills 
+       WHERE party_id = $1 AND status != 'paid'
+       ORDER BY created_at DESC`,
+      [partyId]
+    );
+    
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching outstanding bills:', error);
+    res.status(500).json({ error: 'Failed to fetch outstanding bills' });
+  }
+});
+
+// Get outstanding F&O bills for a party
+app.get('/api/fo/bills/outstanding/:partyId', async (req, res) => {
+  try {
+    const { partyId } = req.params;
+    
+    const partyResult = await pool.query(
+      'SELECT id FROM party_master WHERE id = $1',
+      [partyId]
+    );
+    
+    if (partyResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Party not found' });
+    }
+    
+    const result = await pool.query(
+      `SELECT id, bill_number, total_amount, paid_amount, status
+       FROM fo_bills
+       WHERE party_id = $1 AND status != 'paid'
+       ORDER BY created_at DESC`,
+      [partyId]
+    );
+    
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching F&O outstanding bills:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O outstanding bills' });
+  }
+});
+
 // Ledger API routes
 app.get('/api/ledger', async (req, res) => {
   try {
@@ -1358,6 +1418,12 @@ app.post('/api/stock-trades/process', async (req, res) => {
       // If Buy = Sell: Client owes only the brokerage
       const finalClientBalance = netTradeAmount + totalBrokerage;
 
+      // Skip bill creation when there's no net impact (e.g., carry forward entries)
+      if (Math.abs(finalClientBalance) < 0.01) {
+        console.log(`Skipping client bill for ${party.party_code} due to zero total (likely carry forward)`);
+        continue;
+      }
+
       // Get current client balance (consolidated)
       let currentClientBalance = 0;
       const clientBalanceQuery = await client.query(
@@ -1992,6 +2058,368 @@ app.post('/api/bills/:billId/payment', async (req, res) => {
   }
 });
 
+// Add payment processing endpoint
+app.post('/api/payments', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { 
+      payment_id, 
+      party_id, 
+      amount, 
+      date, 
+      apply_to_bill_id, 
+      payment_method,
+      notes
+    } = req.body;
+    
+    // Validate required fields
+    if (!payment_id || !party_id || !amount || !date) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        error: 'Missing required fields', 
+        required: ['payment_id', 'party_id', 'amount', 'date'] 
+      });
+    }
+    
+    // Validate amount
+    const amountValue = parseFloat(amount);
+    if (isNaN(amountValue) || amountValue <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Amount must be greater than 0' });
+    }
+    
+    // Check idempotency - if payment already exists, return existing result
+    const existingPayment = await client.query(
+      'SELECT * FROM payments WHERE id = $1',
+      [payment_id]
+    );
+    
+    if (existingPayment.rows.length > 0) {
+      // Return existing payment result
+      const payment = existingPayment.rows[0];
+      
+      // Get ledger entries for this payment
+      const ledgerEntries = await client.query(
+        `SELECT * FROM ledger_entries 
+         WHERE reference_type = 'payment_received' AND reference_id = $1 
+         ORDER BY created_at`,
+        [payment_id]
+      );
+      
+      // Get party's current ledger balance
+      const partyLedgerResult = await client.query(
+        `SELECT balance FROM ledger_entries 
+         WHERE party_id = $1
+         ORDER BY entry_date DESC, created_at DESC LIMIT 1`,
+        [party_id]
+      );
+      
+      const newBalance = partyLedgerResult.rows.length > 0 ? 
+        parseFloat(partyLedgerResult.rows[0].balance) : 0;
+      
+      await client.query('COMMIT');
+      
+      return res.json({
+        success: true,
+        payment_id: payment.id,
+        applied_to: payment.bill_id,
+        new_balance: newBalance,
+        ledger_entries: ledgerEntries.rows
+      });
+    }
+    
+    // Validate party exists
+    const partyResult = await client.query(
+      'SELECT id, party_code FROM party_master WHERE id = $1',
+      [party_id]
+    );
+    
+    if (partyResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Party not found' });
+    }
+    
+    const party = partyResult.rows[0];
+    
+    // Validate bill if provided
+    let bill = null;
+    if (apply_to_bill_id) {
+      const billResult = await client.query(
+        'SELECT id, total_amount, paid_amount, status FROM bills WHERE id = $1 AND party_id = $2',
+        [apply_to_bill_id, party_id]
+      );
+      
+      if (billResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Bill not found or does not belong to this party' });
+      }
+      
+      bill = billResult.rows[0];
+      
+      // Check if bill is already paid
+      if (bill.status === 'paid') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Bill is already paid' });
+      }
+    }
+    
+    // Use provided payment method, fallback to cash
+    const paymentMethod = (payment_method && payment_method.trim()) || 'cash';
+    
+    // Get party's current ledger balance
+    const partyLedgerResult = await client.query(
+      `SELECT balance FROM ledger_entries 
+       WHERE party_id = $1
+       ORDER BY entry_date DESC, created_at DESC LIMIT 1`,
+      [party_id]
+    );
+    
+    const currentPartyBalance = partyLedgerResult.rows.length > 0 ? 
+      parseFloat(partyLedgerResult.rows[0].balance) : 0;
+    
+    // Payments reduce the outstanding balance
+    const newPartyBalance = currentPartyBalance - amountValue;
+    
+    // Create party ledger entry
+    const partyLedgerEntry = await client.query(
+      `INSERT INTO ledger_entries 
+        (party_id, entry_date, particulars, debit_amount, credit_amount, balance, 
+         reference_type, reference_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        party_id, 
+        date, 
+        apply_to_bill_id 
+          ? `Payment (${paymentMethod}) applied to bill ${bill.bill_number || apply_to_bill_id}` 
+          : `Payment received (${paymentMethod})`,
+        0, // debit_amount
+        amountValue, // credit_amount
+        newPartyBalance,
+        'payment_received',
+        payment_id
+      ]
+    );
+    
+    // Update bill if applicable
+    let updatedBill = null;
+    if (bill) {
+      const newPaidAmount = parseFloat(bill.paid_amount) + amountValue;
+      const isFullyPaid = newPaidAmount >= parseFloat(bill.total_amount);
+      
+      const billUpdateResult = await client.query(
+        `UPDATE bills 
+         SET paid_amount = $1, status = $2, updated_at = NOW()
+         WHERE id = $3
+         RETURNING *`,
+        [
+          newPaidAmount,
+          isFullyPaid ? 'paid' : 'partially_paid',
+          apply_to_bill_id
+        ]
+      );
+      
+      updatedBill = billUpdateResult.rows[0];
+    }
+    
+    // Create payment record
+    const paymentNumber = `PAY-${Date.now()}`;
+    const paymentResult = await client.query(
+      `INSERT INTO payments 
+        (id, payment_number, party_id, bill_id, payment_date, amount, payment_method, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        payment_id,
+        paymentNumber,
+        party_id,
+        apply_to_bill_id,
+        date,
+        amountValue,
+        paymentMethod,
+        notes || null
+      ]
+    );
+    
+    await client.query('COMMIT');
+    
+    // Return success response
+    res.json({
+      success: true,
+      payment_id: paymentResult.rows[0].id,
+      applied_to: apply_to_bill_id,
+      new_balance: newPartyBalance,
+      ledger_entries: [
+        partyLedgerEntry.rows[0]
+      ]
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error processing payment:', error);
+    res.status(500).json({ 
+      error: 'Failed to process payment',
+      details: error.message 
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// Record F&O payment
+app.post('/api/fo/payments', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    const { 
+      party_id,
+      amount,
+      date,
+      apply_to_bill_id,
+      payment_method,
+      notes
+    } = req.body;
+    
+    if (!party_id || !amount || !date) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        error: 'Missing required fields',
+        required: ['party_id', 'amount', 'date']
+      });
+    }
+    
+    const amountValue = parseFloat(amount);
+    if (isNaN(amountValue) || amountValue <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Amount must be greater than 0' });
+    }
+    
+    const partyResult = await client.query(
+      'SELECT id, party_code FROM party_master WHERE id = $1',
+      [party_id]
+    );
+    if (partyResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Party not found' });
+    }
+    const party = partyResult.rows[0];
+    
+    let bill = null;
+    let foBillId = null;
+    if (apply_to_bill_id !== null && apply_to_bill_id !== undefined) {
+      foBillId = Number(apply_to_bill_id);
+      if (Number.isNaN(foBillId)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Invalid bill id' });
+      }
+      
+      const billResult = await client.query(
+        'SELECT id, bill_number, total_amount, paid_amount, status FROM fo_bills WHERE id = $1 AND party_id = $2',
+        [foBillId, party_id]
+      );
+      if (billResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Bill not found or does not belong to this party' });
+      }
+      bill = billResult.rows[0];
+      if (bill.status === 'paid') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Bill is already paid' });
+      }
+    }
+    
+    const paymentMethod = (payment_method && payment_method.trim()) || 'cash';
+    
+    const ledgerResult = await client.query(
+      `SELECT balance FROM fo_ledger_entries 
+       WHERE party_id = $1
+       ORDER BY entry_date DESC, created_at DESC LIMIT 1`,
+      [party_id]
+    );
+    const currentBalance = ledgerResult.rows.length > 0
+      ? parseFloat(ledgerResult.rows[0].balance)
+      : 0;
+    const newBalance = currentBalance - amountValue;
+    
+    const paymentNumber = `FO-PAY${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}${String(new Date().getDate()).padStart(2, '0')}-${String(Math.floor(Math.random() * 900) + 100)}`;
+    const paymentInsert = await client.query(
+      `INSERT INTO fo_payments
+        (payment_number, party_id, bill_id, payment_date, amount, payment_method, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id`,
+      [
+        paymentNumber,
+        party_id,
+        foBillId,
+        date,
+        amountValue,
+        paymentMethod,
+        notes || null
+      ]
+    );
+    const foPaymentId = paymentInsert.rows[0].id;
+    
+    const particulars = bill && foBillId
+      ? `Payment (${paymentMethod}) applied to FO bill ${bill.bill_number || foBillId}`
+      : `Payment received (${paymentMethod})`;
+    
+    const ledgerInsert = await client.query(
+      `INSERT INTO fo_ledger_entries 
+        (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING *`,
+      [
+        party_id,
+        date,
+        particulars,
+        0,
+        amountValue,
+        newBalance,
+        'payment_received',
+        foPaymentId
+      ]
+    );
+    
+    if (bill && foBillId) {
+      const newPaidAmount = parseFloat(bill.paid_amount) + amountValue;
+      const isFullyPaid = newPaidAmount >= parseFloat(bill.total_amount) - 0.01;
+      await client.query(
+        `UPDATE fo_bills
+         SET paid_amount = $1, status = $2, updated_at = NOW()
+         WHERE id = $3`,
+        [
+          newPaidAmount,
+          isFullyPaid ? 'paid' : 'partially_paid',
+          foBillId
+        ]
+      );
+    }
+    
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      payment_id: foPaymentId,
+      applied_to: foBillId,
+      new_balance: newBalance,
+      ledger_entries: [ledgerInsert.rows[0]]
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error processing F&O payment:', error);
+    res.status(500).json({
+      error: 'Failed to process F&O payment',
+      details: error.message
+    });
+  } finally {
+    client.release();
+  }
+});
+
 // Nuclear reset endpoint - DELETES ALL DATA
 app.post('/api/nuclear-reset', async (req, res) => {
   const client = await pool.connect();
@@ -2483,6 +2911,11 @@ app.post('/api/fo/trades/process', async (req, res) => {
       // Calculate net trade settlement
       const netTradeAmount = totalBuyAmount - totalSellAmount;
       const finalClientBalance = netTradeAmount + totalBrokerage;
+
+      if (Math.abs(finalClientBalance) < 0.01) {
+        console.log(`Skipping F&O client bill for ${party.party_code} due to zero total (likely carry forward)`);
+        continue;
+      }
 
       // Get current client balance
       let currentClientBalance = 0;

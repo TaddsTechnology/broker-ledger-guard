@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/select";
 import { BillView } from "@/components/BillView";
 import { BrokerBillView } from "@/components/BrokerBillView";
+import { PaymentDialog } from "@/components/PaymentDialog";
 
 interface Party {
   id: string;
@@ -64,6 +65,8 @@ const LedgerBills = () => {
   const [billViewOpen, setBillViewOpen] = useState(false);
   const [viewBillType, setViewBillType] = useState<'party' | 'broker' | 'main_broker'>('party');
   const [viewBillData, setViewBillData] = useState<any>(null);
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [selectedPartyForPayment, setSelectedPartyForPayment] = useState<{id: string, code: string, balance: number} | null>(null);
   const { toast } = useToast();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -189,6 +192,17 @@ const LedgerBills = () => {
         variant: "destructive",
       });
     }
+  };
+
+  const handleCashCut = (partyId: string, partyCode: string, balance: number) => {
+    setSelectedPartyForPayment({ id: partyId, code: partyCode, balance });
+    setPaymentDialogOpen(true);
+  };
+
+  const handlePaymentSuccess = () => {
+    fetchLedgerEntries();
+    // Refresh parties to update balances
+    fetchParties();
   };
 
   const handleViewBill = async (entry: LedgerEntry) => {
@@ -414,15 +428,47 @@ const LedgerBills = () => {
                       {(entry.particulars.includes('Sub-Broker Profit') || (entry.particulars.includes('Brokerage') && !entry.party_id)) ? '+' : '-'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleViewBill(entry)}
-                        className="hover:bg-primary/10 hover:text-primary"
-                        disabled={!entry.bill_number && !entry.bill_id}
-                      >
-                        <Eye className="w-4 h-4" />
-                      </Button>
+                      <div className="flex justify-end gap-2">
+                        {/* Disable payment for broker entries (sub-broker and main-broker) */}
+                        {entry.party_id ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              // Get party information for the payment dialog
+                              const partyId = entry.party_id || "";
+                              const partyCode = entry.party_code || "Unknown Party";
+                              const balance = entry.balance || 0;
+                              handleCashCut(partyId, partyCode, balance);
+                            }}
+                            className="hover:bg-primary/10 hover:text-primary"
+                          >
+                            <IndianRupee className="w-4 h-4" />
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="hover:bg-primary/10 hover:text-primary"
+                            disabled
+                            title="Payment recording disabled for broker entries"
+                          >
+                            <IndianRupee className="w-4 h-4" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleViewBill(entry)}
+                          className="hover:bg-primary/10 hover:text-primary"
+                          disabled={
+                            !entry.bill_number && !entry.bill_id ||
+                            entry.particulars.toLowerCase().includes('payment received (cash)')
+                          }
+                        >
+                          <Eye className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -455,6 +501,16 @@ const LedgerBills = () => {
           bill={viewBillData}
           open={billViewOpen}
           onOpenChange={setBillViewOpen}
+        />
+      )}
+      {selectedPartyForPayment && (
+        <PaymentDialog
+          open={paymentDialogOpen}
+          onOpenChange={setPaymentDialogOpen}
+          partyId={selectedPartyForPayment.id}
+          partyCode={selectedPartyForPayment.code}
+          currentBalance={selectedPartyForPayment.balance}
+          onPaymentSuccess={handlePaymentSuccess}
         />
       )}
     </div>
