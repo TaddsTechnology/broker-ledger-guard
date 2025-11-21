@@ -234,11 +234,15 @@ const FOLedger = () => {
       entries: LedgerEntry[];
       tradeEntries: LedgerEntry[];
       brokerageEntries: LedgerEntry[];
+      cfEntries: LedgerEntry[];
       tradeBuy: number;
       tradeSell: number;
       tradeBalance: number;
       brokerageTotal: number;
       brokerageBalance: number;
+      cfBuy: number;
+      cfSell: number;
+      cfBalance: number;
     } } = {};
 
     filteredEntries.forEach(entry => {
@@ -254,21 +258,30 @@ const FOLedger = () => {
           entries: [],
           tradeEntries: [],
           brokerageEntries: [],
+          cfEntries: [],
           tradeBuy: 0,
           tradeSell: 0,
           tradeBalance: 0,
           brokerageTotal: 0,
           brokerageBalance: 0,
+          cfBuy: 0,
+          cfSell: 0,
+          cfBalance: 0,
         };
       }
       
       groups[partyKey].entries.push(entry);
       
-      if (entry.reference_type === 'trade_settlement') {
+      if (entry.reference_type === 'client_settlement') {
         groups[partyKey].tradeEntries.push(entry);
         groups[partyKey].tradeBuy += Number(entry.debit_amount) || 0;
         groups[partyKey].tradeSell += Number(entry.credit_amount) || 0;
         groups[partyKey].tradeBalance = Number(entry.balance) || 0;
+      } else if (entry.reference_type === 'carry_forward') {
+        groups[partyKey].cfEntries.push(entry);
+        groups[partyKey].cfBuy += Number(entry.debit_amount) || 0;
+        groups[partyKey].cfSell += Number(entry.credit_amount) || 0;
+        groups[partyKey].cfBalance = Number(entry.balance) || 0;
       } else if (entry.reference_type === 'brokerage' || entry.reference_type === 'broker_brokerage') {
         groups[partyKey].brokerageEntries.push(entry);
         // For brokerage: clients pay (debit), broker receives (credit)
@@ -582,7 +595,8 @@ const FOLedger = () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Entries</SelectItem>
-                  <SelectItem value="trade_settlement">Trade Settlement Only</SelectItem>
+                  <SelectItem value="client_settlement">Client Settlement</SelectItem>
+                  <SelectItem value="carry_forward">Carry Forward (CF)</SelectItem>
                   <SelectItem value="brokerage">Brokerage Only</SelectItem>
                   <SelectItem value="broker_brokerage">Broker Income</SelectItem>
                 </SelectContent>
@@ -699,6 +713,20 @@ const FOLedger = () => {
                               </div>
                             )}
                             
+                            {/* Carry Forward Summary */}
+                            {group.cfEntries.length > 0 && (
+                              <div className="border-l-4 border-purple-400 pl-3">
+                                <div className="text-xs font-semibold text-purple-700 mb-1">CARRY FORWARD (CF)</div>
+                                <div className="text-xs space-y-0.5">
+                                  <div>CF Buy: ₹{group.cfBuy.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
+                                  <div>CF Sell: ₹{group.cfSell.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
+                                  <div className="font-bold text-purple-700">
+                                    Balance: ₹{group.cfBalance.toLocaleString('en-IN', {maximumFractionDigits: 2})}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                            
                             {/* Brokerage Summary */}
                             {group.brokerageEntries.length > 0 && (
                               <div className="border-l-4 border-amber-400 pl-3">
@@ -779,8 +807,13 @@ const FOLedger = () => {
                           </TableCell>
                           <TableCell className="text-xs">
                             <span className="px-2 py-1 rounded text-xs font-medium" 
-                              style={{backgroundColor: entry.reference_type === 'trade_settlement' ? '#dbeafe' : '#fef3c7'}}>
-                              {entry.reference_type === 'trade_settlement' ? 'Trade' : 'Brokerage'}
+                              style={{backgroundColor: 
+                                entry.reference_type === 'client_settlement' ? '#dbeafe' : 
+                                entry.reference_type === 'carry_forward' ? '#f3e8ff' : 
+                                '#fef3c7'}}>
+                              {entry.reference_type === 'client_settlement' ? 'Settlement' : 
+                               entry.reference_type === 'carry_forward' ? 'CF' : 
+                               'Brokerage'}
                             </span>
                           </TableCell>
                           <TableCell className="text-xs">{entry.particulars}</TableCell>

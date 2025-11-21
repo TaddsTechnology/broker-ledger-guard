@@ -1334,6 +1334,14 @@ app.post('/api/stock-trades/process', async (req, res) => {
 
       const party = partyQuery.rows[0];
       let totalBrokerage = 0;
+      let currentClientBalance = 0;
+      const clientBalanceQuery = await client.query(
+        'SELECT balance FROM ledger_entries WHERE party_id = $1 AND reference_type = $2 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        [party.id, 'client_settlement']
+      );
+      if (clientBalanceQuery.rows.length > 0) {
+        currentClientBalance = Number(clientBalanceQuery.rows[0].balance) || 0;
+      }
 
       // Get current BROKERAGE balance (not trade settlement balance)
       let brokerageBalance = 0;
@@ -1346,12 +1354,14 @@ app.post('/api/stock-trades/process', async (req, res) => {
       }
 
       const billItems = [];
+      const carryForwardItems = [];
       let totalBuyAmount = 0;
       let totalSellAmount = 0;
 
       // Process each trade
       for (const trade of clientTrades) {
         const securityName = trade.SecurityName || trade.securityName || '';
+        const tradeDateValue = trade.TradeDate || trade.tradeDate || trade.Date || billDateStr;
         const side = (trade.Side || trade.side || '').toString().toUpperCase();
         
         // Get quantity based on side
@@ -1375,6 +1385,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
         }
         
         const type = (trade.Type || trade.type || '').toString().toUpperCase();
+        const isCarryForward = type === 'CF';
         const amount = quantity * price;
         
         // Skip if quantity or price is 0
@@ -1385,17 +1396,21 @@ app.post('/api/stock-trades/process', async (req, res) => {
 
         // Calculate brokerage
         const brokerageRate = type === 'T' ? Number(party.trading_slab) : Number(party.delivery_slab);
-        const brokerageAmount = (amount * brokerageRate) / 100;
-        totalBrokerage += brokerageAmount;
-
-        // Track buy/sell amounts for trade settlement ledger
-        if (side === 'BUY') {
-          totalBuyAmount += amount;
-        } else if (side === 'SELL') {
-          totalSellAmount += amount;
+        const brokerageAmount = isCarryForward ? 0 : (amount * brokerageRate) / 100;
+        if (!isCarryForward) {
+          totalBrokerage += brokerageAmount;
         }
 
-        billItems.push({
+        // Track buy/sell amounts for trade settlement ledger (non-CF only)
+        if (!isCarryForward) {
+          if (side === 'BUY') {
+            totalBuyAmount += amount;
+          } else if (side === 'SELL') {
+            totalSellAmount += amount;
+          }
+        }
+
+        const tradeItem = {
           description: `${securityName} - ${side}`,
           quantity,
           rate: price,
@@ -1404,128 +1419,147 @@ app.post('/api/stock-trades/process', async (req, res) => {
           company_code: extractCompanyFromSecurityName(securityName).company_code,
           brokerage_rate_pct: brokerageRate,
           brokerage_amount: brokerageAmount,
-          trade_type: type, // Store D or T
-        });
+          trade_type: type,
+        };
+
+        if (isCarryForward) {
+          carryForwardItems.push(tradeItem);
+
+          const debitAmountCF = side === 'BUY' ? amount : 0;
+          const creditAmountCF = side === 'SELL' ? amount : 0;
+          currentClientBalance = currentClientBalance + debitAmountCF - creditAmountCF;
+          const cfLedgerResult = await client.query(
+            'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+            [
+              party.id,
+              tradeDateValue,
+              `Carry Forward ${side} - ${securityName} (${quantity} @ ₹${price.toFixed(2)})`,
+              debitAmountCF,
+              creditAmountCF,
+              currentClientBalance,
+              'carry_forward',
+              null
+            ]
+          );
+          results.ledgerEntries.push(cfLedgerResult.rows[0]);
+        } else {
+          billItems.push(tradeItem);
+        }
       }
 
       // Calculate net trade settlement
       const netTradeAmount = totalBuyAmount - totalSellAmount;
       
       // Calculate final client balance: Net Trade + Total Brokerage
-      // Client owes: (Buy - Sell) + Brokerage
-      // If Buy > Sell: Client owes money for net purchase + brokerage
-      // If Sell > Buy: Client receives money but must pay brokerage, so receives less
-      // If Buy = Sell: Client owes only the brokerage
       const finalClientBalance = netTradeAmount + totalBrokerage;
+      const shouldGenerateBill = Math.abs(finalClientBalance) >= 0.01;
 
-      // Skip bill creation when there's no net impact (e.g., carry forward entries)
-      if (Math.abs(finalClientBalance) < 0.01) {
+      if (!shouldGenerateBill) {
         console.log(`Skipping client bill for ${party.party_code} due to zero total (likely carry forward)`);
-        continue;
-      }
+      } else {
+        // Update the running balance
+        const newClientBalance = currentClientBalance + finalClientBalance;
 
-      // Get current client balance (consolidated)
-      let currentClientBalance = 0;
-      const clientBalanceQuery = await client.query(
-        'SELECT balance FROM ledger_entries WHERE party_id = $1 AND reference_type = $2 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
-        [party.id, 'client_settlement']
-      );
-      if (clientBalanceQuery.rows.length > 0) {
-        currentClientBalance = Number(clientBalanceQuery.rows[0].balance) || 0;
-      }
-      
-      // Update the running balance
-      const newClientBalance = currentClientBalance + finalClientBalance;
+        // Always create new bill for each CSV upload
+        const y = now.getFullYear();
+        const m = String(now.getMonth() + 1).padStart(2, '0');
+        const d = String(now.getDate()).padStart(2, '0');
+        const suffix = String(Math.floor(Math.random() * 900) + 100);
+        const billNumber = `PTY${y}${m}${d}-${suffix}`;
 
-      // Always create new bill for each CSV upload
-      const y = now.getFullYear();
-      const m = String(now.getMonth() + 1).padStart(2, '0');
-      const d = String(now.getDate()).padStart(2, '0');
-      const suffix = String(Math.floor(Math.random() * 900) + 100);
-      const billNumber = `PTY${y}${m}${d}-${suffix}`;
+        // Bill amount is the final amount client needs to pay (or receive if negative)
+        const billResult = await client.query(
+          'INSERT INTO bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+          [billNumber, party.id, billDateStr, finalClientBalance, 'party', 'pending']
+        );
 
-      // Bill amount is the final amount client needs to pay (or receive if negative)
-      const billResult = await client.query(
-        'INSERT INTO bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-        [billNumber, party.id, billDateStr, finalClientBalance, 'party', 'pending']
-      );
+        const billId = billResult.rows[0].id;
 
-      const billId = billResult.rows[0].id;
-
-      // Create single consolidated ledger entry
-      // Debit when client owes money (buy + brokerage)
-      // Credit when client receives money (sell - brokerage)
-      const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
-      const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
-      
-      const consolidatedLedgerResult = await client.query(
-        'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-        [
-          party.id,
-          billDateStr,
-          `Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${clientTrades.length} trades)`,
-          debitAmount,
-          creditAmount,
-          newClientBalance,
-          'client_settlement',
-          billId
-        ]
-      );
-      results.ledgerEntries.push(consolidatedLedgerResult.rows[0]);
-
-      // Track broker ID and get broker details for their cut
-      if (!brokerIdGlobal) {
-        brokerIdGlobal = (clientTrades[0].brokerid || clientTrades[0].brokerId || 'BROKER').toString().toUpperCase();
-      }
-      
-      // Get broker details to calculate their share
-      let brokerShareTotal = 0;
-      const brokerQuery = await client.query(
-        'SELECT id, broker_code, name, trading_slab, delivery_slab FROM broker_master WHERE UPPER(broker_code) = $1',
-        [brokerIdGlobal]
-      );
-      
-      if (brokerQuery.rows.length > 0) {
-        const broker = brokerQuery.rows[0];
+        // Create single consolidated ledger entry
+        const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
+        const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
         
-        // Calculate broker's share for each trade
-        for (const item of billItems) {
-          const brokerRate = item.trade_type === 'T' ? Number(broker.trading_slab) : Number(broker.delivery_slab);
-          const brokerShare = (item.amount * brokerRate) / 100;
-          brokerShareTotal += brokerShare;
-          
-          // Store broker share in item for broker bill
-          item.broker_share = brokerShare;
-        }
-      }
-      
-      // Add this client's items to broker bill items
-      allBrokerBillItems.push(...billItems);
-      // Broker bill total = full sub-brokerage from all clients
-      totalBrokerageAllClients += totalBrokerage;
-
-      // Insert bill items with trade_type
-      for (const item of billItems) {
-        await client.query(
-          'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+        const consolidatedLedgerResult = await client.query(
+          'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
           [
-            billId,
-            item.description,
-            item.quantity,
-            item.rate,
-            item.amount,
-            item.client_code,
-            item.company_code,
-            item.brokerage_rate_pct,
-            item.brokerage_amount,
-            item.trade_type,
+            party.id,
+            billDateStr,
+            `Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${clientTrades.length} trades)`,
+            debitAmount,
+            creditAmount,
+            newClientBalance,
+            'client_settlement',
+            billId
           ]
         );
+        results.ledgerEntries.push(consolidatedLedgerResult.rows[0]);
+        currentClientBalance = newClientBalance;
+
+        // Track broker ID and get broker details for their cut
+        if (!brokerIdGlobal) {
+          brokerIdGlobal = (clientTrades[0].brokerid || clientTrades[0].brokerId || 'BROKER').toString().toUpperCase();
+        }
+        
+        // Get broker details to calculate their share
+        let brokerShareTotal = 0;
+        const brokerQuery = await client.query(
+          'SELECT id, broker_code, name, trading_slab, delivery_slab FROM broker_master WHERE UPPER(broker_code) = $1',
+          [brokerIdGlobal]
+        );
+        
+        if (brokerQuery.rows.length > 0) {
+          const broker = brokerQuery.rows[0];
+          
+          // Calculate broker's share for each trade
+          for (const item of billItems) {
+            const brokerRate = item.trade_type === 'T' ? Number(broker.trading_slab) : Number(broker.delivery_slab);
+            const brokerShare = (item.amount * brokerRate) / 100;
+            brokerShareTotal += brokerShare;
+            
+            // Store broker share in item for broker bill
+            item.broker_share = brokerShare;
+          }
+        }
+        
+        // Add this client's items to broker bill items
+        allBrokerBillItems.push(...billItems);
+        // Broker bill total = full sub-brokerage from all clients
+        totalBrokerageAllClients += totalBrokerage;
+
+        // Insert bill items with trade_type
+        for (const item of billItems) {
+          await client.query(
+            'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+            [
+              billId,
+              item.description,
+              item.quantity,
+              item.rate,
+              item.amount,
+              item.client_code,
+              item.company_code,
+              item.brokerage_rate_pct,
+              item.brokerage_amount,
+              item.trade_type,
+            ]
+          );
+        }
+
+        results.clientBills.push({
+          billId,
+          billNumber,
+          clientId,
+          partyName: party.name,
+          totalBuyAmount,
+          totalSellAmount,
+          totalBrokerage,
+          netAmount: finalClientBalance,
+          items: billItems.length,
+        });
       }
 
-      // Update stock holdings directly (without creating contracts)
-      for (const item of billItems) {
-        // Auto-create company if doesn't exist
+      const holdingsItems = [...billItems, ...carryForwardItems];
+      for (const item of holdingsItems) {
         let company_id = null;
         if (item.company_code) {
           const companyQuery = await client.query(
@@ -1535,7 +1569,6 @@ app.post('/api/stock-trades/process', async (req, res) => {
           if (companyQuery.rows.length > 0) {
             company_id = companyQuery.rows[0].id;
           } else {
-            // Auto-create company from CSV
             const newCompanyResult = await client.query(
               'INSERT INTO company_master (company_code, name, nse_code) VALUES ($1, $2, $3) RETURNING id',
               [item.company_code.toUpperCase(), item.company_code.toUpperCase(), item.company_code.toUpperCase()]
@@ -1546,25 +1579,21 @@ app.post('/api/stock-trades/process', async (req, res) => {
         }
 
         if (company_id) {
-          // Determine if BUY or SELL
           const isBuy = item.description.toUpperCase().includes('BUY');
           const qtyChange = isBuy ? item.quantity : -item.quantity;
 
-          // Check if holding exists
           const holdingQuery = await client.query(
             'SELECT id, quantity, total_invested, avg_buy_price FROM stock_holdings WHERE party_id = $1 AND company_id = $2',
             [party.id, company_id]
           );
 
           if (holdingQuery.rows.length > 0) {
-            // Update existing holding
             const holding = holdingQuery.rows[0];
             const currentQty = Number(holding.quantity);
             const currentInvested = Number(holding.total_invested);
             const newQty = currentQty + qtyChange;
 
             if (isBuy) {
-              // Add to holdings
               const newInvested = currentInvested + item.amount;
               const newAvgPrice = newQty > 0 ? newInvested / newQty : holding.avg_buy_price;
               
@@ -1573,7 +1602,6 @@ app.post('/api/stock-trades/process', async (req, res) => {
                 [newQty, newInvested, newAvgPrice, billDateStr, holding.id]
               );
             } else {
-              // Sell - reduce holdings
               const newInvested = newQty > 0 ? (currentInvested / currentQty) * newQty : 0;
               
               await client.query(
@@ -1582,13 +1610,11 @@ app.post('/api/stock-trades/process', async (req, res) => {
               );
             }
           } else if (isBuy) {
-            // Create new holding (only for BUY)
             await client.query(
               'INSERT INTO stock_holdings (party_id, company_id, quantity, avg_buy_price, total_invested, last_trade_date) VALUES ($1, $2, $3, $4, $5, $6)',
               [party.id, company_id, item.quantity, item.rate, item.amount, billDateStr]
             );
           } else {
-            // Selling without holding - create negative position
             await client.query(
               'INSERT INTO stock_holdings (party_id, company_id, quantity, avg_buy_price, total_invested, last_trade_date) VALUES ($1, $2, $3, $4, $5, $6)',
               [party.id, company_id, -item.quantity, item.rate, 0, billDateStr]
@@ -1596,18 +1622,6 @@ app.post('/api/stock-trades/process', async (req, res) => {
           }
         }
       }
-
-      results.clientBills.push({
-        billId,
-        billNumber,
-        clientId,
-        partyName: party.name,
-        totalBuyAmount,
-        totalSellAmount,
-        totalBrokerage,
-        netAmount: finalClientBalance,
-        items: billItems.length,
-      });
 
     }
 
@@ -2746,12 +2760,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
         }
         
         const type = (trade.Type || trade.type || 'T').toString().toUpperCase(); // Default to Trading
-        
-        // Skip CF (Carry Forward) trades - they should not generate bills or brokerage
-        if (type === 'CF') {
-          console.log(`Skipping CF (Carry Forward) trade for ${symbol} - no bill generated`);
-          continue;
-        }
+        const isCarryForward = type === 'CF';
         
         // Skip if quantity or price is 0
         if (lotQuantity === 0 || price === 0) {
@@ -2834,78 +2843,119 @@ app.post('/api/fo/trades/process', async (req, res) => {
         const actualQuantity = lotQuantity * lotSize;
         const amount = actualQuantity * price;
         
-        // Calculate brokerage (based on contract value)
-        const brokerageRate = type === 'T' ? Number(party.trading_slab) : Number(party.delivery_slab);
-        const brokerageAmount = (amount * brokerageRate) / 100;
-        totalBrokerage += brokerageAmount;
-
-        // Track buy/sell amounts
-        if (side === 'BUY') {
-          totalBuyAmount += amount;
-        } else if (side === 'SELL') {
-          totalSellAmount += amount;
+        // Calculate brokerage (CF has 0 brokerage, others have normal brokerage)
+        const brokerageRate = isCarryForward ? 0 : (type === 'T' ? Number(party.trading_slab) : Number(party.delivery_slab));
+        const brokerageAmount = isCarryForward ? 0 : (amount * brokerageRate) / 100;
+        
+        // Track buy/sell amounts (only for non-CF trades)
+        if (!isCarryForward) {
+          totalBrokerage += brokerageAmount;
+          if (side === 'BUY') {
+            totalBuyAmount += amount;
+          } else if (side === 'SELL') {
+            totalSellAmount += amount;
+          }
         }
 
         // NOTE: We do NOT create fo_contracts here during CSV upload
         // Contracts are created manually via the Contracts page
         // CSV upload only creates positions and bills
 
-        // Update F&O position
-        const positionQuery = await client.query(
-          'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2 AND status = $3',
-          [party.id, instrument.id, 'open']
-        );
+        // Update F&O position (only for non-CF trades)
+        // CF trades do NOT update positions - they are just ledger tracking entries
+        if (!isCarryForward) {
+          const positionQuery = await client.query(
+            'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2 AND status = $3',
+            [party.id, instrument.id, 'open']
+          );
 
-        if (positionQuery.rows.length > 0) {
-          // Update existing position
-          const position = positionQuery.rows[0];
-          const currentQty = Number(position.quantity);
-          const currentAvgPrice = Number(position.avg_price);
-          const currentTotalInvested = currentQty * currentAvgPrice;
-          
-          let newQty, newAvgPrice;
-          
-          if (side === 'BUY') {
-            // Long position
-            newQty = currentQty + actualQuantity;
-            const newTotalInvested = currentTotalInvested + amount;
-            newAvgPrice = newQty !== 0 ? newTotalInvested / newQty : price;
+          if (positionQuery.rows.length > 0) {
+            // Update existing position
+            const position = positionQuery.rows[0];
+            const currentQty = Number(position.quantity);
+            const currentAvgPrice = Number(position.avg_price);
+            const currentTotalInvested = currentQty * currentAvgPrice;
+            
+            let newQty, newAvgPrice;
+            
+            if (side === 'BUY') {
+              // Long position
+              newQty = currentQty + actualQuantity;
+              const newTotalInvested = currentTotalInvested + amount;
+              newAvgPrice = newQty !== 0 ? newTotalInvested / newQty : price;
+            } else {
+              // Short or reducing position
+              newQty = currentQty - actualQuantity;
+              newAvgPrice = currentAvgPrice; // Keep same avg price when selling
+            }
+            
+            // Check if position is closed
+            const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+            
+            await client.query(
+              'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
+              [newQty, newAvgPrice, positionStatus, position.id]
+            );
           } else {
-            // Short or reducing position
-            newQty = currentQty - actualQuantity;
-            newAvgPrice = currentAvgPrice; // Keep same avg price when selling
+            // Create new position
+            const positionQty = side === 'BUY' ? actualQuantity : -actualQuantity;
+            
+            await client.query(
+              `INSERT INTO fo_positions 
+                (party_id, instrument_id, quantity, avg_price, status) 
+               VALUES ($1, $2, $3, $4, $5)`,
+              [party.id, instrument.id, positionQty, price, 'open']
+            );
           }
-          
-          // Check if position is closed
-          const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
-          
-          await client.query(
-            'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
-            [newQty, newAvgPrice, positionStatus, position.id]
-          );
-        } else {
-          // Create new position
-          const positionQty = side === 'BUY' ? actualQuantity : -actualQuantity;
-          
-          await client.query(
-            `INSERT INTO fo_positions 
-              (party_id, instrument_id, quantity, avg_price, status) 
-             VALUES ($1, $2, $3, $4, $5)`,
-            [party.id, instrument.id, positionQty, price, 'open']
-          );
         }
 
-        billItems.push({
-          description: `${instrument.display_name || symbol} - ${side}`,
-          quantity: actualQuantity,
-          rate: price,
-          amount,
-          client_code: clientId,
-          instrument_id: instrument.id,
-          brokerage_rate_pct: brokerageRate,
-          brokerage_amount: brokerageAmount,
-          trade_type: type,
-        });
+        // CF trades: Create ledger entry only (no bill)
+        if (isCarryForward) {
+          // Get current CF balance
+          let currentCFBalance = 0;
+          const cfBalanceQuery = await client.query(
+            'SELECT balance FROM fo_ledger_entries WHERE party_id = $1 AND reference_type = $2 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+            [party.id, 'carry_forward']
+          );
+          if (cfBalanceQuery.rows.length > 0) {
+            currentCFBalance = Number(cfBalanceQuery.rows[0].balance) || 0;
+          }
+          
+          const debitAmountCF = side === 'BUY' ? amount : 0;
+          const creditAmountCF = side === 'SELL' ? amount : 0;
+          const newCFBalance = currentCFBalance + debitAmountCF - creditAmountCF;
+          
+          const tradeDateValue = trade.TradeDate || trade.tradeDate || trade.Date || billDateStr;
+          
+          const cfLedgerResult = await client.query(
+            'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+            [
+              party.id,
+              tradeDateValue,
+              `Carry Forward ${side} - ${instrument.display_name || symbol} (${actualQuantity} @ ₹${price.toFixed(2)})`,
+              debitAmountCF,
+              creditAmountCF,
+              newCFBalance,
+              'carry_forward',
+              null
+            ]
+          );
+          results.ledgerEntries.push(cfLedgerResult.rows[0]);
+          console.log(`CF ledger entry created for ${instrument.display_name || symbol} - ${side} ${actualQuantity} @ ₹${price}`);
+        } else {
+          // Normal trades: Add to bill items
+          billItems.push({
+            description: `${instrument.display_name || symbol} - ${side}`,
+            quantity: actualQuantity,
+            rate: price,
+            amount,
+            client_code: clientId,
+            instrument_id: instrument.id,
+            brokerage_rate_pct: brokerageRate,
+            brokerage_amount: brokerageAmount,
+            trade_type: type,
+          });
+        }
       }
 
       // Calculate net trade settlement
