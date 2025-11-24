@@ -29,6 +29,7 @@ interface Party {
   phone: string | null;
   trading_slab: number;
   delivery_slab: number;
+  interest_rate: number;
   created_at: string;
   updated_at: string;
 }
@@ -58,6 +59,7 @@ const FOPartyMaster = () => {
     phone: "",
     trading_slab: "1.00",
     delivery_slab: "0.50",
+    interest_rate: "0.00",
   });
 
   const fetchParties = useCallback(async () => {
@@ -119,6 +121,7 @@ const FOPartyMaster = () => {
       phone: "",
       trading_slab: "1.00",
       delivery_slab: "0.50",
+      interest_rate: "0.00",
     });
     setEditingParty(null);
   };
@@ -145,6 +148,7 @@ const FOPartyMaster = () => {
       phone: formData.phone.trim() || null,
       trading_slab: parseFloat(formData.trading_slab) || 0,
       delivery_slab: parseFloat(formData.delivery_slab) || 0,
+      interest_rate: parseFloat(formData.interest_rate) || 0,
     };
 
     try {
@@ -185,6 +189,7 @@ const FOPartyMaster = () => {
       phone: party.phone || "",
       trading_slab: party.trading_slab.toString(),
       delivery_slab: party.delivery_slab.toString(),
+      interest_rate: party.interest_rate?.toString() || "0.00",
     });
     setCurrentView('form');
   };
@@ -360,6 +365,19 @@ const FOPartyMaster = () => {
                       onChange={(e) => setFormData({ ...formData, delivery_slab: e.target.value })}
                     />
                   </div>
+
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="interest_rate">Interest Rate (% per 30 days)</Label>
+                    <Input
+                      id="interest_rate"
+                      type="number"
+                      step="0.01"
+                      value={formData.interest_rate}
+                      onChange={(e) => setFormData({ ...formData, interest_rate: e.target.value })}
+                      placeholder="0.00"
+                    />
+                    <p className="text-xs text-muted-foreground">Enter 0 for no interest calculation. Example: 10.00 = 10% per month</p>
+                  </div>
                 </div>
 
                 <div className="flex gap-2">
@@ -408,6 +426,7 @@ const FOPartyMaster = () => {
                         <TableHead>Phone</TableHead>
                         <TableHead>Trading %</TableHead>
                         <TableHead>Delivery %</TableHead>
+                        <TableHead>Interest %</TableHead>
                         <TableHead className="text-right">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -421,6 +440,7 @@ const FOPartyMaster = () => {
                           <TableCell>{party.phone || '-'}</TableCell>
                           <TableCell>{party.trading_slab}%</TableCell>
                           <TableCell>{party.delivery_slab}%</TableCell>
+                          <TableCell>{party.interest_rate || 0}%</TableCell>
                           <TableCell className="text-right">
                             <div className="flex justify-end gap-2">
                               <Button

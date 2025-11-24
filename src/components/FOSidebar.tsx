@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { 
   Users, 
   Building2, 
+  TrendingUp, 
   Calendar, 
   LineChart, 
   FileText, 
@@ -22,7 +23,8 @@ import {
   TrendingDown,
   TrendingUp as TrendingUpIcon,
   Upload,
-  FileSpreadsheet as ContractIcon
+  FileSpreadsheet as ContractIcon,
+  Percent
 } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -91,6 +93,7 @@ const menuItems: MenuItem[] = [
     submenu: [
       { title: "Transactions", url: "/fo/ledger", icon: BookOpen },
       { title: "Bills", url: "/fo/ledger/bills", icon: Receipt },
+      { title: "Interest", url: "/fo/interest", icon: TrendingUp },
     ]
   },
 ];

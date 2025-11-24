@@ -92,25 +92,26 @@ app.get('/api/parties', async (req, res) => {
 
 app.post('/api/parties', async (req, res) => {
   try {
-    const { party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab } = req.body;
+    const { party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab, interest_rate } = req.body;
     const result = await pool.query(
-      'INSERT INTO party_master (party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
-      [party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab]
+      'INSERT INTO party_master (party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab, interest_rate) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
+      [party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab, interest_rate || 0]
     );
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error creating party:', error);
     res.status(500).json({ error: 'Failed to create party' });
   }
-});
+  }
+);
 
 app.put('/api/parties/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab } = req.body;
+    const { party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab, interest_rate } = req.body;
     const result = await pool.query(
-      'UPDATE party_master SET party_code = $1, name = $2, nse_code = $3, ref_code = $4, address = $5, city = $6, phone = $7, trading_slab = $8, delivery_slab = $9, updated_at = NOW() WHERE id = $10 RETURNING *',
-      [party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab, id]
+      'UPDATE party_master SET party_code = $1, name = $2, nse_code = $3, ref_code = $4, address = $5, city = $6, phone = $7, trading_slab = $8, delivery_slab = $9, interest_rate = $10, updated_at = NOW() WHERE id = $11 RETURNING *',
+      [party_code, name, nse_code, ref_code, address, city, phone, trading_slab, delivery_slab, interest_rate || 0, id]
     );
     res.json(result.rows[0]);
   } catch (error) {
@@ -1651,9 +1652,28 @@ app.post('/api/stock-trades/process', async (req, res) => {
       const brokerTradingSlab = brokerQuery.rows.length > 0 
         ? Number(brokerQuery.rows[0].trading_slab) 
         : 0.03; // Default 0.03% if not found
+        
+      const brokerDeliverySlab = brokerQuery.rows.length > 0 
+        ? Number(brokerQuery.rows[0].delivery_slab) 
+        : 0.03; // Default 0.03% if not found
       
       // Calculate broker's brokerage amount (main broker's cut)
-      const brokerBrokerageAmount = Math.abs(netTradeAmount) * (brokerTradingSlab / 100);
+      // Use weighted average based on trade types
+      let brokerBrokerageAmount = 0;
+      let totalTradingAmount = 0;
+      let totalDeliveryAmount = 0;
+      
+      for (const item of allBrokerBillItems) {
+        const itemAmount = Number(item.amount) || 0;
+        if (item.trade_type === 'T') {
+          totalTradingAmount += itemAmount;
+        } else if (item.trade_type === 'D') {
+          totalDeliveryAmount += itemAmount;
+        }
+      }
+      
+      brokerBrokerageAmount = (totalTradingAmount * brokerTradingSlab / 100) + 
+                              (totalDeliveryAmount * brokerDeliverySlab / 100);
       
       // Main broker bill total = Net Trade Amount + Broker's Brokerage
       const mainBrokerBillTotal = Math.abs(netTradeAmount) + brokerBrokerageAmount;
@@ -2861,109 +2881,247 @@ app.post('/api/fo/trades/process', async (req, res) => {
         // Contracts are created manually via the Contracts page
         // CSV upload only creates positions and bills
 
-        // Update F&O position (only for non-CF trades)
-        // CF trades do NOT update positions - they are just ledger tracking entries
-        if (!isCarryForward) {
-          const positionQuery = await client.query(
-            'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2 AND status = $3',
-            [party.id, instrument.id, 'open']
-          );
+        // Update F&O position (CF and non-CF trades both update positions)
+        // CF SELL: closes position and calculates P&L
+        // CF BUY: reopens position at new price
+        const positionQuery = await client.query(
+          'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2 AND status = $3',
+          [party.id, instrument.id, 'open']
+        );
 
-          if (positionQuery.rows.length > 0) {
-            // Update existing position
-            const position = positionQuery.rows[0];
-            const currentQty = Number(position.quantity);
-            const currentAvgPrice = Number(position.avg_price);
-            const currentTotalInvested = currentQty * currentAvgPrice;
-            
-            let newQty, newAvgPrice;
-            
-            if (side === 'BUY') {
-              // Long position
+        let realizedPnL = 0;
+        
+        if (positionQuery.rows.length > 0) {
+          // Update existing position
+          const position = positionQuery.rows[0];
+          const currentQty = Number(position.quantity);
+          const currentAvgPrice = Number(position.avg_price);
+          const currentTotalInvested = currentQty * currentAvgPrice;
+          
+          let newQty, newAvgPrice;
+          
+          if (side === 'BUY') {
+            if (isCarryForward) {
+              // CF BUY: Just reopen position at new price (no P&L calculation)
+              newQty = actualQuantity;
+              newAvgPrice = price;
+            } else {
+              // Normal BUY: Add to position
               newQty = currentQty + actualQuantity;
               const newTotalInvested = currentTotalInvested + amount;
               newAvgPrice = newQty !== 0 ? newTotalInvested / newQty : price;
-            } else {
-              // Short or reducing position
-              newQty = currentQty - actualQuantity;
-              newAvgPrice = currentAvgPrice; // Keep same avg price when selling
             }
-            
-            // Check if position is closed
-            const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
-            
-            await client.query(
-              'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
-              [newQty, newAvgPrice, positionStatus, position.id]
-            );
           } else {
-            // Create new position
-            const positionQty = side === 'BUY' ? actualQuantity : -actualQuantity;
+            // SELL (CF or normal)
+            newQty = currentQty - actualQuantity;
+            newAvgPrice = currentAvgPrice; // Keep same avg price when selling
             
-            await client.query(
-              `INSERT INTO fo_positions 
-                (party_id, instrument_id, quantity, avg_price, status) 
-               VALUES ($1, $2, $3, $4, $5)`,
-              [party.id, instrument.id, positionQty, price, 'open']
-            );
+            // Calculate P&L for CF SELL
+            if (isCarryForward) {
+              realizedPnL = (price - currentAvgPrice) * actualQuantity;
+            }
           }
+          
+          // Check if position is closed
+          const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+          
+          await client.query(
+            'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
+            [newQty, newAvgPrice, positionStatus, position.id]
+          );
+        } else {
+          // Create new position
+          const positionQty = side === 'BUY' ? actualQuantity : -actualQuantity;
+          
+          await client.query(
+            `INSERT INTO fo_positions 
+              (party_id, instrument_id, quantity, avg_price, status) 
+             VALUES ($1, $2, $3, $4, $5)`,
+            [party.id, instrument.id, positionQty, price, 'open']
+          );
         }
 
-        // CF trades: Create ledger entry only (no bill)
+        // CF trades: Include in party bill (with 0 brokerage)
+        // P&L will be reflected in the party bill automatically (no separate ledger entry needed)
         if (isCarryForward) {
-          // Get current CF balance
-          let currentCFBalance = 0;
-          const cfBalanceQuery = await client.query(
-            'SELECT balance FROM fo_ledger_entries WHERE party_id = $1 AND reference_type = $2 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
-            [party.id, 'carry_forward']
-          );
-          if (cfBalanceQuery.rows.length > 0) {
-            currentCFBalance = Number(cfBalanceQuery.rows[0].balance) || 0;
-          }
-          
-          const debitAmountCF = side === 'BUY' ? amount : 0;
-          const creditAmountCF = side === 'SELL' ? amount : 0;
-          const newCFBalance = currentCFBalance + debitAmountCF - creditAmountCF;
-          
           const tradeDateValue = trade.TradeDate || trade.tradeDate || trade.Date || billDateStr;
           
-          const cfLedgerResult = await client.query(
-            'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-            [
-              party.id,
-              tradeDateValue,
-              `Carry Forward ${side} - ${instrument.display_name || symbol} (${actualQuantity} @ ₹${price.toFixed(2)})`,
-              debitAmountCF,
-              creditAmountCF,
-              newCFBalance,
-              'carry_forward',
-              null
-            ]
-          );
-          results.ledgerEntries.push(cfLedgerResult.rows[0]);
-          console.log(`CF ledger entry created for ${instrument.display_name || symbol} - ${side} ${actualQuantity} @ ₹${price}`);
-        } else {
-          // Normal trades: Add to bill items
-          billItems.push({
-            description: `${instrument.display_name || symbol} - ${side}`,
-            quantity: actualQuantity,
-            rate: price,
-            amount,
-            client_code: clientId,
-            instrument_id: instrument.id,
-            brokerage_rate_pct: brokerageRate,
-            brokerage_amount: brokerageAmount,
-            trade_type: type,
-          });
+          if (side === 'SELL' && realizedPnL !== 0) {
+            // CF SELL: P&L calculated, will be part of party bill
+            console.log(`CF P&L calculated: ${instrument.display_name || symbol} - ${side} ${actualQuantity}, P&L: ₹${realizedPnL.toFixed(2)}`);
+            
+            // AUTO-GENERATE CF BUY for next day
+            // Calculate next working day (add 1 day, skip weekends if needed)
+            const nextDay = new Date(tradeDateValue);
+            nextDay.setDate(nextDay.getDate() + 1);
+            
+            // Skip Saturday (6) and Sunday (0)
+            if (nextDay.getDay() === 6) nextDay.setDate(nextDay.getDate() + 2); // Saturday -> Monday
+            if (nextDay.getDay() === 0) nextDay.setDate(nextDay.getDate() + 1); // Sunday -> Monday
+            
+            const nextDayStr = nextDay.toISOString().slice(0, 10);
+            
+            // Insert auto CF BUY contract
+            await client.query(
+              `INSERT INTO fo_contracts 
+                (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, quantity, price, amount, brokerage_amount, status, notes)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+              [
+                party.id,
+                instrument.id,
+                null, // No broker for CF
+                null,
+                nextDayStr,
+                'BUY',
+                actualQuantity,
+                price,
+                amount,
+                0, // No brokerage for CF
+                'open',
+                `Auto-generated CF BUY after CF SELL on ${tradeDateValue}`
+              ]
+            );
+            
+            // Immediately process CF BUY: Update position (reopen at new price)
+            const cfBuyPositionQuery = await client.query(
+              'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+              [party.id, instrument.id]
+            );
+            
+            if (cfBuyPositionQuery.rows.length > 0) {
+              // Reopen closed position
+              await client.query(
+                'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
+                [actualQuantity, price, 'open', cfBuyPositionQuery.rows[0].id]
+              );
+            } else {
+              // Create new position
+              await client.query(
+                `INSERT INTO fo_positions 
+                  (party_id, instrument_id, quantity, avg_price, status) 
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [party.id, instrument.id, actualQuantity, price, 'open']
+              );
+            }
+            
+            // Create CF BUY bill and ledger entry
+            const cfBillNumber = `FO-PTY${nextDayStr.replace(/-/g, '')}-${Math.floor(Math.random() * 900) + 100}`;
+            
+            const cfBillResult = await client.query(
+              'INSERT INTO fo_bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+              [cfBillNumber, party.id, nextDayStr, amount, 'party', 'pending']
+            );
+            
+            const cfBillId = cfBillResult.rows[0].id;
+            
+            // Insert CF BUY bill item
+            await client.query(
+              'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+              [
+                cfBillId,
+                `${instrument.display_name || symbol} - BUY (CF)`,
+                actualQuantity,
+                price,
+                amount,
+                clientId,
+                instrument.id,
+                0, // No brokerage for CF
+                0,
+                'CF'
+              ]
+            );
+            
+            // Get current balance for CF BUY ledger
+            let cfCurrentBalance = 0;
+            const cfBalanceQuery = await client.query(
+              'SELECT balance FROM fo_ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+              [party.id]
+            );
+            if (cfBalanceQuery.rows.length > 0) {
+              cfCurrentBalance = Number(cfBalanceQuery.rows[0].balance) || 0;
+            }
+            
+            // CF BUY is a debit - party owes you, so balance becomes more negative
+            const cfNewBalance = cfCurrentBalance - amount;
+            
+            // Create ledger entry for CF BUY with carry_forward_adjustment reference type
+            await client.query(
+              'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+              [
+                party.id,
+                nextDayStr,
+                `F&O Bill ${cfBillNumber} - CF BUY Adjustment: ${instrument.display_name || symbol} (${actualQuantity} @ ₹${price.toFixed(2)}) [Position Carry]`,
+                amount,
+                0,
+                cfNewBalance,
+                'carry_forward_adjustment',
+                cfBillId
+              ]
+            );
+            
+            console.log(`Auto CF BUY processed for ${nextDayStr}: ${instrument.display_name || symbol} - BUY ${actualQuantity} @ ₹${price}, Bill: ${cfBillNumber}`);
+          }
+          
+          // Log CF trade (for tracking purposes)
+          console.log(`CF trade processed: ${instrument.display_name || symbol} - ${side} ${actualQuantity} @ ₹${price}`);
         }
+        
+        // Add all trades to bill items (CF with 0 brokerage, normal with brokerage)
+        billItems.push({
+          description: `${instrument.display_name || symbol} - ${side}${isCarryForward ? ' (CF)' : ''}`,
+          quantity: actualQuantity,
+          rate: price,
+          amount,
+          client_code: clientId,
+          instrument_id: instrument.id,
+          brokerage_rate_pct: brokerageRate,
+          brokerage_amount: brokerageAmount,
+          trade_type: type,
+        });
       }
 
-      // Calculate net trade settlement
-      const netTradeAmount = totalBuyAmount - totalSellAmount;
+      // Calculate net trade settlement (including CF trades in buy/sell amounts)
+      // CF trades contribute to buy/sell amounts but not to brokerage
+      let totalCFBuyAmount = 0;
+      let totalCFSellAmount = 0;
+      
+      // Process CF trades separately to track amounts
+      for (const trade of clientTrades) {
+        const side = (trade.Side || trade.side || '').toString().toUpperCase();
+        const type = (trade.Type || trade.type || 'T').toString().toUpperCase();
+        const isCarryForward = type === 'CF';
+        
+        if (isCarryForward) {
+          let lotQuantity = 0;
+          if (side === 'BUY') {
+            lotQuantity = Number(trade.BuyQty || trade.Quantity || trade.quantity || 0);
+          } else if (side === 'SELL') {
+            lotQuantity = Number(trade.SellQty || trade.Quantity || trade.quantity || 0);
+          }
+          
+          let price = 0;
+          if (side === 'BUY') {
+            price = Number(trade.BuyAvg || trade.Price || trade.price || 0);
+          } else if (side === 'SELL') {
+            price = Number(trade.SellAvg || trade.Price || trade.price || 0);
+          }
+          
+          // Use lot size 1 as default for CF amount calculation
+          const cfAmount = lotQuantity * price;
+          
+          if (side === 'BUY') {
+            totalCFBuyAmount += cfAmount;
+          } else if (side === 'SELL') {
+            totalCFSellAmount += cfAmount;
+          }
+        }
+      }
+      
+      const netTradeAmount = (totalBuyAmount + totalCFBuyAmount) - (totalSellAmount + totalCFSellAmount);
       const finalClientBalance = netTradeAmount + totalBrokerage;
 
-      if (Math.abs(finalClientBalance) < 0.01) {
-        console.log(`Skipping F&O client bill for ${party.party_code} due to zero total (likely carry forward)`);
+      if (Math.abs(finalClientBalance) < 0.01 && billItems.length === 0) {
+        console.log(`Skipping F&O client bill for ${party.party_code} due to zero total and no items`);
         continue;
       }
 
@@ -2994,19 +3152,44 @@ app.post('/api/fo/trades/process', async (req, res) => {
       const billId = billResult.rows[0].id;
 
       // Create ledger entry
+      // For party ledger: Debit = party owes you (buy/expenses), Credit = you owe party (sell/income)
       const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
       const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
+      
+      // Build particulars with CF label if applicable
+      let particularsText = `F&O Bill ${billNumber}`;
+      let referenceType = 'client_settlement';
+      
+      // Check if this bill contains any CF trades
+      const hasCFTrades = totalCFBuyAmount > 0 || totalCFSellAmount > 0;
+      
+      if (hasCFTrades && totalBuyAmount === 0 && totalSellAmount === 0) {
+        // Only CF trades in this bill - mark as carry_forward_adjustment
+        referenceType = 'carry_forward_adjustment';
+        if (totalCFSellAmount > 0) {
+          particularsText += ` - CF SELL Adjustment: ₹${totalCFSellAmount.toFixed(2)} (Position Carry)`;
+        } else if (totalCFBuyAmount > 0) {
+          particularsText += ` - CF BUY Adjustment: ₹${totalCFBuyAmount.toFixed(2)} (Position Carry)`;
+        }
+      } else {
+        // Mixed or normal trades
+        particularsText += ` - Buy: ₹${(totalBuyAmount + totalCFBuyAmount).toFixed(2)}, Sell: ₹${(totalSellAmount + totalCFSellAmount).toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)}`;
+        if (hasCFTrades) {
+          particularsText += ` (includes CF)`;
+        }
+      }
+      particularsText += ` (${clientTrades.length} trades)`;
       
       const consolidatedLedgerResult = await client.query(
         'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           party.id,
           billDateStr,
-          `F&O Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${clientTrades.length} trades)`,
+          particularsText,
           debitAmount,
           creditAmount,
           newClientBalance,
-          'client_settlement',
+          referenceType,
           billId
         ]
       );
@@ -3027,15 +3210,24 @@ app.post('/api/fo/trades/process', async (req, res) => {
       if (brokerQuery.rows.length > 0) {
         const broker = brokerQuery.rows[0];
         
-        for (const item of billItems) {
+        // Only process non-CF items for broker bill
+        const nonCFItems = billItems.filter(item => item.trade_type !== 'CF');
+        
+        for (const item of nonCFItems) {
           const brokerRate = item.trade_type === 'T' ? Number(broker.trading_slab) : Number(broker.delivery_slab);
           const brokerShare = (item.amount * brokerRate) / 100;
           brokerShareTotal += brokerShare;
           item.broker_share = brokerShare;
         }
+        
+        // Add only non-CF items to broker bill
+        allBrokerBillItems.push(...nonCFItems);
+      } else {
+        // If no broker found, still add non-CF items
+        const nonCFItems = billItems.filter(item => item.trade_type !== 'CF');
+        allBrokerBillItems.push(...nonCFItems);
       }
       
-      allBrokerBillItems.push(...billItems);
       totalBrokerageAllClients += totalBrokerage;
 
       // Insert F&O bill items
@@ -3090,10 +3282,13 @@ app.post('/api/fo/trades/process', async (req, res) => {
         const broker = brokerQuery.rows[0];
         brokerId = broker.id;
         const brokerTradingSlab = Number(broker.trading_slab) || 0;
+        const brokerDeliverySlab = Number(broker.delivery_slab) || 0;
         
-        // Calculate net trade amount (total buy - total sell) across all clients
+        // Calculate net trade amount and broker brokerage
         let totalBuyAcrossClients = 0;
         let totalSellAcrossClients = 0;
+        let totalTradingAmount = 0;
+        let totalDeliveryAmount = 0;
         
         for (const item of allBrokerBillItems) {
           const itemAmount = Number(item.amount) || 0;
@@ -3103,12 +3298,23 @@ app.post('/api/fo/trades/process', async (req, res) => {
           } else if (item.description && item.description.includes('SELL')) {
             totalSellAcrossClients += itemAmount;
           }
+          
+          // Separate trading and delivery amounts for broker brokerage calculation
+          if (item.trade_type === 'T') {
+            totalTradingAmount += itemAmount;
+          } else if (item.trade_type === 'D') {
+            totalDeliveryAmount += itemAmount;
+          }
         }
         
         netTradeAmount = totalBuyAcrossClients - totalSellAcrossClients;
         
-        // Calculate main broker's brokerage on net trade amount
-        mainBrokerBrokerage = Math.abs(netTradeAmount) * (brokerTradingSlab / 100);
+        // Main broker brokerage is calculated on TRANSACTION AMOUNT (not client brokerage)
+        // Example: Trading amount = ₹100,000, broker trading slab = 0.03%
+        // Main broker brokerage = ₹100,000 × 0.03% = ₹30
+        const mainBrokerTradingBrokerage = (totalTradingAmount * brokerTradingSlab) / 100;
+        const mainBrokerDeliveryBrokerage = (totalDeliveryAmount * brokerDeliverySlab) / 100;
+        mainBrokerBrokerage = mainBrokerTradingBrokerage + mainBrokerDeliveryBrokerage;
         
         // Main broker bill = Net trade amount + Broker's brokerage
         mainBrokerBillTotal = Math.abs(netTradeAmount) + mainBrokerBrokerage;
@@ -3160,31 +3366,40 @@ app.post('/api/fo/trades/process', async (req, res) => {
         );
       }
 
-      // Create main broker ledger entry (net trade + main broker brokerage)
-      let brokerBalance = 0;
-      const brokerBalanceQuery = await client.query(
+      // Check if broker bill has any normal (non-CF) trades
+      // If broker bill ONLY has trades from CF SELL clients, show only brokerage
+      // If broker bill has normal trades, show full amount
+      const hasNormalTrades = allBrokerBillItems.length > 0; // Non-CF items exist
+      
+      // Create main broker ledger entry
+      // For normal/fresh trades: show full amount (net trade + brokerage)
+      // This will always be full amount since we only add non-CF items to broker bill
+      const ledgerAmount = mainBrokerBillTotal;
+      
+      let brokerBrokerageBalance = 0;
+      const brokerageBalanceQuery = await client.query(
         'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
         ['broker_brokerage']
       );
-      if (brokerBalanceQuery.rows.length > 0) {
-        brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
+      if (brokerageBalanceQuery.rows.length > 0) {
+        brokerBrokerageBalance = Number(brokerageBalanceQuery.rows[0].balance) || 0;
       }
-      brokerBalance += mainBrokerBillTotal;
+      brokerBrokerageBalance += ledgerAmount;
 
-      const brokerLedgerResult = await client.query(
+      const brokerageEntryResult = await client.query(
         'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
           `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
           0,
-          mainBrokerBillTotal,
-          brokerBalance,
+          ledgerAmount,
+          brokerBrokerageBalance,
           'broker_brokerage',
           brokerBillId
         ]
       );
-      results.brokerEntries.push(brokerLedgerResult.rows[0]);
+      results.brokerEntries.push(brokerageEntryResult.rows[0]);
       
       // Create sub-broker profit ledger entry
       let subBrokerProfitBalance = 0;
@@ -3799,6 +4014,316 @@ app.get('/api/fo/positions/transactions', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch F&O transaction history' });
   }
 });
+
+// ========================================
+// INTEREST CALCULATION APIs
+// ========================================
+
+// Calculate interest for parties with negative balance
+// GET /api/interest?from_date=2024-01-01&to_date=2024-01-31&party_id=uuid&module=fo (optional, module can be 'fo' or 'equity')
+app.get('/api/interest', async (req, res) => {
+  try {
+    const { from_date, to_date, party_id, module } = req.query;
+    
+    if (!from_date || !to_date) {
+      return res.status(400).json({ error: 'from_date and to_date are required' });
+    }
+    
+    // Determine which ledger table to use (default: fo_ledger_entries)
+    const ledgerTable = module === 'equity' ? 'ledger_entries' : 'fo_ledger_entries';
+    
+    // Get all parties with interest_rate > 0
+    let partyQuery = 'SELECT id, party_code, name, interest_rate FROM party_master WHERE interest_rate > 0';
+    const params = [];
+    
+    if (party_id) {
+      params.push(party_id);
+      partyQuery += ` AND id = $${params.length}`;
+    }
+    
+    const partiesResult = await pool.query(partyQuery, params);
+    const parties = partiesResult.rows;
+    
+    if (parties.length === 0) {
+      return res.json({ message: 'No parties with interest rate configured', data: [] });
+    }
+    
+    const interestCalculations = [];
+    
+    for (const party of parties) {
+      // Step 1: Get balance before the period starts
+      const beforePeriodQuery = await pool.query(
+        `SELECT balance FROM ${ledgerTable}
+         WHERE party_id = $1 AND entry_date < $2
+         ORDER BY entry_date DESC, created_at DESC LIMIT 1`,
+        [party.id, from_date]
+      );
+      
+      let openingBalance = 0;
+      if (beforePeriodQuery.rows.length > 0) {
+        openingBalance = Number(beforePeriodQuery.rows[0].balance) || 0;
+      }
+      
+      // Step 2: Get all ledger entries during the period
+      const ledgerQuery = await pool.query(
+        `SELECT entry_date, debit_amount, credit_amount, balance
+         FROM ${ledgerTable}
+         WHERE party_id = $1 
+           AND entry_date >= $2 
+           AND entry_date <= $3
+         ORDER BY entry_date ASC, created_at ASC`,
+        [party.id, from_date, to_date]
+      );
+      
+      const ledgerEntries = ledgerQuery.rows;
+      
+      // Step 3: Calculate daily closing balances for every day in period
+      const startDate = new Date(from_date);
+      const endDate = new Date(to_date);
+      const dailyBalances = [];
+      const dailyOwed = [];
+      let totalOwedSum = 0;
+      
+      let currentBalance = openingBalance;
+      let ledgerIndex = 0;
+      
+      for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+        const dateStr = d.toISOString().split('T')[0];
+        
+        // Apply all entries on this date
+        while (ledgerIndex < ledgerEntries.length) {
+          const entryDate = new Date(ledgerEntries[ledgerIndex].entry_date).toISOString().split('T')[0];
+          if (entryDate === dateStr) {
+            // Update balance with this entry
+            currentBalance = Number(ledgerEntries[ledgerIndex].balance) || 0;
+            ledgerIndex++;
+          } else if (entryDate > dateStr) {
+            break; // Entry is in future
+          } else {
+            ledgerIndex++; // Should not happen if query is correct
+          }
+        }
+        
+        // Record closing balance for this day
+        dailyBalances.push({
+          date: dateStr,
+          closing_balance: currentBalance
+        });
+        
+        // If negative, party owes money
+        if (currentBalance < 0) {
+          const owedAmount = Math.abs(currentBalance);
+          dailyOwed.push({
+            date: dateStr,
+            owed_amount: owedAmount,
+            closing_balance: currentBalance
+          });
+          totalOwedSum += owedAmount;
+        } else {
+          dailyOwed.push({
+            date: dateStr,
+            owed_amount: 0,
+            closing_balance: currentBalance
+          });
+        }
+      }
+      
+      // Step 4: Calculate number of days
+      const totalDays = dailyBalances.length;
+      
+      if (totalDays === 0) {
+        continue; // No days in period
+      }
+      
+      // Step 5: Calculate Average Daily Owed Balance (ADB)
+      const adb = totalOwedSum / totalDays;
+      
+      // Step 6: Apply interest rate on ADB
+      const interestRate = Number(party.interest_rate) || 0;
+      const totalInterest = (adb * interestRate) / 100;
+      
+      if (totalInterest > 0) {
+        interestCalculations.push({
+          party_id: party.id,
+          party_code: party.party_code,
+          party_name: party.name,
+          interest_rate: party.interest_rate,
+          total_days: totalDays,
+          total_owed_sum: totalOwedSum,
+          average_daily_owed_balance: adb,
+          total_interest: totalInterest,
+          daily_breakdown: dailyOwed
+        });
+      }
+    }
+    
+    res.json({
+      from_date,
+      to_date,
+      module: module || 'fo',
+      total_parties: interestCalculations.length,
+      data: interestCalculations
+    });
+  } catch (error) {
+    console.error('Error calculating interest:', error);
+    res.status(500).json({ error: 'Failed to calculate interest' });
+  }
+});
+
+// Calculate interest for a specific party
+// GET /api/interest/party/:party_id?from_date=2024-01-01&to_date=2024-01-31&module=fo (optional, module can be 'fo' or 'equity')
+app.get('/api/interest/party/:party_id', async (req, res) => {
+  try {
+    const { party_id } = req.params;
+    const { from_date, to_date, module } = req.query;
+    
+    if (!from_date || !to_date) {
+      return res.status(400).json({ error: 'from_date and to_date are required' });
+    }
+    
+    // Determine which ledger table to use (default: fo_ledger_entries)
+    const ledgerTable = module === 'equity' ? 'ledger_entries' : 'fo_ledger_entries';
+    
+    // Get party details
+    const partyResult = await pool.query(
+      'SELECT id, party_code, name, interest_rate FROM party_master WHERE id = $1',
+      [party_id]
+    );
+    
+    if (partyResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Party not found' });
+    }
+    
+    const party = partyResult.rows[0];
+    
+    if (Number(party.interest_rate) === 0) {
+      return res.json({ 
+        message: 'Interest rate is 0 for this party', 
+        party_code: party.party_code,
+        party_name: party.name,
+        interest_rate: 0,
+        total_interest: 0
+      });
+    }
+    
+    // Step 1: Get balance before the period starts
+    const beforePeriodQuery = await pool.query(
+      `SELECT balance FROM ${ledgerTable}
+       WHERE party_id = $1 AND entry_date < $2
+       ORDER BY entry_date DESC, created_at DESC LIMIT 1`,
+      [party_id, from_date]
+    );
+    
+    let openingBalance = 0;
+    if (beforePeriodQuery.rows.length > 0) {
+      openingBalance = Number(beforePeriodQuery.rows[0].balance) || 0;
+    }
+    
+    // Step 2: Get all ledger entries during the period
+    const ledgerQuery = await pool.query(
+      `SELECT entry_date, debit_amount, credit_amount, balance
+       FROM ${ledgerTable}
+       WHERE party_id = $1 
+         AND entry_date >= $2 
+         AND entry_date <= $3
+       ORDER BY entry_date ASC, created_at ASC`,
+      [party_id, from_date, to_date]
+    );
+    
+    const ledgerEntries = ledgerQuery.rows;
+    
+    // Step 3: Calculate daily closing balances for every day in period
+    const startDate = new Date(from_date);
+    const endDate = new Date(to_date);
+    const dailyBalances = [];
+    const dailyOwed = [];
+    let totalOwedSum = 0;
+    
+    let currentBalance = openingBalance;
+    let ledgerIndex = 0;
+    
+    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split('T')[0];
+      
+      // Apply all entries on this date
+      while (ledgerIndex < ledgerEntries.length) {
+        const entryDate = new Date(ledgerEntries[ledgerIndex].entry_date).toISOString().split('T')[0];
+        if (entryDate === dateStr) {
+          // Update balance with this entry
+          currentBalance = Number(ledgerEntries[ledgerIndex].balance) || 0;
+          ledgerIndex++;
+        } else if (entryDate > dateStr) {
+          break; // Entry is in future
+        } else {
+          ledgerIndex++; // Should not happen if query is correct
+        }
+      }
+      
+      // Record closing balance for this day
+      dailyBalances.push({
+        date: dateStr,
+        closing_balance: currentBalance
+      });
+      
+      // If negative, party owes money
+      if (currentBalance < 0) {
+        const owedAmount = Math.abs(currentBalance);
+        dailyOwed.push({
+          date: dateStr,
+          owed_amount: owedAmount,
+          closing_balance: currentBalance
+        });
+        totalOwedSum += owedAmount;
+      } else {
+        dailyOwed.push({
+          date: dateStr,
+          owed_amount: 0,
+          closing_balance: currentBalance
+        });
+      }
+    }
+    
+    // Step 4: Calculate number of days
+    const totalDays = dailyBalances.length;
+    
+    if (totalDays === 0) {
+      return res.json({
+        party_code: party.party_code,
+        party_name: party.name,
+        interest_rate: party.interest_rate,
+        message: 'No days in the period',
+        total_interest: 0,
+        daily_breakdown: []
+      });
+    }
+    
+    // Step 5: Calculate Average Daily Owed Balance (ADB)
+    const adb = totalOwedSum / totalDays;
+    
+    // Step 6: Apply interest rate on ADB
+    const interestRate = Number(party.interest_rate) || 0;
+    const totalInterest = (adb * interestRate) / 100;
+    
+    res.json({
+      party_id: party.id,
+      party_code: party.party_code,
+      party_name: party.name,
+      interest_rate: party.interest_rate,
+      from_date,
+      to_date,
+      module: module || 'fo',
+      total_days: totalDays,
+      total_owed_sum: totalOwedSum,
+      average_daily_owed_balance: adb,
+      total_interest: totalInterest,
+      daily_breakdown: dailyOwed
+    });
+  } catch (error) {
+    console.error('Error calculating interest for party:', error);
+    res.status(500).json({ error: 'Failed to calculate interest' });
+  }
+});
+
 
 // ========================================
 // F&O BILLS APIs

@@ -371,19 +371,20 @@ const LedgerBills = () => {
                 <TableHead className="font-semibold text-right">Debit</TableHead>
                 <TableHead className="font-semibold text-right">Credit</TableHead>
                 <TableHead className="font-semibold text-right">Balance</TableHead>
+                <TableHead className="font-semibold text-right">Net Profit</TableHead>
                 <TableHead className="font-semibold text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                     Loading ledger entries...
                   </TableCell>
                 </TableRow>
               ) : ledgerEntries.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                     No ledger entries found.
                   </TableCell>
                 </TableRow>
@@ -426,6 +427,11 @@ const LedgerBills = () => {
                       (entry.particulars.includes('Sub-Broker Profit') || (entry.particulars.includes('Brokerage') && !entry.party_id)) ? 'text-green-600' : 'text-red-600'
                     }`}>
                       {(entry.particulars.includes('Sub-Broker Profit') || (entry.particulars.includes('Brokerage') && !entry.party_id)) ? '+' : '-'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
+                    </TableCell>
+                    <TableCell className={`text-right font-mono font-semibold ${
+                      (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
+                    }`}>
+                      ₹{(Number(entry.credit_amount) - Number(entry.debit_amount)).toFixed(2)}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">

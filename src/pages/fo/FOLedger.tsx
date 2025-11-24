@@ -655,19 +655,20 @@ const FOLedger = () => {
                 <TableHead className="font-semibold text-right">Debit</TableHead>
                 <TableHead className="font-semibold text-right">Credit</TableHead>
                 <TableHead className="font-semibold text-right">Balance</TableHead>
+                <TableHead className="font-semibold text-right">Net Profit</TableHead>
                 <TableHead className="font-semibold text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                     Loading ledger entries...
                   </TableCell>
                 </TableRow>
               ) : ledgerEntries.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                     No ledger entries found. Add your first entry to get started.
                   </TableCell>
                 </TableRow>
@@ -766,6 +767,13 @@ const FOLedger = () => {
                             </div>
                           )}
                         </TableCell>
+                        <TableCell className={`text-right text-xs font-bold ${
+                          (group.tradeSell - group.tradeBuy - group.brokerageTotal + group.cfSell - group.cfBuy) >= 0 ? 'text-green-600' : 'text-red-600'
+                        }`}>
+                          <div className="font-mono">
+                            ₹{(group.tradeSell - group.tradeBuy - group.brokerageTotal + group.cfSell - group.cfBuy).toLocaleString('en-IN', {maximumFractionDigits: 2})}
+                          </div>
+                        </TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-3">
                             <div className="flex flex-col items-end gap-1">
@@ -825,6 +833,11 @@ const FOLedger = () => {
                           </TableCell>
                           <TableCell className="text-right text-xs font-mono">
                             ₹{Number(entry.balance).toFixed(2)}
+                          </TableCell>
+                          <TableCell className={`text-right text-xs font-mono font-semibold ${
+                            (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
+                          }`}>
+                            ₹{(Number(entry.credit_amount) - Number(entry.debit_amount)).toFixed(2)}
                           </TableCell>
                           <TableCell className="text-right">
                             <div className="flex gap-1 justify-end">
@@ -894,6 +907,11 @@ const FOLedger = () => {
                       entry.party_id ? 'text-red-600' : 'text-green-600'
                     }`}>
                       {entry.party_id ? '-' : '+'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
+                    </TableCell>
+                    <TableCell className={`text-right font-mono font-semibold ${
+                      (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
+                    }`}>
+                      ₹{(Number(entry.credit_amount) - Number(entry.debit_amount)).toFixed(2)}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex gap-2 justify-end">

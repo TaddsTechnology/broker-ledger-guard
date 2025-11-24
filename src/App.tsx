@@ -34,6 +34,8 @@ import Bills from "./pages/Bills";
 import Reports from "./pages/Reports";
 import Ledger from "./pages/Ledger";
 import LedgerBills from "./pages/LedgerBills";
+import Interest from "./pages/Interest";
+import EquityInterest from "./pages/EquityInterest";
 import Settings from "./pages/Settings";
 import DataManagement from "./pages/DataManagement";
 import BrokerMaster from "./pages/BrokerMaster";
@@ -111,6 +113,7 @@ const AppContent = () => {
             <Route path="/fo/bills" element={<FOBills />} />
             <Route path="/fo/ledger" element={<FOLedger />} />
             <Route path="/fo/ledger/bills" element={<FOLedgerBills />} />
+            <Route path="/fo/interest" element={<Interest />} />
             
             {/* Equity Module Routes */}
             <Route path="/equity/dashboard" element={<Dashboard />} />
@@ -127,6 +130,7 @@ const AppContent = () => {
             <Route path="/equity/reports/trading" element={<Reports />} />
             <Route path="/equity/ledger" element={<Ledger />} />
             <Route path="/equity/ledger/bills" element={<LedgerBills />} />
+            <Route path="/equity/interest" element={<EquityInterest />} />
             <Route path="/equity/settings" element={<Settings />} />
             <Route path="/equity/settings/data" element={<DataManagement />} />
             

@@ -82,6 +82,7 @@ const menuItems: MenuItem[] = [
     submenu: [
       { title: "Transactions", url: "/equity/ledger", icon: BookOpen },
       { title: "Bills", url: "/equity/ledger/bills", icon: Receipt },
+      { title: "Interest", url: "/equity/interest", icon: TrendingUp },
     ]
   },
   // {

@@ -32,6 +32,7 @@ interface Party {
   phone: string | null;
   trading_slab: number;
   delivery_slab: number;
+  interest_rate: number;
   created_at: string;
 }
 
@@ -64,6 +65,7 @@ const PartyMaster = () => {
     phone: "",
     trading_slab: "0.00",
     delivery_slab: "0.00",
+    interest_rate: "0.00",
   });
 
   useEffect(() => {
@@ -124,6 +126,7 @@ const PartyMaster = () => {
       phone: party.phone || "",
       trading_slab: party.trading_slab.toString(),
       delivery_slab: party.delivery_slab.toString(),
+      interest_rate: party.interest_rate?.toString() || "0.00",
     });
     setPartySuggestions([]);
     setShowSuggestions(false);
@@ -191,6 +194,7 @@ const PartyMaster = () => {
       phone: "",
       trading_slab: "0.00",
       delivery_slab: "0.00",
+      interest_rate: "0.00",
     });
     setEditingParty(null);
   };
@@ -208,6 +212,7 @@ const PartyMaster = () => {
       phone: formData.phone || null,
       trading_slab: parseFloat(formData.trading_slab),
       delivery_slab: parseFloat(formData.delivery_slab),
+      interest_rate: parseFloat(formData.interest_rate),
     };
 
     try {
@@ -278,6 +283,7 @@ const PartyMaster = () => {
       phone: party.phone || "",
       trading_slab: party.trading_slab.toString(),
       delivery_slab: party.delivery_slab.toString(),
+      interest_rate: party.interest_rate?.toString() || "0.00",
     });
     setCurrentView('form');
   };
@@ -579,6 +585,23 @@ const PartyMaster = () => {
                     tabIndex={9}
                   />
                 </div>
+              </div>
+              
+              <div className="space-y-2">
+                <Label htmlFor="interest_rate" className="text-sm font-medium">
+                  Interest Rate (% per 30 days)
+                </Label>
+                <Input
+                  id="interest_rate"
+                  type="number"
+                  step="0.01"
+                  value={formData.interest_rate}
+                  onChange={(e) => setFormData({ ...formData, interest_rate: e.target.value })}
+                  className="bg-secondary h-10"
+                  placeholder="0.00"
+                  tabIndex={10}
+                />
+                <p className="text-xs text-muted-foreground">Enter 0 for no interest calculation. Example: 10.00 = 10% per month</p>
               </div>
             </CardContent>
           </Card>
