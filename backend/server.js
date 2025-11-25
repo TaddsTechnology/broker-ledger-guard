@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 require('dotenv').config();
@@ -770,7 +770,7 @@ app.post('/api/contracts/batch', async (req, res) => {
         [
           party_id,
           billDateStr,
-          `Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${partyContracts.length} contracts)`,
+          `Bill ${billNumber} - Buy: Γé╣${totalBuyAmount.toFixed(2)}, Sell: Γé╣${totalSellAmount.toFixed(2)}, Brokerage: Γé╣${totalBrokerage.toFixed(2)} (${partyContracts.length} contracts)`,
           debitAmount,
           creditAmount,
           newBalance,
@@ -839,7 +839,7 @@ app.post('/api/contracts/batch', async (req, res) => {
           mainBrokerBillTotal,
           'broker',
           'pending',
-          `Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage (${brokerTradingSlab}%): ₹${brokerBrokerageAmount.toFixed(2)}`
+          `Net Trade: Γé╣${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage (${brokerTradingSlab}%): Γé╣${brokerBrokerageAmount.toFixed(2)}`
         ]
       );
       
@@ -922,7 +922,7 @@ app.post('/api/contracts/batch', async (req, res) => {
         [
           null,
           billDateStr,
-          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${brokerBrokerageAmount.toFixed(2)}`,
+          `Main Broker Bill ${brokerBillNumber} - Net Trade: Γé╣${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: Γé╣${brokerBrokerageAmount.toFixed(2)}`,
           0,
           mainBrokerBillTotal,
           brokerBalance,
@@ -954,7 +954,7 @@ app.post('/api/contracts/batch', async (req, res) => {
         [
           null,
           billDateStr,
-          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalSubBrokerBrokerage.toFixed(2)}, Main Broker: ₹${brokerBrokerageAmount.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
+          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: Γé╣${totalSubBrokerBrokerage.toFixed(2)}, Main Broker: Γé╣${brokerBrokerageAmount.toFixed(2)}, Profit: Γé╣${subBrokerProfit.toFixed(2)}`,
           0,
           subBrokerProfit,
           subBrokerProfitBalance,
@@ -1434,7 +1434,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
             [
               party.id,
               tradeDateValue,
-              `Carry Forward ${side} - ${securityName} (${quantity} @ ₹${price.toFixed(2)})`,
+              `Carry Forward ${side} - ${securityName} (${quantity} @ Γé╣${price.toFixed(2)})`,
               debitAmountCF,
               creditAmountCF,
               currentClientBalance,
@@ -1485,7 +1485,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
           [
             party.id,
             billDateStr,
-            `Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${clientTrades.length} trades)`,
+            `Bill ${billNumber} - Buy: Γé╣${totalBuyAmount.toFixed(2)}, Sell: Γé╣${totalSellAmount.toFixed(2)}, Brokerage: Γé╣${totalBrokerage.toFixed(2)} (${clientTrades.length} trades)`,
             debitAmount,
             creditAmount,
             newClientBalance,
@@ -1575,7 +1575,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
               [item.company_code.toUpperCase(), item.company_code.toUpperCase(), item.company_code.toUpperCase()]
             );
             company_id = newCompanyResult.rows[0].id;
-            console.log(`  ✓ Auto-created company: ${item.company_code}`);
+            console.log(`  Γ£ô Auto-created company: ${item.company_code}`);
           }
         }
 
@@ -1698,7 +1698,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
           mainBrokerBillTotal,
           'broker',
           'pending',
-          `Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage (${brokerTradingSlab}%): ₹${brokerBrokerageAmount.toFixed(2)}`
+          `Net Trade: Γé╣${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage (${brokerTradingSlab}%): Γé╣${brokerBrokerageAmount.toFixed(2)}`
         ]
       );
       const brokerBillId = brokerBillResult.rows[0].id;
@@ -1739,7 +1739,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
         [
           null,
           billDateStr,
-          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${brokerBrokerageAmount.toFixed(2)}`,
+          `Main Broker Bill ${brokerBillNumber} - Net Trade: Γé╣${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: Γé╣${brokerBrokerageAmount.toFixed(2)}`,
           0,
           mainBrokerBillTotal,
           brokerBalance,
@@ -1765,7 +1765,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
         [
           null,
           billDateStr,
-          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${brokerBrokerageAmount.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
+          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: Γé╣${totalBrokerageAllClients.toFixed(2)}, Main Broker: Γé╣${brokerBrokerageAmount.toFixed(2)}, Profit: Γé╣${subBrokerProfit.toFixed(2)}`,
           0,
           subBrokerProfit,
           subBrokerProfitBalance,
@@ -2106,6 +2106,7 @@ app.post('/api/payments', async (req, res) => {
       date, 
       apply_to_bill_id, 
       payment_method,
+      payment_type, // 'payin' or 'payout'
       notes
     } = req.body;
     
@@ -2115,6 +2116,15 @@ app.post('/api/payments', async (req, res) => {
       return res.status(400).json({ 
         error: 'Missing required fields', 
         required: ['payment_id', 'party_id', 'amount', 'date'] 
+      });
+    }
+    
+    // Validate payment_type
+    const payType = (payment_type || 'payin').toLowerCase();
+    if (payType !== 'payin' && payType !== 'payout') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        error: 'Invalid payment_type. Must be "payin" or "payout"' 
       });
     }
     
@@ -2214,8 +2224,34 @@ app.post('/api/payments', async (req, res) => {
     const currentPartyBalance = partyLedgerResult.rows.length > 0 ? 
       parseFloat(partyLedgerResult.rows[0].balance) : 0;
     
-    // Payments reduce the outstanding balance
-    const newPartyBalance = currentPartyBalance - amountValue;
+    // Calculate new balance based on payment type
+    // Pay-In: Party pays you (credit) → balance decreases
+    // Pay-Out: You pay party (debit) → balance increases
+    let debitAmount = 0;
+    let creditAmount = 0;
+    let newPartyBalance;
+    let particulars;
+    let referenceType;
+    
+    if (payType === 'payin') {
+      // Party pays you (Money IN from party)
+      creditAmount = amountValue;
+      debitAmount = 0;
+      newPartyBalance = currentPartyBalance - amountValue;
+      particulars = apply_to_bill_id 
+        ? `Pay-In (${paymentMethod}) applied to bill ${bill?.bill_number || apply_to_bill_id}` 
+        : `Pay-In received (${paymentMethod})`;
+      referenceType = 'payment_received';
+    } else {
+      // You pay party (Money OUT to party)
+      debitAmount = amountValue;
+      creditAmount = 0;
+      newPartyBalance = currentPartyBalance + amountValue;
+      particulars = apply_to_bill_id 
+        ? `Pay-Out (${paymentMethod}) for bill ${bill?.bill_number || apply_to_bill_id}` 
+        : `Pay-Out made (${paymentMethod})`;
+      referenceType = 'payment_made';
+    }
     
     // Create party ledger entry
     const partyLedgerEntry = await client.query(
@@ -2227,13 +2263,11 @@ app.post('/api/payments', async (req, res) => {
       [
         party_id, 
         date, 
-        apply_to_bill_id 
-          ? `Payment (${paymentMethod}) applied to bill ${bill.bill_number || apply_to_bill_id}` 
-          : `Payment received (${paymentMethod})`,
-        0, // debit_amount
-        amountValue, // credit_amount
+        particulars,
+        debitAmount,
+        creditAmount,
         newPartyBalance,
-        'payment_received',
+        referenceType,
         payment_id
       ]
     );
@@ -2316,6 +2350,7 @@ app.post('/api/fo/payments', async (req, res) => {
       date,
       apply_to_bill_id,
       payment_method,
+      payment_type, // 'payin' or 'payout'
       notes
     } = req.body;
     
@@ -2324,6 +2359,15 @@ app.post('/api/fo/payments', async (req, res) => {
       return res.status(400).json({
         error: 'Missing required fields',
         required: ['party_id', 'amount', 'date']
+      });
+    }
+    
+    // Validate payment_type
+    const payType = (payment_type || 'payin').toLowerCase();
+    if (payType !== 'payin' && payType !== 'payout') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ 
+        error: 'Invalid payment_type. Must be "payin" or "payout"' 
       });
     }
     
@@ -2378,7 +2422,33 @@ app.post('/api/fo/payments', async (req, res) => {
     const currentBalance = ledgerResult.rows.length > 0
       ? parseFloat(ledgerResult.rows[0].balance)
       : 0;
-    const newBalance = currentBalance - amountValue;
+    
+    // Calculate new balance based on payment type
+    let debitAmount = 0;
+    let creditAmount = 0;
+    let newBalance;
+    let particulars;
+    let referenceType;
+    
+    if (payType === 'payin') {
+      // Party pays you (Money IN from party)
+      creditAmount = amountValue;
+      debitAmount = 0;
+      newBalance = currentBalance - amountValue;
+      particulars = bill 
+        ? `F&O Pay-In (${paymentMethod}) applied to bill ${bill.bill_number}` 
+        : `F&O Pay-In received (${paymentMethod})`;
+      referenceType = 'payment_received';
+    } else {
+      // You pay party (Money OUT to party)
+      debitAmount = amountValue;
+      creditAmount = 0;
+      newBalance = currentBalance + amountValue;
+      particulars = bill 
+        ? `F&O Pay-Out (${paymentMethod}) for bill ${bill.bill_number}` 
+        : `F&O Pay-Out made (${paymentMethod})`;
+      referenceType = 'payment_made';
+    }
     
     const paymentNumber = `FO-PAY${new Date().getFullYear()}${String(new Date().getMonth() + 1).padStart(2, '0')}${String(new Date().getDate()).padStart(2, '0')}-${String(Math.floor(Math.random() * 900) + 100)}`;
     const paymentInsert = await client.query(
@@ -2398,10 +2468,6 @@ app.post('/api/fo/payments', async (req, res) => {
     );
     const foPaymentId = paymentInsert.rows[0].id;
     
-    const particulars = bill && foBillId
-      ? `Payment (${paymentMethod}) applied to FO bill ${bill.bill_number || foBillId}`
-      : `Payment received (${paymentMethod})`;
-    
     const ledgerInsert = await client.query(
       `INSERT INTO fo_ledger_entries 
         (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id)
@@ -2411,10 +2477,10 @@ app.post('/api/fo/payments', async (req, res) => {
         party_id,
         date,
         particulars,
-        0,
-        amountValue,
+        debitAmount,
+        creditAmount,
         newBalance,
-        'payment_received',
+        referenceType,
         foPaymentId
       ]
     );
@@ -2460,7 +2526,7 @@ app.post('/api/nuclear-reset', async (req, res) => {
   try {
     await client.query('BEGIN');
     
-    console.log('🔥 NUCLEAR RESET INITIATED - Deleting all data...');
+    console.log('≡ƒöÑ NUCLEAR RESET INITIATED - Deleting all data...');
     
     // Truncate all tables in correct order (respecting foreign keys)
     const tables = [
@@ -2478,11 +2544,11 @@ app.post('/api/nuclear-reset', async (req, res) => {
     
     for (const table of tables) {
       await client.query(`TRUNCATE TABLE ${table} RESTART IDENTITY CASCADE`);
-      console.log(`  ✓ Cleared ${table}`);
+      console.log(`  Γ£ô Cleared ${table}`);
     }
     
     await client.query('COMMIT');
-    console.log('💥 NUCLEAR RESET COMPLETE - All data deleted');
+    console.log('≡ƒÆÑ NUCLEAR RESET COMPLETE - All data deleted');
     
     res.json({ 
       success: true, 
@@ -2948,7 +3014,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
           
           if (side === 'SELL' && realizedPnL !== 0) {
             // CF SELL: P&L calculated, will be part of party bill
-            console.log(`CF P&L calculated: ${instrument.display_name || symbol} - ${side} ${actualQuantity}, P&L: ₹${realizedPnL.toFixed(2)}`);
+            console.log(`CF P&L calculated: ${instrument.display_name || symbol} - ${side} ${actualQuantity}, P&L: Γé╣${realizedPnL.toFixed(2)}`);
             
             // AUTO-GENERATE CF BUY for next day
             // Calculate next working day (add 1 day, skip weekends if needed)
@@ -3050,7 +3116,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
               [
                 party.id,
                 nextDayStr,
-                `F&O Bill ${cfBillNumber} - CF BUY Adjustment: ${instrument.display_name || symbol} (${actualQuantity} @ ₹${price.toFixed(2)}) [Position Carry]`,
+                `F&O Bill ${cfBillNumber} - CF BUY Adjustment: ${instrument.display_name || symbol} (${actualQuantity} @ Γé╣${price.toFixed(2)}) [Position Carry]`,
                 amount,
                 0,
                 cfNewBalance,
@@ -3059,11 +3125,11 @@ app.post('/api/fo/trades/process', async (req, res) => {
               ]
             );
             
-            console.log(`Auto CF BUY processed for ${nextDayStr}: ${instrument.display_name || symbol} - BUY ${actualQuantity} @ ₹${price}, Bill: ${cfBillNumber}`);
+            console.log(`Auto CF BUY processed for ${nextDayStr}: ${instrument.display_name || symbol} - BUY ${actualQuantity} @ Γé╣${price}, Bill: ${cfBillNumber}`);
           }
           
           // Log CF trade (for tracking purposes)
-          console.log(`CF trade processed: ${instrument.display_name || symbol} - ${side} ${actualQuantity} @ ₹${price}`);
+          console.log(`CF trade processed: ${instrument.display_name || symbol} - ${side} ${actualQuantity} @ Γé╣${price}`);
         }
         
         // Add all trades to bill items (CF with 0 brokerage, normal with brokerage)
@@ -3167,13 +3233,13 @@ app.post('/api/fo/trades/process', async (req, res) => {
         // Only CF trades in this bill - mark as carry_forward_adjustment
         referenceType = 'carry_forward_adjustment';
         if (totalCFSellAmount > 0) {
-          particularsText += ` - CF SELL Adjustment: ₹${totalCFSellAmount.toFixed(2)} (Position Carry)`;
+          particularsText += ` - CF SELL Adjustment: Γé╣${totalCFSellAmount.toFixed(2)} (Position Carry)`;
         } else if (totalCFBuyAmount > 0) {
-          particularsText += ` - CF BUY Adjustment: ₹${totalCFBuyAmount.toFixed(2)} (Position Carry)`;
+          particularsText += ` - CF BUY Adjustment: Γé╣${totalCFBuyAmount.toFixed(2)} (Position Carry)`;
         }
       } else {
         // Mixed or normal trades
-        particularsText += ` - Buy: ₹${(totalBuyAmount + totalCFBuyAmount).toFixed(2)}, Sell: ₹${(totalSellAmount + totalCFSellAmount).toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)}`;
+        particularsText += ` - Buy: Γé╣${(totalBuyAmount + totalCFBuyAmount).toFixed(2)}, Sell: Γé╣${(totalSellAmount + totalCFSellAmount).toFixed(2)}, Brokerage: Γé╣${totalBrokerage.toFixed(2)}`;
         if (hasCFTrades) {
           particularsText += ` (includes CF)`;
         }
@@ -3310,8 +3376,8 @@ app.post('/api/fo/trades/process', async (req, res) => {
         netTradeAmount = totalBuyAcrossClients - totalSellAcrossClients;
         
         // Main broker brokerage is calculated on TRANSACTION AMOUNT (not client brokerage)
-        // Example: Trading amount = ₹100,000, broker trading slab = 0.03%
-        // Main broker brokerage = ₹100,000 × 0.03% = ₹30
+        // Example: Trading amount = Γé╣100,000, broker trading slab = 0.03%
+        // Main broker brokerage = Γé╣100,000 ├ù 0.03% = Γé╣30
         const mainBrokerTradingBrokerage = (totalTradingAmount * brokerTradingSlab) / 100;
         const mainBrokerDeliveryBrokerage = (totalDeliveryAmount * brokerDeliverySlab) / 100;
         mainBrokerBrokerage = mainBrokerTradingBrokerage + mainBrokerDeliveryBrokerage;
@@ -3339,7 +3405,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
           mainBrokerBillTotal,
           'broker',
           'pending',
-          `Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`
+          `Net Trade: Γé╣${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage: Γé╣${mainBrokerBrokerage.toFixed(2)}`
         ]
       );
       const brokerBillId = brokerBillResult.rows[0].id;
@@ -3391,7 +3457,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
         [
           null,
           billDateStr,
-          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
+          `Main Broker Bill ${brokerBillNumber} - Net Trade: Γé╣${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: Γé╣${mainBrokerBrokerage.toFixed(2)}`,
           0,
           ledgerAmount,
           brokerBrokerageBalance,
@@ -3417,7 +3483,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
         [
           null,
           billDateStr,
-          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${mainBrokerBrokerage.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
+          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: Γé╣${totalBrokerageAllClients.toFixed(2)}, Main Broker: Γé╣${mainBrokerBrokerage.toFixed(2)}, Profit: Γé╣${subBrokerProfit.toFixed(2)}`,
           0,
           subBrokerProfit,
           subBrokerProfitBalance,
@@ -4469,10 +4535,10 @@ app.get('/api/fo/bills/:id/profit', async (req, res) => {
     const profit = Number(profitEntry.credit_amount) || 0;
     
     // Parse particulars to extract client and main broker brokerage
-    // Format: "Sub-Broker Profit - Bill FO-BRK20251117-950 - Sub-broker: ₹1000.00, Main Broker: ₹500.00, Profit: ₹500.00"
+    // Format: "Sub-Broker Profit - Bill FO-BRK20251117-950 - Sub-broker: Γé╣1000.00, Main Broker: Γé╣500.00, Profit: Γé╣500.00"
     const particulars = profitEntry.particulars || '';
-    const clientBrokerageMatch = particulars.match(/Sub-broker: ₹([\d,.]+)/i);
-    const mainBrokerMatch = particulars.match(/Main Broker: ₹([\d,.]+)/i);
+    const clientBrokerageMatch = particulars.match(/Sub-broker: Γé╣([\d,.]+)/i);
+    const mainBrokerMatch = particulars.match(/Main Broker: Γé╣([\d,.]+)/i);
     
     const clientBrokerage = clientBrokerageMatch ? parseFloat(clientBrokerageMatch[1].replace(/,/g, '')) : 0;
     const mainBrokerBrokerage = mainBrokerMatch ? parseFloat(mainBrokerMatch[1].replace(/,/g, '')) : 0;
@@ -4652,3 +4718,4 @@ function normalizeRow(raw) {
     type: (raw.Type || raw.type || '').toString().trim().toUpperCase(),
   };
 }
+
