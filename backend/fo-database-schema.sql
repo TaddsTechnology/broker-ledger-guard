@@ -195,6 +195,7 @@ CREATE TABLE IF NOT EXISTS fo_payments (
   payment_date DATE NOT NULL,
   amount DECIMAL(15, 2) NOT NULL,
   payment_method VARCHAR(50),                     -- 'cash', 'cheque', 'bank_transfer', etc.
+  payment_type VARCHAR(10) DEFAULT 'payin' CHECK (payment_type IN ('payin', 'payout')), -- 'payin' (party pays you) or 'payout' (you pay party)
   notes TEXT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

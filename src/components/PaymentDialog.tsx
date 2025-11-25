@@ -60,6 +60,7 @@ export function PaymentDialog({
 }: PaymentDialogProps) {
   const { toast } = useToast();
   const [amount, setAmount] = useState("");
+  const [paymentType, setPaymentType] = useState<'payin' | 'payout'>('payin');
   const [applyToBillId, setApplyToBillId] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [bills, setBills] = useState<Bill[]>([]);
@@ -160,6 +161,7 @@ export function PaymentDialog({
             date: string;
             apply_to_bill_id: string | null;
             payment_method: string;
+            payment_type: string;
             notes: string | null;
           }
         | {
@@ -168,6 +170,7 @@ export function PaymentDialog({
             date: string;
             apply_to_bill_id: number | null;
             payment_method: string;
+            payment_type: string;
             notes: string | null;
           } = {
         payment_id: paymentId,
@@ -176,6 +179,7 @@ export function PaymentDialog({
         date: new Date().toISOString().split('T')[0],
         apply_to_bill_id: applyToBillId,
         payment_method: "cash",
+        payment_type: paymentType,
         notes: notes || null,
       };
 
@@ -191,6 +195,7 @@ export function PaymentDialog({
           date: new Date().toISOString().split('T')[0],
           apply_to_bill_id: foBillId,
           payment_method: "cash",
+          payment_type: paymentType,
           notes: notes || null,
         };
       }
@@ -217,6 +222,7 @@ export function PaymentDialog({
       
       // Reset form
       setAmount("");
+      setPaymentType('payin');
       setApplyToBillId(null);
       setNotes("");
       setErrors({});
@@ -278,6 +284,33 @@ export function PaymentDialog({
           </div>
 
           <div className="space-y-3">
+            <div>
+              <Label htmlFor="payment_type">
+                Payment Type <span className="text-destructive">*</span>
+              </Label>
+              <Select value={paymentType} onValueChange={(value: 'payin' | 'payout') => setPaymentType(value)}>
+                <SelectTrigger className="mt-2">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="payin">
+                    <div className="flex items-center gap-2">
+                      <span className="text-green-600 font-semibold">Pay-In</span>
+                      <span className="text-xs text-muted-foreground">(Party pays you)</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="payout">
+                    <div className="flex items-center gap-2">
+                      <span className="text-red-600 font-semibold">Pay-Out</span>
+                      <span className="text-xs text-muted-foreground">(You pay party)</span>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="space-y-3">
             <div className="flex items-center justify-between">
               <Label htmlFor="amount">
                 Amount <span className="text-destructive">*</span>
@@ -292,7 +325,7 @@ export function PaymentDialog({
               step="0.01"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              placeholder="Enter cash payment amount"
+              placeholder={`Enter ${paymentType === 'payin' ? 'received' : 'paid'} amount`}
               className={errors.amount ? "border-destructive" : ""}
             />
             {errors.amount && (
