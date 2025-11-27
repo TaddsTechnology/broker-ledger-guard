@@ -60,7 +60,7 @@ export function FODashboard() {
               <div className="pt-4">
                 <Button 
                   onClick={() => navigate('/equity/dashboard')}
-                  className="bg-blue-600 hover:bg-blue-700"
+                  className="bg-[#9333ea] hover:bg-[#7e22ce]"
                 >
                   Go to Equity Module Instead
                 </Button>

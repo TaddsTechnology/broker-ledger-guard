@@ -189,6 +189,12 @@ export const foBillQueries = {
 // Add function to fetch outstanding bills for a party
 export const getOutstandingBills = async (partyId: string) => {
   try {
+    // Handle special case for main broker payments
+    if (partyId === "main-broker") {
+      // Return empty array for main broker as it doesn't have outstanding bills in the same way
+      return [];
+    }
+    
     const response = await apiCall(`/bills/outstanding/${partyId}`);
     return response;
   } catch (error) {
@@ -199,6 +205,12 @@ export const getOutstandingBills = async (partyId: string) => {
 
 export const getOutstandingFoBills = async (partyId: string) => {
   try {
+    // Handle special case for main broker payments
+    if (partyId === "main-broker") {
+      // Return empty array for main broker as it doesn't have outstanding bills in the same way
+      return [];
+    }
+    
     const response = await apiCall(`/fo/bills/outstanding/${partyId}`);
     return response;
   } catch (error) {

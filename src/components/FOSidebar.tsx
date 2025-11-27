@@ -96,6 +96,16 @@ const menuItems: MenuItem[] = [
       { title: "Interest", url: "/fo/interest", icon: TrendingUp },
     ]
   },
+  {
+    title: "Cash",
+    icon: DollarSign,
+    url: "/fo/cash",
+  },
+  {
+    title: "Summary",
+    icon: BarChart3,
+    url: "/fo/summary",
+  },
 ];
 
 export function FOSidebar({ onLogout }: { onLogout: () => void }) {

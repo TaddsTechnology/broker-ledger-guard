@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Eye, Search, IndianRupee } from "lucide-react";
@@ -52,6 +52,46 @@ interface LedgerEntry {
   bill_number?: string;
 }
 
+interface FOBill {
+  id: string;
+  bill_number: string;
+  party_id: string;
+  broker_id?: string;
+  total_amount: number;
+  paid_amount: number;
+  status: string;
+  bill_date: string;
+  due_date: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  party_code?: string;
+  party_name?: string;
+  broker_code?: string;
+  broker_name?: string;
+  bill_type?: 'party' | 'broker';
+}
+
+interface ViewBillData {
+  id: string;
+  bill_number: string;
+  party_id: string;
+  broker_id?: string;
+  total_amount: number;
+  paid_amount: number;
+  status: string;
+  bill_date: string;
+  due_date: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  party_code?: string;
+  party_name?: string;
+  broker_code?: string;
+  broker_name?: string;
+  bill_type?: 'party' | 'broker';
+}
+
 const FOLedgerBills = () => {
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
@@ -64,38 +104,57 @@ const FOLedgerBills = () => {
   const [viewBillId, setViewBillId] = useState<string | null>(null);
   const [billViewOpen, setBillViewOpen] = useState(false);
   const [viewBillType, setViewBillType] = useState<'party' | 'broker' | 'main_broker'>('party');
-  const [viewBillData, setViewBillData] = useState<any>(null);
+  const [viewBillData, setViewBillData] = useState<ViewBillData | null>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [selectedPartyForPayment, setSelectedPartyForPayment] = useState<{id: string, code: string, balance: number} | null>(null);
   const { toast } = useToast();
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    fetchParties();
-    fetchBrokers();
+  const enhanceEntriesWithBillInfo = useCallback(async (entries: LedgerEntry[]): Promise<LedgerEntry[]> => {
+    // Try to extract bill IDs from particulars and enhance entries with bill info
+    const enhancedEntries: LedgerEntry[] = [];
+    
+    for (const entry of entries) {
+      const enhancedEntry = { ...entry };
+      
+      // If entry already has reference_id, use it as bill_id
+      if (entry.reference_id) {
+        enhancedEntry.bill_id = entry.reference_id;
+      }
+      
+      // Try to extract bill number from particulars
+      // Look for patterns like "Bill FO-PTY20251104-215" or "Bill FO-BRK20251104-215"
+      const billNumberMatch = entry.particulars.match(/Bill\s+(FO-(?:PTY|BRK)\d{8}-\d{3})/i);
+      if (billNumberMatch) {
+        enhancedEntry.bill_number = billNumberMatch[1];
+        
+        // If we don't have bill_id yet, try to find it by bill number
+        if (!enhancedEntry.bill_id) {
+          try {
+            // Determine if it's a broker bill or party bill
+            const isBrokerBill = billNumberMatch[1].includes('BRK');
+            const billType = isBrokerBill ? 'broker' : 'party';
+            
+            // Search F&O bills by bill number and type
+            const response = await fetch(`http://localhost:3001/api/fo/bills?type=${billType}`);
+            const bills: FOBill[] = await response.json();
+            const bill = (Array.isArray(bills) ? bills : []).find((b: FOBill) => b.bill_number === billNumberMatch[1]);
+            if (bill && bill.id) {
+              enhancedEntry.bill_id = bill.id;
+            }
+          } catch (error) {
+            console.error('Error fetching bill info:', error);
+          }
+        }
+      }
+      
+      enhancedEntries.push(enhancedEntry);
+    }
+    
+    return enhancedEntries;
   }, []);
 
-  // Fetch ledger entries on component mount and when filters change
-  useEffect(() => {
-    fetchLedgerEntries();
-  }, [selectedPartyId, selectedBrokerId]);
-
-  useEffect(() => {
-    if (searchTerm.trim() === "") {
-      setFilteredEntries(ledgerEntries);
-    } else {
-      const filtered = ledgerEntries.filter(
-        (entry) =>
-          entry.particulars.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          (entry.party_name && entry.party_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
-          (entry.party_code && entry.party_code.toLowerCase().includes(searchTerm.toLowerCase())) ||
-          (entry.bill_number && entry.bill_number.toLowerCase().includes(searchTerm.toLowerCase()))
-      );
-      setFilteredEntries(filtered);
-    }
-  }, [ledgerEntries, searchTerm]);
-
-  const fetchLedgerEntries = async () => {
+  const fetchLedgerEntries = useCallback(async () => {
     setIsLoading(true);
     try {
       let result;
@@ -128,53 +187,9 @@ const FOLedgerBills = () => {
       });
     }
     setIsLoading(false);
-  };
+  }, [selectedPartyId, selectedBrokerId, toast, enhanceEntriesWithBillInfo]);
 
-  const enhanceEntriesWithBillInfo = async (entries: LedgerEntry[]): Promise<LedgerEntry[]> => {
-    // Try to extract bill IDs from particulars and enhance entries with bill info
-    const enhancedEntries = [];
-    
-    for (const entry of entries) {
-      const enhancedEntry = { ...entry };
-      
-      // If entry already has reference_id, use it as bill_id
-      if (entry.reference_id) {
-        enhancedEntry.bill_id = entry.reference_id;
-      }
-      
-      // Try to extract bill number from particulars
-      // Look for patterns like "Bill FO-PTY20251104-215" or "Bill FO-BRK20251104-215"
-      const billNumberMatch = entry.particulars.match(/Bill\s+(FO-(?:PTY|BRK)\d{8}-\d{3})/i);
-      if (billNumberMatch) {
-        enhancedEntry.bill_number = billNumberMatch[1];
-        
-        // If we don't have bill_id yet, try to find it by bill number
-        if (!enhancedEntry.bill_id) {
-          try {
-            // Determine if it's a broker bill or party bill
-            const isBrokerBill = billNumberMatch[1].includes('BRK');
-            const billType = isBrokerBill ? 'broker' : 'party';
-            
-            // Search F&O bills by bill number and type
-            const response = await fetch(`http://localhost:3001/api/fo/bills?type=${billType}`);
-            const bills = await response.json();
-            const bill = (Array.isArray(bills) ? bills : []).find((b: any) => b.bill_number === billNumberMatch[1]);
-            if (bill && bill.id) {
-              enhancedEntry.bill_id = bill.id;
-            }
-          } catch (error) {
-            console.error('Error fetching bill info:', error);
-          }
-        }
-      }
-      
-      enhancedEntries.push(enhancedEntry);
-    }
-    
-    return enhancedEntries;
-  };
-
-  const fetchParties = async () => {
+  const fetchParties = useCallback(async () => {
     try {
       const result = await partyQueries.getAll();
       setParties(result || []);
@@ -186,9 +201,9 @@ const FOLedgerBills = () => {
         variant: "destructive",
       });
     }
-  };
+  }, [toast]);
 
-  const fetchBrokers = async () => {
+  const fetchBrokers = useCallback(async () => {
     try {
       // For now, we'll use the same parties list but could fetch brokers separately
       // In a real implementation, you might have a separate brokers API
@@ -202,7 +217,32 @@ const FOLedgerBills = () => {
         variant: "destructive",
       });
     }
-  };
+  }, [toast]);
+
+  useEffect(() => {
+    fetchParties();
+    fetchBrokers();
+  }, [fetchParties, fetchBrokers]);
+
+  // Fetch ledger entries on component mount and when filters change
+  useEffect(() => {
+    fetchLedgerEntries();
+  }, [selectedPartyId, selectedBrokerId, fetchLedgerEntries]);
+
+  useEffect(() => {
+    if (searchTerm.trim() === "") {
+      setFilteredEntries(ledgerEntries);
+    } else {
+      const filtered = ledgerEntries.filter(
+        (entry) =>
+          entry.particulars.toLowerCase().includes(searchTerm.toLowerCase()) ||
+          (entry.party_name && entry.party_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
+          (entry.party_code && entry.party_code.toLowerCase().includes(searchTerm.toLowerCase())) ||
+          (entry.bill_number && entry.bill_number.toLowerCase().includes(searchTerm.toLowerCase()))
+      );
+      setFilteredEntries(filtered);
+    }
+  }, [ledgerEntries, searchTerm]);
 
   const handleViewBill = async (entry: LedgerEntry) => {
     if (entry.bill_id) {
@@ -226,7 +266,12 @@ const FOLedgerBills = () => {
         // Fetch the full bill data
         const response = await fetch(`http://localhost:3001/api/fo/bills/${entry.bill_id}`);
         if (response.ok) {
-          const bill = await response.json();
+          const billData = await response.json();
+          // Convert to ViewBillData
+          const bill: ViewBillData = {
+            ...billData,
+            party_id: billData.party_id || '', // Ensure party_id is always a string
+          };
           setViewBillData(bill);
           setViewBillType(billType);
           setViewBillId(entry.bill_id);
@@ -267,7 +312,7 @@ const FOLedgerBills = () => {
         // Try to fetch the F&O bill by number and type
         const response = await fetch(`http://localhost:3001/api/fo/bills?type=${billType}`);
         const bills = await response.json();
-        const bill = (Array.isArray(bills) ? bills : []).find((b: any) => b.bill_number === entry.bill_number);
+        const bill = (Array.isArray(bills) ? bills : []).find((b: FOBill) => b.bill_number === entry.bill_number);
         if (bill && bill.id) {
           setViewBillData(bill);
           setViewBillType(billType);
@@ -298,7 +343,14 @@ const FOLedgerBills = () => {
   };
 
   const handleCashCut = (partyId: string, partyCode: string, balance: number) => {
-    setSelectedPartyForPayment({ id: partyId, code: partyCode, balance });
+    // Check if this is a main broker payment
+    if (partyId === "main-broker") {
+      // For main broker payments, we need to handle it differently
+      // We'll set a special flag in the payment dialog
+      setSelectedPartyForPayment({ id: "main-broker", code: partyCode, balance });
+    } else {
+      setSelectedPartyForPayment({ id: partyId, code: partyCode, balance });
+    }
     setPaymentDialogOpen(true);
   };
 
@@ -438,7 +490,7 @@ const FOLedgerBills = () => {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
-                        {/* Disable payment for broker entries (sub-broker and main-broker) */}
+                        {/* Enable payment for main broker entries (broker_brokerage) but disable for sub-broker entries (sub_broker_profit) and party entries */}
                         {entry.party_id ? (
                           <Button
                             variant="ghost"
@@ -454,13 +506,30 @@ const FOLedgerBills = () => {
                           >
                             <IndianRupee className="w-4 h-4" />
                           </Button>
+                        ) : entry.reference_type === 'broker_brokerage' ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              // For main broker bills, we still use the payment dialog but with special handling
+                              // We'll pass a special identifier to indicate this is a broker payment
+                              const brokerId = "main-broker";
+                              const brokerCode = "Main Broker";
+                              const balance = entry.balance || 0;
+                              handleCashCut(brokerId, brokerCode, balance);
+                            }}
+                            className="hover:bg-primary/10 hover:text-primary"
+                            title="Record payment for main broker"
+                          >
+                            <IndianRupee className="w-4 h-4" />
+                          </Button>
                         ) : (
                           <Button
                             variant="ghost"
                             size="sm"
                             className="hover:bg-primary/10 hover:text-primary"
                             disabled
-                            title="Payment recording disabled for broker entries"
+                            title="Payment recording disabled for sub-broker entries"
                           >
                             <IndianRupee className="w-4 h-4" />
                           </Button>

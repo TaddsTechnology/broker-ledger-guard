@@ -266,7 +266,7 @@ const FOHoldings = () => {
 
       <div className="p-6 space-y-6">
         {/* Filter Section */}
-        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200 p-6">
+        <div className="bg-gradient-to-r from-purple-50 to-fuchsia-50 rounded-lg border border-purple-200 p-6">
           <div className="flex items-center justify-between gap-8">
             <div className="space-y-2">
               <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Filter by Client</label>
@@ -664,7 +664,7 @@ const FOHoldings = () => {
                   </div>
                   <Button 
                     onClick={fetchTransactions}
-                    className="bg-blue-600 hover:bg-blue-700"
+                    className="bg-[#9333ea] hover:bg-[#7e22ce]"
                   >
                     Apply Filter
                   </Button>
@@ -718,7 +718,7 @@ const FOHoldings = () => {
                               {new Date(txn.bill_date).toLocaleDateString('en-IN')}
                             </TableCell>
                             <TableCell>
-                              <span className="font-mono text-xs text-blue-600 cursor-pointer hover:underline">
+                              <span className="font-mono text-xs text-[#9333ea] cursor-pointer hover:underline">
                                 {txn.bill_number}
                               </span>
                             </TableCell>

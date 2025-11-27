@@ -44,6 +44,7 @@ interface InterestCalculation {
   total_owed_sum: number;
   average_daily_owed_balance: number;
   total_interest: number;
+  principal_plus_interest?: number;
   daily_breakdown: DailyInterest[];
 }
 
@@ -300,6 +301,9 @@ const EquityInterest = () => {
                         Total Interest
                       </TableHead>
                       <TableHead className="font-semibold text-right">
+                        Total + Interest
+                      </TableHead>
+                      <TableHead className="font-semibold text-right">
                         Actions
                       </TableHead>
                     </TableRow>
@@ -336,6 +340,9 @@ const EquityInterest = () => {
                             </TableCell>
                             <TableCell className="text-right text-lg font-bold text-green-600">
                               ₹{party.total_interest.toFixed(2)}
+                            </TableCell>
+                            <TableCell className="text-right font-mono">
+                              ₹{(party.principal_plus_interest ?? party.total_interest).toFixed(2)}
                             </TableCell>
                             <TableCell className="text-right">
                               <Button

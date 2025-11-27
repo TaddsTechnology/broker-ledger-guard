@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Wallet, X, Printer } from "lucide-react";
+import { Wallet, Printer } from "lucide-react";
 
 interface Bill {
   id: string;
@@ -23,81 +23,69 @@ interface BrokerBillViewProps {
 export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps) {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [brokerMaster, setBrokerMaster] = useState<any>(null);
+  const [brokerMaster, setBrokerMaster] = useState<any | null>(null);
 
-  // Fetch bill items and broker master when dialog opens
   useEffect(() => {
     if (open && bill) {
-      fetchBillItems();
-      fetchBrokerMaster();
+      fetchBillItemsAndBroker();
     }
   }, [open, bill]);
 
-  const fetchBillItems = async () => {
+  const fetchBillItemsAndBroker = async () => {
     if (!bill) return;
-    
     setLoading(true);
     try {
-      const response = await fetch(`http://localhost:3001/api/bills/${bill.id}/items`);
-      if (response.ok) {
-        const data = await response.json();
+      const [itemsRes, brokersRes] = await Promise.all([
+        fetch(`http://localhost:3001/api/bills/${bill.id}/items`),
+        fetch("http://localhost:3001/api/brokers"),
+      ]);
+
+      if (itemsRes.ok) {
+        const data = await itemsRes.json();
         setItems(data || []);
       }
-    } catch (error) {
-      console.error('Error fetching bill items:', error);
+
+      if (brokersRes.ok) {
+        const brokers = await brokersRes.json();
+        const found = brokers.find((b: any) => b.broker_code === bill.broker_code);
+        setBrokerMaster(found || null);
+      }
+    } catch (err) {
+      console.error("Error fetching broker bill data", err);
     }
     setLoading(false);
-  };
-
-  const fetchBrokerMaster = async () => {
-    if (!bill?.broker_code) return;
-    
-    try {
-      const response = await fetch('http://localhost:3001/api/brokers');
-      if (response.ok) {
-        const brokers = await response.json();
-        const broker = brokers.find((b: any) => b.broker_code === bill.broker_code);
-        setBrokerMaster(broker);
-      }
-    } catch (error) {
-      console.error('Error fetching broker master:', error);
-    }
   };
 
   if (!bill) return null;
 
   // Group items by client
   const clientGroups = items.reduce((acc, item) => {
-    const client = item.client_code || 'Unknown';
+    const client = item.client_code || "Unknown";
     if (!acc[client]) acc[client] = [];
     acc[client].push(item);
     return acc;
   }, {} as Record<string, any[]>);
 
-  // Calculate broker's actual share based on broker_master slabs
-  const calculateBrokerShare = () => {
-    if (!brokerMaster) return bill.total_amount;
-    
-    let brokerShare = 0;
-    items.forEach(item => {
-      const rate = item.trade_type === 'T' 
-        ? Number(brokerMaster.trading_slab) 
-        : Number(brokerMaster.delivery_slab);
-      brokerShare += (Number(item.amount) * rate) / 100;
-    });
-    return brokerShare;
-  };
+  // Calculate overall profit summary using slabs from broker master
+  let totalClientBrokerage = 0;
+  let totalBrokerShare = 0;
+  let totalSubBrokerProfit = 0;
 
-  const brokerActualShare = calculateBrokerShare();
-  
-  // Calculate total sub-broker brokerage (what clients paid)
-  const totalSubBrokerBrokerage = items.reduce(
-    (sum, item) => sum + (Number(item.brokerage_amount) || 0),
-    0
-  );
-  
-  // Sub-broker profit = Total client brokerage - Broker's share
-  const subBrokerProfit = totalSubBrokerBrokerage - brokerActualShare;
+  const tradingRate = brokerMaster ? Number(brokerMaster.trading_slab || 0) / 100 : 0;
+  const deliveryRate = brokerMaster ? Number(brokerMaster.delivery_slab || 0) / 100 : 0;
+
+  items.forEach((item) => {
+    const clientB = Number(item.brokerage_amount || 0);
+    const amount = Number(item.amount || 0);
+    const isTrading = (item.trade_type || "T").toUpperCase() === "T";
+    const rate = isTrading ? tradingRate : deliveryRate;
+    const brokerShare = amount * rate;
+
+    totalClientBrokerage += clientB;
+    totalBrokerShare += brokerShare;
+  });
+
+  totalSubBrokerProfit = totalClientBrokerage - totalBrokerShare;
 
   const handlePrint = () => {
     window.print();
@@ -105,176 +93,154 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader className="space-y-0">
-            <div className="flex items-center justify-between pr-8">
-              <DialogTitle className="flex items-center gap-2">
-                <Wallet className="w-5 h-5 text-blue-600" />
-                <span>Sub-Broker Bill - {bill.bill_number}</span>
-              </DialogTitle>
-            </div>
-          </DialogHeader>
-          
-          {/* Print Button - Separate from header to avoid overlap */}
-          {/* Hidden in actual print using .no-print class */}
-          <div className="flex justify-end -mt-2 mb-4 no-print">
-            <Button 
-              onClick={handlePrint} 
-              variant="outline" 
-              size="sm"
-              className="flex items-center gap-2"
-            >
+      <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto">
+        <DialogHeader className="space-y-1">
+          <div className="flex items-center justify-between">
+            <DialogTitle className="flex items-center gap-2">
+              <Wallet className="w-5 h-5 text-blue-600" />
+              <span>Sub-Broker Bill - {bill.bill_number}</span>
+            </DialogTitle>
+            <Button onClick={handlePrint} variant="outline" size="sm" className="no-print flex items-center gap-2">
               <Printer className="w-4 h-4" />
               Print
             </Button>
           </div>
+        </DialogHeader>
 
-          <div className="space-y-6">
-            {/* Bill Header */}
-            <div className="grid grid-cols-2 gap-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
-              <div>
-                <p className="text-sm text-muted-foreground">Broker</p>
-                <p className="font-semibold">{bill.broker_code}</p>
-                <p className="text-sm">{bill.broker_name || 'Broker'}</p>
-              </div>
-              <div>
-                <p className="text-sm text-muted-foreground">Bill Date</p>
-                <p className="font-semibold">
-                  {new Date(bill.bill_date).toLocaleDateString()}
-                </p>
-              </div>
+        <div className="space-y-6">
+          {/* Bill Header */}
+          <div className="grid grid-cols-2 gap-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+            <div>
+              <p className="text-xs text-muted-foreground">Main Broker</p>
+              <p className="font-semibold">{bill.broker_code}</p>
+              <p className="text-sm">{bill.broker_name || brokerMaster?.name || "Broker"}</p>
             </div>
-
-            {/* Amount Summary */}
-            <div className="p-6 border rounded-lg bg-gradient-to-r from-green-50 to-emerald-50 text-center">
-              <p className="text-sm text-muted-foreground mb-2">Your Sub-Broker Profit</p>
-              <p className="text-4xl font-bold text-green-600">
-                ₹{subBrokerProfit.toLocaleString()}
+            <div className="text-right">
+              <p className="text-xs text-muted-foreground">Bill Date</p>
+              <p className="font-semibold">
+                {new Date(bill.bill_date).toLocaleDateString()}
               </p>
-              <p className="text-xs text-muted-foreground mt-2">
-                (Client Brokerage: ₹{totalSubBrokerBrokerage.toLocaleString()} - Main Broker: ₹{brokerActualShare.toLocaleString()})
+              <p className="mt-1 text-xs">
+                Main Broker Bill Amount: <span className="font-semibold">
+                  ₹{Number(bill.total_amount || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                </span>
               </p>
-            </div>
-
-            {/* Items by Client */}
-            {loading ? (
-              <div className="text-center py-8 text-muted-foreground">
-                Loading items...
-              </div>
-            ) : Object.keys(clientGroups).length > 0 ? (
-              <div className="space-y-4">
-                <h3 className="font-semibold">Sub-Broker Profit Breakdown by Client</h3>
-                {Object.entries(clientGroups).map(([client, clientItems]) => {
-                  // Calculate sub-broker profit for this client
-                  const clientSubBrokerBrokerage = clientItems.reduce(
-                    (sum, item) => sum + (Number(item.brokerage_amount) || 0),
-                    0
-                  );
-                  
-                  // Calculate broker's share for this client
-                  let clientBrokerShare = 0;
-                  if (brokerMaster) {
-                    clientItems.forEach(item => {
-                      const rate = item.trade_type === 'T' 
-                        ? Number(brokerMaster.trading_slab) 
-                        : Number(brokerMaster.delivery_slab);
-                      clientBrokerShare += (Number(item.amount) * rate) / 100;
-                    });
-                  }
-                  
-                  // Sub-broker profit = Sub-broker brokerage - Broker's share
-                  const clientProfit = clientSubBrokerBrokerage - clientBrokerShare;
-                  
-                  return (
-                    <div key={client} className="border rounded-lg p-4">
-                      <div className="flex justify-between items-center mb-3">
-                        <h4 className="font-semibold text-primary">{client}</h4>
-                        <span className="font-semibold text-green-600">
-                          Profit: ₹{clientProfit.toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                          <thead className="bg-muted">
-                            <tr>
-                              <th className="text-left p-2">Security</th>
-                              <th className="text-right p-2">Quantity</th>
-                              <th className="text-right p-2">Rate</th>
-                              <th className="text-right p-2">Amount</th>
-                              <th className="text-right p-2">Client Brokerage</th>
-                              <th className="text-right p-2">Broker Share</th>
-                              <th className="text-right p-2">Profit</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {clientItems.map((item, idx) => {
-                              // Calculate broker's share for this item
-                              const rate = brokerMaster ? (
-                                item.trade_type === 'T' 
-                                  ? Number(brokerMaster.trading_slab) 
-                                  : Number(brokerMaster.delivery_slab)
-                              ) : 0;
-                              const itemBrokerShare = (Number(item.amount) * rate) / 100;
-                              const itemClientBrokerage = Number(item.brokerage_amount || 0);
-                              const itemProfit = itemClientBrokerage - itemBrokerShare;
-                              
-                              return (
-                                <tr key={idx} className="border-b">
-                                  <td className="p-2">
-                                    {item.company_name 
-                                      ? `${item.company_code} - ${item.company_name}` 
-                                      : item.description}
-                                  </td>
-                                  <td className="p-2 text-right">{item.quantity}</td>
-                                  <td className="p-2 text-right">
-                                    ₹{Number(item.rate).toFixed(2)}
-                                  </td>
-                                  <td className="p-2 text-right">
-                                    ₹{Number(item.amount).toFixed(2)}
-                                  </td>
-                                  <td className="p-2 text-right text-gray-600">
-                                    ₹{itemClientBrokerage.toFixed(2)}
-                                  </td>
-                                  <td className="p-2 text-right text-blue-600">
-                                    ₹{itemBrokerShare.toFixed(2)}
-                                  </td>
-                                  <td className="p-2 text-right font-semibold text-green-600">
-                                    ₹{itemProfit.toFixed(2)}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="text-center py-8 text-muted-foreground">
-                No items found for this bill
-              </div>
-            )}
-
-            {/* Status Badge */}
-            <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
-              <span className="font-medium">Status:</span>
-              <span
-                className={`px-3 py-1 rounded-full text-sm font-medium ${
-                  bill.status === 'paid'
-                    ? 'bg-green-100 text-green-800'
-                    : bill.status === 'partial'
-                    ? 'bg-yellow-100 text-yellow-800'
-                    : 'bg-red-100 text-red-800'
-                }`}
-              >
-                {bill.status.charAt(0).toUpperCase() + bill.status.slice(1)}
-              </span>
             </div>
           </div>
 
-        </DialogContent>
-      </Dialog>
+          {/* Profit Summary */}
+          <div className="p-6 rounded-lg border bg-gradient-to-r from-emerald-50 to-green-50 flex flex-col items-center justify-center text-center">
+            <p className="text-sm font-semibold text-emerald-700 uppercase tracking-wide">Your Sub-Broker Profit</p>
+            <p className="text-4xl md:text-5xl font-extrabold text-emerald-800 mt-2">
+              ₹{totalSubBrokerProfit.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+            </p>
+            <p className="text-sm text-emerald-700 mt-2">
+              (Client Brokerage: ₹{totalClientBrokerage.toLocaleString("en-IN", { maximumFractionDigits: 2 })} -
+              Main Broker: ₹{totalBrokerShare.toLocaleString("en-IN", { maximumFractionDigits: 2 })})
+            </p>
+          </div>
+
+          {/* Items by Client with per-client profit */}
+          {loading ? (
+            <div className="text-center py-8 text-muted-foreground">Loading items...</div>
+          ) : Object.keys(clientGroups).length > 0 ? (
+            <div className="space-y-4">
+              <h3 className="font-semibold">Sub-Broker Bill Items by Client</h3>
+              {Object.entries(clientGroups).map(([client, clientItems]) => {
+                let clientBrokerage = 0;
+                let clientBrokerShare = 0;
+
+                clientItems.forEach((item: any) => {
+                  const b = Number(item.brokerage_amount || 0);
+                  const amt = Number(item.amount || 0);
+                  const isTrading = (item.trade_type || "T").toUpperCase() === "T";
+                  const rate = isTrading ? tradingRate : deliveryRate;
+                  const share = amt * rate;
+                  clientBrokerage += b;
+                  clientBrokerShare += share;
+                });
+
+                const clientProfit = clientBrokerage - clientBrokerShare;
+
+                return (
+                  <div key={client} className="border rounded-lg p-4">
+                    <div className="flex justify-between items-center mb-3">
+                      <h4 className="font-semibold text-primary">{client}</h4>
+                      <div className="text-xs">
+                        <span className="text-muted-foreground mr-2">Client Profit:</span>
+                        <span className="font-mono font-semibold text-emerald-700">
+                          ₹{clientProfit.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs md:text-sm">
+                        <thead className="bg-muted">
+                          <tr>
+                            <th className="text-left p-2">Security</th>
+                            <th className="text-right p-2">Quantity</th>
+                            <th className="text-right p-2">Rate</th>
+                            <th className="text-right p-2">Amount</th>
+                            <th className="text-right p-2">Client Brokerage</th>
+                            <th className="text-right p-2">Main Broker Share</th>
+                            <th className="text-right p-2">Profit</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {clientItems.map((item: any, idx: number) => {
+                            const amt = Number(item.amount || 0);
+                            const b = Number(item.brokerage_amount || 0);
+                            const isTrading = (item.trade_type || "T").toUpperCase() === "T";
+                            const rate = isTrading ? tradingRate : deliveryRate;
+                            const share = amt * rate;
+                            const profit = b - share;
+
+                            return (
+                              <tr key={idx} className="border-b">
+                                <td className="p-2">
+                                  {item.company_name
+                                    ? `${item.company_code} - ${item.company_name}`
+                                    : item.description}
+                                </td>
+                                <td className="p-2 text-right">{item.quantity}</td>
+                                <td className="p-2 text-right">₹{Number(item.rate).toFixed(2)}</td>
+                                <td className="p-2 text-right">₹{amt.toFixed(2)}</td>
+                                <td className="p-2 text-right">₹{b.toFixed(2)}</td>
+                                <td className="p-2 text-right">₹{share.toFixed(2)}</td>
+                                <td className="p-2 text-right font-mono font-semibold {profit >= 0 ? 'text-emerald-700' : 'text-red-600'}">
+                                  ₹{profit.toFixed(2)}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">No items found for this bill</div>
+          )}
+
+          {/* Status Badge */}
+          <div className="flex items-center justify-between p-4 bg-muted rounded-lg">
+            <span className="font-medium">Status:</span>
+            <span
+              className={`px-3 py-1 rounded-full text-sm font-medium ${
+                bill.status === "paid"
+                  ? "bg-green-100 text-green-800"
+                  : bill.status === "partial" || bill.status === "partially_paid"
+                  ? "bg-yellow-100 text-yellow-800"
+                  : "bg-red-100 text-red-800"
+              }`}
+            >
+              {bill.status.charAt(0).toUpperCase() + bill.status.slice(1)}
+            </span>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Plus, Save, X, List, Search, Calendar, IndianRupee, Pencil, Trash2 } from "lucide-react";
@@ -680,10 +680,10 @@ const FOLedger = () => {
                   // const billNumbers = [...new Set(group.entries.map(e => e.bill_number).filter(Boolean))];
                   
                   return (
-                    <>
+                    <React.Fragment key={groupKey}>
                       {/* Group Summary Row */}
                       <TableRow 
-                        key={groupKey}
+                        key={`group-${groupKey}`}
                         className="bg-blue-50 hover:bg-blue-100 cursor-pointer font-medium border-b-2"
                         onClick={() => toggleGroup(groupKey)}
                       >
@@ -701,8 +701,8 @@ const FOLedger = () => {
                           <div className="grid grid-cols-2 gap-4">
                             {/* Trade Settlement Summary */}
                             {group.tradeEntries.length > 0 && (
-                              <div className="border-l-4 border-blue-400 pl-3">
-                                <div className="text-xs font-semibold text-blue-700 mb-1">TRADE SETTLEMENT</div>
+                              <div className="border-l-4 border-[#9333ea] pl-3">
+                                <div className="text-xs font-semibold text-[#6b21a8] mb-1">TRADE SETTLEMENT</div>
                                 <div className="text-xs space-y-0.5">
                                   <div>Buy: ₹{group.tradeBuy.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
                                   <div>Sell: ₹{group.tradeSell.toLocaleString('en-IN', {maximumFractionDigits: 2})}</div>
@@ -767,107 +767,111 @@ const FOLedger = () => {
                             </div>
                           )}
                         </TableCell>
-                        <TableCell className={`text-right text-xs font-bold ${
-                          (group.tradeSell - group.tradeBuy - group.brokerageTotal + group.cfSell - group.cfBuy) >= 0 ? 'text-green-600' : 'text-red-600'
-                        }`}>
+                        <TableCell
+                          className={`text-right text-xs font-bold ${
+                            (group.tradeSell - group.tradeBuy - group.brokerageTotal + group.cfSell - group.cfBuy) >= 0
+                              ? 'text-green-600'
+                              : 'text-red-600'
+                          }`}
+                        >
                           <div className="font-mono">
-                            ₹{(group.tradeSell - group.tradeBuy - group.brokerageTotal + group.cfSell - group.cfBuy).toLocaleString('en-IN', {maximumFractionDigits: 2})}
+                            ₹{(group.tradeSell - group.tradeBuy - group.brokerageTotal + group.cfSell - group.cfBuy).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                           </div>
                         </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-3">
-                            <div className="flex flex-col items-end gap-1">
-                              <span className="text-xs font-semibold text-blue-600">
-                                {group.entries.length} {group.entries.length === 1 ? 'bill' : 'bills'}
-                              </span>
-                              <button 
-                                className="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1 transition-colors"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  toggleGroup(groupKey);
-                                }}
-                              >
-                                Manage bills {isExpanded ? '▲' : '▼'}
-                              </button>
-                            </div>
-                            <button
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-3">
+                          <div className="flex flex-col items-end gap-1">
+                              <span className="text-xs font-semibold text-[#9333ea]">
+                              {group.entries.length} {group.entries.length === 1 ? 'bill' : 'bills'}
+                            </span>
+                            <button 
+                                className="text-xs text-[#9333ea] hover:text-[#7e22ce] font-medium flex items-center gap-1 transition-colors"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 toggleGroup(groupKey);
                               }}
-                              className="p-2 hover:bg-blue-200 rounded transition-colors"
-                              title={isExpanded ? 'Collapse' : 'Expand'}
                             >
-                              <span className="text-xl text-blue-600">{isExpanded ? '▲' : '▼'}</span>
+                              Manage bills {isExpanded ? '▲' : '▼'}
                             </button>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleGroup(groupKey);
+                            }}
+                              className="p-2 hover:bg-purple-200 rounded transition-colors"
+                            title={isExpanded ? 'Collapse' : 'Expand'}
+                          >
+                              <span className="text-xl text-[#9333ea]">{isExpanded ? '▲' : '▼'}</span>
+                          </button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                    
+                    {/* Expanded Details */}
+                    {isExpanded && group.entries.map((entry) => (
+                      <TableRow 
+                        key={entry.id}
+                        className="bg-gray-50 hover:bg-gray-100"
+                      >
+                        <TableCell className="pl-12 text-xs text-muted-foreground">
+                          {new Date(entry.entry_date).toLocaleTimeString()}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <span className="px-2 py-1 rounded text-xs font-medium" 
+                            style={{backgroundColor: 
+                              entry.reference_type === 'client_settlement' ? '#dbeafe' : 
+                              entry.reference_type === 'carry_forward' ? '#f3e8ff' : 
+                              '#fef3c7'}}>
+                            {entry.reference_type === 'client_settlement' ? 'Settlement' : 
+                             entry.reference_type === 'carry_forward' ? 'CF' : 
+                             'Brokerage'}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-xs">{entry.particulars}</TableCell>
+                        <TableCell className="text-right text-xs font-mono">
+                          {Number(entry.debit_amount) > 0 ? `₹${Number(entry.debit_amount).toFixed(2)}` : "-"}
+                        </TableCell>
+                        <TableCell className="text-right text-xs font-mono">
+                          {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
+                        </TableCell>
+                        <TableCell className="text-right text-xs font-mono">
+                          ₹{Number(entry.balance).toFixed(2)}
+                        </TableCell>
+                        <TableCell className={`text-right text-xs font-mono font-semibold ${
+                          (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
+                        }`}>
+                          ₹{(Number(entry.credit_amount) - Number(entry.debit_amount)).toFixed(2)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex gap-1 justify-end">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEdit(entry);
+                              }}
+                              className="h-7 w-7 p-0"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteClick(entry);
+                              }}
+                              className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>
-                      
-                      {/* Expanded Details */}
-                      {isExpanded && group.entries.map((entry) => (
-                        <TableRow 
-                          key={entry.id}
-                          className="bg-gray-50 hover:bg-gray-100"
-                        >
-                          <TableCell className="pl-12 text-xs text-muted-foreground">
-                            {new Date(entry.entry_date).toLocaleTimeString()}
-                          </TableCell>
-                          <TableCell className="text-xs">
-                            <span className="px-2 py-1 rounded text-xs font-medium" 
-                              style={{backgroundColor: 
-                                entry.reference_type === 'client_settlement' ? '#dbeafe' : 
-                                entry.reference_type === 'carry_forward' ? '#f3e8ff' : 
-                                '#fef3c7'}}>
-                              {entry.reference_type === 'client_settlement' ? 'Settlement' : 
-                               entry.reference_type === 'carry_forward' ? 'CF' : 
-                               'Brokerage'}
-                            </span>
-                          </TableCell>
-                          <TableCell className="text-xs">{entry.particulars}</TableCell>
-                          <TableCell className="text-right text-xs font-mono">
-                            {Number(entry.debit_amount) > 0 ? `₹${Number(entry.debit_amount).toFixed(2)}` : "-"}
-                          </TableCell>
-                          <TableCell className="text-right text-xs font-mono">
-                            {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
-                          </TableCell>
-                          <TableCell className="text-right text-xs font-mono">
-                            ₹{Number(entry.balance).toFixed(2)}
-                          </TableCell>
-                          <TableCell className={`text-right text-xs font-mono font-semibold ${
-                            (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
-                          }`}>
-                            ₹{(Number(entry.credit_amount) - Number(entry.debit_amount)).toFixed(2)}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            <div className="flex gap-1 justify-end">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleEdit(entry);
-                                }}
-                                className="h-7 w-7 p-0"
-                              >
-                                <Pencil className="w-3 h-3" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteClick(entry);
-                                }}
-                                className="h-7 w-7 p-0 text-destructive hover:text-destructive"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </Button>
-                            </div>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </>
+                    ))}
+                  </React.Fragment>
                   );
                 })
               ) : (
@@ -892,7 +896,7 @@ const FOLedger = () => {
                       {(entry.particulars.includes('Brokerage for bill') || 
                         entry.particulars.includes('Main Broker Bill') || 
                         entry.particulars.includes('Sub-Broker Profit')) && (
-                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                        <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-[#6b21a8]">
                           Broker Bill
                         </span>
                       )}

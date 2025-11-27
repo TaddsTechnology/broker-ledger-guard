@@ -142,6 +142,22 @@ CREATE TABLE IF NOT EXISTS payments (
 -- Add unique constraint for idempotency
 ALTER TABLE payments ADD CONSTRAINT unique_payment_id UNIQUE (id);
 
+-- Create cash_transactions table (shared by Equity cash module)
+CREATE TABLE IF NOT EXISTS cash_transactions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    date DATE NOT NULL,
+    party_code VARCHAR(50) NOT NULL,
+    amount DECIMAL(18,2) NOT NULL CHECK (amount > 0),
+    type VARCHAR(10) NOT NULL CHECK (type IN ('RECEIPT', 'PAYMENT')),
+    narration TEXT,
+    mode VARCHAR(10) NOT NULL DEFAULT 'CASH' CHECK (mode = 'CASH'),
+    created_by VARCHAR(100),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_cash_transactions_date ON cash_transactions(date);
+CREATE INDEX IF NOT EXISTS idx_cash_transactions_party_code ON cash_transactions(party_code);
+
 -- Create ledger_entries table
 CREATE TABLE IF NOT EXISTS ledger_entries (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

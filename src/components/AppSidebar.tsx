@@ -85,6 +85,16 @@ const menuItems: MenuItem[] = [
       { title: "Interest", url: "/equity/interest", icon: TrendingUp },
     ]
   },
+  {
+    title: "Cash",
+    icon: DollarSign,
+    url: "/equity/cash",
+  },
+  {
+    title: "Summary",
+    icon: BarChart3,
+    url: "/equity/summary",
+  },
   // {
   //   title: "Reports & Analytics",
   //   icon: FileSpreadsheet,

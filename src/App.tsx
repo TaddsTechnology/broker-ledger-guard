@@ -40,6 +40,11 @@ import Settings from "./pages/Settings";
 import DataManagement from "./pages/DataManagement";
 import BrokerMaster from "./pages/BrokerMaster";
 import NotFound from "./pages/NotFound";
+import CashModulePage from "./pages/CashModulePage";
+import EquitySummaryModulePage from "./pages/EquitySummaryModulePage";
+import FOSummaryModulePage from "./pages/FOSummaryModulePage";
+import FOCashModulePage from "./pages/FOCashModulePage";
+import SummaryModulePage from "./pages/SummaryModulePage";
 
 const queryClient = new QueryClient();
 
@@ -114,6 +119,8 @@ const AppContent = () => {
             <Route path="/fo/ledger" element={<FOLedger />} />
             <Route path="/fo/ledger/bills" element={<FOLedgerBills />} />
             <Route path="/fo/interest" element={<Interest />} />
+            <Route path="/fo/summary" element={<FOSummaryModulePage />} />
+            <Route path="/fo/cash" element={<FOCashModulePage />} />
             
             {/* Equity Module Routes */}
             <Route path="/equity/dashboard" element={<Dashboard />} />
@@ -131,6 +138,9 @@ const AppContent = () => {
             <Route path="/equity/ledger" element={<Ledger />} />
             <Route path="/equity/ledger/bills" element={<LedgerBills />} />
             <Route path="/equity/interest" element={<EquityInterest />} />
+            <Route path="/equity/cash" element={<CashModulePage />} />
+            <Route path="/equity/summary" element={<EquitySummaryModulePage />} />
+            <Route path="/equity/settings" element={<Settings />} />
             <Route path="/equity/settings" element={<Settings />} />
             <Route path="/equity/settings/data" element={<DataManagement />} />
             

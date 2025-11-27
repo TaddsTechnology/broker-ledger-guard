@@ -2,7 +2,6 @@ import { useMemo, useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -10,7 +9,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -61,13 +59,12 @@ export function PaymentDialog({
   const { toast } = useToast();
   const [amount, setAmount] = useState("");
   const [paymentType, setPaymentType] = useState<'payin' | 'payout'>('payin');
+  // We no longer allocate payments to a specific bill; everything goes to ledger-level.
   const [applyToBillId, setApplyToBillId] = useState<string | null>(null);
-  const [notes, setNotes] = useState("");
   const [bills, setBills] = useState<Bill[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const quickAmountPresets = [5000, 10000, 25000, 50000];
 
   const formatCurrency = (value: number) => {
     if (isNaN(value)) return "₹0.00";
@@ -82,12 +79,8 @@ export function PaymentDialog({
     [bills]
   );
 
-  const selectedBillOutstanding = useMemo(() => {
-    if (!applyToBillId) return null;
-    const bill = bills.find((b) => b.id === applyToBillId);
-    if (!bill) return null;
-    return bill.total_amount - bill.paid_amount;
-  }, [applyToBillId, bills]);
+  // We keep bills only for display; payment is not tied to a single bill anymore.
+  const selectedBillOutstanding = null;
 
   const fetchOutstandingBills = useCallback(async () => {
     setIsLoading(true);
@@ -152,79 +145,179 @@ export function PaymentDialog({
         return v.toString(16);
       });
 
-      let endpoint = 'http://localhost:3001/api/payments';
-      let payload:
-        | {
-            payment_id: string;
-            party_id: string;
-            amount: number;
-            date: string;
-            apply_to_bill_id: string | null;
-            payment_method: string;
-            payment_type: string;
-            notes: string | null;
+      // Check if this is a main broker payment
+      const isMainBrokerPayment = partyId === "main-broker";
+      
+      if (isMainBrokerPayment) {
+        // For main broker payments, we need to create a direct ledger entry
+        try {
+          if (mode === 'fo') {
+            // For F&O, we need to get the latest broker bill first
+            const billEndpoint = 'http://localhost:3001/api/fo/bills?type=broker';
+            
+            const billResponse = await fetch(billEndpoint);
+            if (billResponse.ok) {
+              const bills = await billResponse.json();
+              if (bills && bills.length > 0) {
+                // Get the most recent broker bill
+                const latestBrokerBill = bills[0];
+                const billId = latestBrokerBill.id;
+                
+                // Use the F&O broker payment endpoint
+                const endpoint = `http://localhost:3001/api/fo/bills/${billId}/payment`;
+                
+                const payload = {
+                  amount: amountValue,
+                  payment_date: new Date().toISOString().split('T')[0],
+                  payment_method: "cash",
+                  payment_type: paymentType,
+                };
+                
+                const response = await fetch(endpoint, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(payload),
+                });
+                
+                if (!response.ok) {
+                  const errorData = await response.json();
+                  throw new Error(errorData.error || 'Failed to record payment');
+                }
+                
+                const result = await response.json();
+                
+                toast({
+                  title: "Success",
+                  description: `Main broker payment recorded successfully.`,
+                });
+              } else {
+                throw new Error('No broker bills found');
+              }
+            } else {
+              throw new Error('Failed to fetch broker bills');
+            }
+          } else {
+            // For Equity, use the broker bill payment endpoint
+            // First, get the latest broker bill
+            const billEndpoint = 'http://localhost:3001/api/bills?type=broker';
+            
+            const billResponse = await fetch(billEndpoint);
+            if (billResponse.ok) {
+              const bills = await billResponse.json();
+              if (bills && bills.length > 0) {
+                // Get the most recent broker bill
+                const latestBrokerBill = bills[0];
+                const billId = latestBrokerBill.id;
+                
+                // Use the broker payment endpoint
+                const endpoint = `http://localhost:3001/api/bills/${billId}/payment`;
+                
+                const payload = {
+                  amount: amountValue,
+                  payment_date: new Date().toISOString().split('T')[0],
+                  payment_method: "cash",
+                  payment_type: paymentType,
+                };
+                
+                const response = await fetch(endpoint, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(payload),
+                });
+                
+                if (!response.ok) {
+                  const errorData = await response.json();
+                  throw new Error(errorData.error || 'Failed to record payment');
+                }
+                
+                const result = await response.json();
+                
+                toast({
+                  title: "Success",
+                  description: `Main broker payment recorded successfully.`,
+                });
+              } else {
+                throw new Error('No broker bills found');
+              }
+            } else {
+              throw new Error('Failed to fetch broker bills');
+            }
           }
-        | {
-            party_id: string;
-            amount: number;
-            date: string;
-            apply_to_bill_id: number | null;
-            payment_method: string;
-            payment_type: string;
-            notes: string | null;
-          } = {
-        payment_id: paymentId,
-        party_id: partyId,
-        amount: amountValue,
-        date: new Date().toISOString().split('T')[0],
-        apply_to_bill_id: applyToBillId,
-        payment_method: "cash",
-        payment_type: paymentType,
-        notes: notes || null,
-      };
-
-      if (mode === 'fo') {
-        endpoint = 'http://localhost:3001/api/fo/payments';
-        const foBillId = applyToBillId ? Number(applyToBillId) : null;
-        if (applyToBillId && (foBillId === null || Number.isNaN(foBillId))) {
-          throw new Error('Invalid bill selected');
+        } catch (billError) {
+          console.error('Error recording broker payment:', billError);
+          throw new Error('Unable to record main broker payment: ' + (billError instanceof Error ? billError.message : 'Unknown error'));
         }
-        payload = {
+      } else {
+        // Handle regular party payments
+        let endpoint = 'http://localhost:3001/api/payments';
+        let payload:
+          | {
+              payment_id: string;
+              party_id: string;
+              amount: number;
+              date: string;
+              apply_to_bill_id: string | null;
+              payment_method: string;
+              payment_type: string;
+            }
+          | {
+              party_id: string;
+              amount: number;
+              date: string;
+              apply_to_bill_id: number | null;
+              payment_method: string;
+              payment_type: string;
+            } = {
+          payment_id: paymentId,
           party_id: partyId,
           amount: amountValue,
           date: new Date().toISOString().split('T')[0],
-          apply_to_bill_id: foBillId,
+          apply_to_bill_id: null,
           payment_method: "cash",
           payment_type: paymentType,
-          notes: notes || null,
         };
+
+        if (mode === 'fo') {
+          endpoint = 'http://localhost:3001/api/fo/payments';
+          payload = {
+            party_id: partyId,
+            amount: amountValue,
+            date: new Date().toISOString().split('T')[0],
+            apply_to_bill_id: null,
+            payment_method: "cash",
+            payment_type: paymentType,
+          };
+        }
+        
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.error || 'Failed to record payment');
+        }
+        
+        const result = await response.json();
+        
+        toast({
+          title: "Success",
+          description: `Cash payment recorded successfully. New balance: ₹${result.new_balance?.toFixed(2) || 'N/A'}`,
+        });
       }
       
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to record payment');
-      }
-      
-      const result = await response.json();
-      
-      toast({
-        title: "Success",
-        description: `Cash payment recorded successfully. New balance: ₹${result.new_balance.toFixed(2)}`,
-      });
-      
-      // Reset form
+        // Reset form
       setAmount("");
       setPaymentType('payin');
       setApplyToBillId(null);
-      setNotes("");
       setErrors({});
       
       // Close dialog and refresh ledger
@@ -311,14 +404,9 @@ export function PaymentDialog({
           </div>
 
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="amount">
-                Amount <span className="text-destructive">*</span>
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                Quick fill
-              </p>
-            </div>
+            <Label htmlFor="amount">
+              Amount <span className="text-destructive">*</span>
+            </Label>
             <Input
               id="amount"
               type="number"
@@ -331,89 +419,10 @@ export function PaymentDialog({
             {errors.amount && (
               <p className="text-sm text-destructive">{errors.amount}</p>
             )}
-            <div className="flex flex-wrap gap-2">
-              {quickAmountPresets.map((preset) => (
-                <Button
-                  key={preset}
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className="rounded-full"
-                  onClick={() => setAmount(preset.toString())}
-                >
-                  {formatCurrency(preset)}
-                </Button>
-              ))}
-            </div>
           </div>
           
-          <Separator />
-          
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="applyToBill">Apply to Bill</Label>
-              <span className="text-xs text-muted-foreground">Optional</span>
-            </div>
-            <Select 
-              value={applyToBillId || "none"} 
-              onValueChange={(value) => setApplyToBillId(value === "none" ? null : value)}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder={isLoading ? "Loading bills..." : "Select a bill"} />
-              </SelectTrigger>
-              <SelectContent>
-                {bills.map((bill) => (
-                  <SelectItem key={bill.id} value={bill.id}>
-                    {bill.bill_number} · {formatCurrency(getBillOutstanding(bill))}
-                  </SelectItem>
-                ))}
-                <SelectItem value="none">Don't apply to a specific bill</SelectItem>
-              </SelectContent>
-            </Select>
-            {selectedBillOutstanding !== null && (
-              <p className="text-xs text-muted-foreground">
-                Outstanding on selected bill: <span className="font-medium">{formatCurrency(selectedBillOutstanding)}</span>
-              </p>
-            )}
-            <div className="rounded-lg border bg-muted/20">
-              <ScrollArea className="max-h-48">
-                {isLoading ? (
-                  <div className="p-4 text-sm text-muted-foreground">Fetching outstanding bills...</div>
-                ) : bills.length === 0 ? (
-                  <div className="p-4 text-sm text-muted-foreground">No outstanding bills for this party.</div>
-                ) : (
-                  bills.map((bill) => {
-                    const outstanding = getBillOutstanding(bill);
-                    return (
-                      <div key={bill.id} className="flex items-center justify-between border-b border-border/60 px-4 py-3 last:border-b-0">
-                        <div>
-                          <p className="text-sm font-medium">{bill.bill_number}</p>
-                          <p className="text-xs text-muted-foreground">Outstanding {formatCurrency(outstanding)}</p>
-                        </div>
-                        <Badge variant="outline" className="capitalize">
-                          {bill.status}
-                        </Badge>
-                      </div>
-                    );
-                  })
-                )}
-              </ScrollArea>
-            </div>
-          </div>
-          
-          <Separator />
+          {/* Apply-to-bill UI removed: payments are now only ledger-level */}
 
-          <div className="space-y-2">
-            <Label htmlFor="notes">Notes</Label>
-            <Textarea
-              id="notes"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Add any remarks about this payment"
-              rows={3}
-            />
-          </div>
-          
           <div className="flex justify-end gap-2 pt-2">
             <Button
               type="button"

@@ -184,6 +184,9 @@ CREATE INDEX IF NOT EXISTS idx_fo_ledger_type ON fo_ledger_entries(reference_typ
 CREATE INDEX IF NOT EXISTS idx_fo_ledger_reference_id ON fo_ledger_entries(reference_id);
 
 -- ============================================================================
+-- F&O CASH TRANSACTIONS (optional, if you want separate FO cash table)
+-- For now, FO cash uses shared cash_transactions + fo_ledger_entries in backend logic.
+
 -- F&O PAYMENTS
 -- ============================================================================
 -- Payment tracking for F&O bills

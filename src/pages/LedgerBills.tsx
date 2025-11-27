@@ -195,7 +195,14 @@ const LedgerBills = () => {
   };
 
   const handleCashCut = (partyId: string, partyCode: string, balance: number) => {
-    setSelectedPartyForPayment({ id: partyId, code: partyCode, balance });
+    // Check if this is a main broker payment
+    if (partyId === "main-broker") {
+      // For main broker payments, we need to handle it differently
+      // We'll set a special flag in the payment dialog
+      setSelectedPartyForPayment({ id: "main-broker", code: partyCode, balance });
+    } else {
+      setSelectedPartyForPayment({ id: partyId, code: partyCode, balance });
+    }
     setPaymentDialogOpen(true);
   };
 
@@ -371,7 +378,6 @@ const LedgerBills = () => {
                 <TableHead className="font-semibold text-right">Debit</TableHead>
                 <TableHead className="font-semibold text-right">Credit</TableHead>
                 <TableHead className="font-semibold text-right">Balance</TableHead>
-                <TableHead className="font-semibold text-right">Net Profit</TableHead>
                 <TableHead className="font-semibold text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
@@ -384,7 +390,7 @@ const LedgerBills = () => {
                 </TableRow>
               ) : ledgerEntries.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
+                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                     No ledger entries found.
                   </TableCell>
                 </TableRow>
@@ -428,14 +434,9 @@ const LedgerBills = () => {
                     }`}>
                       {(entry.particulars.includes('Sub-Broker Profit') || (entry.particulars.includes('Brokerage') && !entry.party_id)) ? '+' : '-'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
                     </TableCell>
-                    <TableCell className={`text-right font-mono font-semibold ${
-                      (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
-                    }`}>
-                      ₹{(Number(entry.credit_amount) - Number(entry.debit_amount)).toFixed(2)}
-                    </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
-                        {/* Disable payment for broker entries (sub-broker and main-broker) */}
+                        {/* Enable payment for main broker entries (broker_brokerage) but disable for sub-broker entries (sub_broker_profit) and party entries */}
                         {entry.party_id ? (
                           <Button
                             variant="ghost"
@@ -451,13 +452,30 @@ const LedgerBills = () => {
                           >
                             <IndianRupee className="w-4 h-4" />
                           </Button>
+                        ) : entry.reference_type === 'broker_brokerage' ? (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              // For main broker bills, we still use the payment dialog but with special handling
+                              // We'll pass a special identifier to indicate this is a broker payment
+                              const brokerId = "main-broker";
+                              const brokerCode = "Main Broker";
+                              const balance = entry.balance || 0;
+                              handleCashCut(brokerId, brokerCode, balance);
+                            }}
+                            className="hover:bg-primary/10 hover:text-primary"
+                            title="Record payment for main broker"
+                          >
+                            <IndianRupee className="w-4 h-4" />
+                          </Button>
                         ) : (
                           <Button
                             variant="ghost"
                             size="sm"
                             className="hover:bg-primary/10 hover:text-primary"
                             disabled
-                            title="Payment recording disabled for broker entries"
+                            title="Payment recording disabled for sub-broker entries"
                           >
                             <IndianRupee className="w-4 h-4" />
                           </Button>
