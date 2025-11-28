@@ -53,6 +53,7 @@ const Trading = () => {
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
   const [parties, setParties] = useState<Party[]>([]);
   const [brokers, setBrokers] = useState<Broker[]>([]);
+  const [billDate, setBillDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileRefs = useRef<(HTMLDivElement | null)[]>([]);
   const { toast } = useToast();
@@ -235,56 +236,6 @@ const Trading = () => {
     handleFileUpload(e.dataTransfer.files);
   }, [handleFileUpload]);
 
-  // Convert to Excel, download, and auto-open in new tab
-  const downloadAsExcel = useCallback((file: ProcessedFile) => {
-    try {
-      const wb = XLSX.utils.book_new();
-      const wsData = [file.headers, ...file.content];
-      const ws = XLSX.utils.aoa_to_sheet(wsData);
-      
-      // Auto-size columns
-      const colWidths = file.headers.map((_, colIndex) => {
-        const maxLength = Math.max(
-          file.headers[colIndex]?.length || 0,
-          ...file.content.map(row => (row[colIndex]?.toString() || '').length)
-        );
-        return { wch: Math.min(maxLength + 2, 50) };
-      });
-      ws['!cols'] = colWidths;
-      
-      XLSX.utils.book_append_sheet(wb, ws, "Trade Data");
-      // Generate filename - convert TXT to XLSX, keep XLSX/XLS as is but with standardized name
-      let excelName = file.name;
-      if (file.name.toLowerCase().endsWith('.txt')) {
-        excelName = file.name.replace(/\.txt$/i, '.xlsx');
-      } else if (file.name.toLowerCase().endsWith('.csv')) {
-        excelName = file.name.replace(/\.csv$/i, '.xlsx');
-      } else if (!file.name.toLowerCase().endsWith('.xlsx')) {
-        // For any other file type, add .xlsx extension
-        excelName = file.name.replace(/\.[^/.]+$/, "") + '.xlsx';
-      }
-      
-      // Generate blob and create URL for auto-open
-      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const url = URL.createObjectURL(blob);
-      
-      // Download the file
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = excelName;
-      link.click();
-      
-      // Auto-open in new Chrome tab
-      window.open(url, '_blank');
-      
-      // Clean up URL after a delay
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) {
-      alert('Failed to convert to Excel. Please try again.');
-    }
-  }, []);
-
   // Remove file
   const removeFile = useCallback((index: number) => {
     setUploadedFiles(prev => prev.filter((_, i) => i !== index));
@@ -311,6 +262,26 @@ const Trading = () => {
           ...file,
           editableHeaders,
           editableContent: newContent
+        };
+      }
+      return file;
+    }));
+  }, []);
+
+  // Add a new empty row to the file data
+  const addRow = useCallback((fileIndex: number) => {
+    setUploadedFiles(prev => prev.map((file, index) => {
+      if (index === fileIndex) {
+        const editableHeaders = file.editableHeaders || [...file.headers];
+        const colCount = editableHeaders.length || (file.content[0]?.length || 0);
+        const editableContent = file.editableContent || file.content.map(row => [...row]);
+        const emptyRow = Array(colCount).fill("");
+        const newContent = [...editableContent, emptyRow];
+        return {
+          ...file,
+          editableHeaders,
+          editableContent: newContent,
+          rowCount: newContent.length,
         };
       }
       return file;
@@ -390,7 +361,7 @@ const Trading = () => {
         },
         body: JSON.stringify({
           trades,
-          billDate: new Date().toISOString().split('T')[0]
+          billDate: billDate || new Date().toISOString().split('T')[0],
         }),
       });
       
@@ -417,7 +388,7 @@ const Trading = () => {
         variant: "destructive"
       });
     }
-  }, [toast]);
+  }, [toast, billDate]);
 
   // Format file size
   const formatFileSize = (bytes: number) => {
@@ -484,10 +455,23 @@ const Trading = () => {
         {uploadedFiles.length > 0 && (
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <FileSpreadsheet className="h-5 w-5" />
-                Processed Files ({uploadedFiles.length})
-              </CardTitle>
+              <div className="flex items-center gap-4">
+                <CardTitle className="flex items-center gap-2">
+                  <FileSpreadsheet className="h-5 w-5" />
+                  Processed Files ({uploadedFiles.length})
+                </CardTitle>
+                {/* Bill Date selection */}
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="billDate" className="text-xs font-semibold uppercase">Bill Date</Label>
+                  <Input
+                    id="billDate"
+                    type="date"
+                    value={billDate}
+                    onChange={(e) => setBillDate(e.target.value)}
+                    className="h-8 w-40 text-xs"
+                  />
+                </div>
+              </div>
               <Button 
                 variant="outline" 
                 size="sm" 
@@ -619,18 +603,48 @@ const Trading = () => {
                             <tbody>
                               {(file.editableContent || file.content).map((row, rowIndex) => (
                                 <tr key={rowIndex} className="border-b hover:bg-muted/50">
-                                  {row.map((cell, colIndex) => (
-                                    <td key={colIndex} className="px-2 py-1 border-r last:border-r-0">
-                                      <Input
-                                        value={cell}
-                                        onChange={(e) => updateCellValue(index, rowIndex, colIndex, e.target.value)}
-                                        className="h-6 px-1 py-0 text-xs"
-                                        onBlur={() => {
-                                          // Any additional logic on blur
-                                        }}
-                                      />
-                                    </td>
-                                  ))}
+                                  {row.map((cell, colIndex) => {
+                                    const headers = file.editableHeaders || file.headers;
+                                    const headerName = headers[colIndex] || '';
+                                    const normalizedHeader = headerName.replace(/\s+/g, '');
+                                    const isClientIdCol = /clientid/i.test(normalizedHeader);
+                                    const isBrokerIdCol = /brokerid/i.test(normalizedHeader);
+                                    const clientDatalistId = `eq-clientid-options-${index}-${colIndex}`;
+                                    const brokerDatalistId = `eq-brokerid-options-${index}-${colIndex}`;
+                                    return (
+                                      <td key={colIndex} className="px-2 py-1 border-r last:border-r-0">
+                                        <Input
+                                          value={cell}
+                                          list={isClientIdCol ? clientDatalistId : isBrokerIdCol ? brokerDatalistId : undefined}
+                                          onChange={(e) => updateCellValue(index, rowIndex, colIndex, e.target.value.toUpperCase())}
+                                          className="h-6 px-1 py-0 text-xs"
+                                          onBlur={() => {}}
+                                        />
+                                        {isClientIdCol && (
+                                          <datalist id={clientDatalistId}>
+                                            {parties.map((p) => (
+                                              <option
+                                                key={p.id}
+                                                value={p.party_code}
+                                                label={p.name}
+                                              />
+                                            ))}
+                                          </datalist>
+                                        )}
+                                        {isBrokerIdCol && (
+                                          <datalist id={brokerDatalistId}>
+                                            {brokers.map((b) => (
+                                              <option
+                                                key={b.id}
+                                                value={b.broker_code}
+                                                label={b.name}
+                                              />
+                                            ))}
+                                          </datalist>
+                                        )}
+                                      </td>
+                                    );
+                                  })}
                                 </tr>
                               ))}
                             </tbody>
@@ -640,12 +654,11 @@ const Trading = () => {
                       
                       <div className="flex gap-2">
                         <Button
-                          onClick={() => downloadAsExcel(file)}
+                          onClick={() => addRow(index)}
                           className="flex-1"
                           tabIndex={4 + index * 4}
                         >
-                          <FileSpreadsheet className="h-4 w-4 mr-2" />
-                          Open in Excel
+                          <span className="text-xs">+ Add Row</span>
                         </Button>
                         <Button
                           onClick={() => addColumn(index)}

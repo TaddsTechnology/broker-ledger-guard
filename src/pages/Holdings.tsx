@@ -37,12 +37,14 @@ interface Holding {
   quantity: number;
   avg_buy_price: number;
   total_invested: number;
-  last_trade_date: string;
+  last_trade_date: string | null;
   party_code?: string;
   party_name?: string;
   company_code: string;
   company_name: string;
   nse_code: string | null;
+  broker_codes?: string | null; // e.g. "BRK1, BRK2"
+  broker_qty_breakdown?: string | null; // e.g. "4622:1000, 2025:1500"
 }
 
 interface Transaction {
@@ -359,6 +361,7 @@ const Holdings = () => {
                               <TableHead className="text-right">Avg Price</TableHead>
                               <TableHead className="text-right">Total Invested</TableHead>
                               <TableHead>Last Trade</TableHead>
+                              <TableHead>Broker Codes</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -383,7 +386,12 @@ const Holdings = () => {
                                   ₹{Number(holding.total_invested).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                                 </TableCell>
                                 <TableCell className="text-sm">
-                                  {new Date(holding.last_trade_date).toLocaleDateString()}
+                                  {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
+                                </TableCell>
+                                <TableCell className="text-sm">
+                                  {holding.broker_qty_breakdown
+                                    ? holding.broker_qty_breakdown
+                                    : (holding.broker_codes || '-')}
                                 </TableCell>
                               </TableRow>
                             ))}
@@ -405,6 +413,7 @@ const Holdings = () => {
                           <TableHead className="text-right">Avg Price</TableHead>
                           <TableHead className="text-right">Total Invested</TableHead>
                           <TableHead>Last Trade</TableHead>
+                          <TableHead>Broker Codes</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -429,7 +438,12 @@ const Holdings = () => {
                               ₹{Number(holding.total_invested).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                             </TableCell>
                             <TableCell className="text-sm">
-                              {new Date(holding.last_trade_date).toLocaleDateString()}
+                              {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              {holding.broker_qty_breakdown
+                                ? holding.broker_qty_breakdown
+                                : (holding.broker_codes || '-')}
                             </TableCell>
                           </TableRow>
                         ))}
@@ -467,6 +481,7 @@ const Holdings = () => {
                                   <TableHead className="text-right">Avg Price</TableHead>
                                   <TableHead className="text-right">Total Value</TableHead>
                                   <TableHead>Last Trade</TableHead>
+                                  <TableHead>Broker Codes</TableHead>
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
@@ -493,7 +508,10 @@ const Holdings = () => {
                                         ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                                       </TableCell>
                                       <TableCell className="text-sm">
-                                        {new Date(holding.last_trade_date).toLocaleDateString()}
+                                        {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
+                                      </TableCell>
+                                      <TableCell className="text-sm">
+                                        {holding.broker_codes || '-'}
                                       </TableCell>
                                     </TableRow>
                                   );
@@ -515,6 +533,7 @@ const Holdings = () => {
                               <TableHead className="text-right">Avg Price</TableHead>
                               <TableHead className="text-right">Total Value</TableHead>
                               <TableHead>Last Trade</TableHead>
+                              <TableHead>Broker Codes</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
@@ -541,7 +560,10 @@ const Holdings = () => {
                                     ₹{totalValue.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                                   </TableCell>
                                   <TableCell className="text-sm">
-                                    {new Date(holding.last_trade_date).toLocaleDateString()}
+                                    {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
+                                  </TableCell>
+                                  <TableCell className="text-sm">
+                                    {holding.broker_codes || '-'}
                                   </TableCell>
                                 </TableRow>
                               );
@@ -607,6 +629,29 @@ const Holdings = () => {
                 <CardTitle className="text-lg">Transaction History (Date-wise Buy/Sell)</CardTitle>
               </CardHeader>
               <CardContent>
+                {/* Party filter inside Transactions tab */}
+                <div className="flex items-end gap-4 mb-4">
+                  <div className="w-64">
+                    <Label htmlFor="partyFilter" className="text-xs font-semibold uppercase">Party</Label>
+                    <Select
+                      value={selectedParty}
+                      onValueChange={(value) => setSelectedParty(value)}
+                    >
+                      <SelectTrigger id="partyFilter" className="mt-1 h-9">
+                        <SelectValue placeholder="All Parties" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Parties</SelectItem>
+                        {parties.map((party) => (
+                          <SelectItem key={party.id} value={party.id}>
+                            {party.party_code} - {party.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
                 {isLoadingTransactions ? (
                   <div className="text-center py-8 text-muted-foreground">
                     Loading transaction history...

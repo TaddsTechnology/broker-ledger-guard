@@ -310,7 +310,10 @@ const FOLedger = () => {
     if (!entryToDelete) return;
 
     try {
-      await ledgerQueries.delete(entryToDelete.id);
+      // For F&O, delete from fo_ledger_entries via FO-specific API
+      await fetch(`http://localhost:3001/api/fo/ledger/${entryToDelete.id}`, {
+        method: "DELETE",
+      });
       toast({ 
         title: "Success", 
         description: "Ledger entry deleted successfully",
@@ -835,8 +838,18 @@ const FOLedger = () => {
                         <TableCell className="text-right text-xs font-mono">
                           {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                         </TableCell>
-                        <TableCell className="text-right text-xs font-mono">
-                          ₹{Number(entry.balance).toFixed(2)}
+                        <TableCell
+                          className={`text-right text-xs font-mono ${
+                            Number(entry.credit_amount) > 0
+                              ? 'text-green-600'
+                              : Number(entry.debit_amount) > 0
+                              ? 'text-red-600'
+                              : 'text-muted-foreground'
+                          }`}
+                        >
+                          {Number(entry.balance) >= 0
+                            ? `+₹${Number(entry.balance).toFixed(2)}`
+                            : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
                         </TableCell>
                         <TableCell className={`text-right text-xs font-mono font-semibold ${
                           (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -907,10 +920,18 @@ const FOLedger = () => {
                     <TableCell className="text-right font-mono text-accent">
                       {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                     </TableCell>
-                    <TableCell className={`text-right font-mono font-medium ${
-                      entry.party_id ? 'text-red-600' : 'text-green-600'
-                    }`}>
-                      {entry.party_id ? '-' : '+'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
+                    <TableCell
+                      className={`text-right font-mono font-medium ${
+                        Number(entry.credit_amount) > 0
+                          ? 'text-green-600'
+                          : Number(entry.debit_amount) > 0
+                          ? 'text-red-600'
+                          : 'text-muted-foreground'
+                      }`}
+                    >
+                      {Number(entry.balance) >= 0
+                        ? `+₹${Number(entry.balance).toFixed(2)}`
+                        : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
                     </TableCell>
                     <TableCell className={`text-right font-mono font-semibold ${
                       (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'

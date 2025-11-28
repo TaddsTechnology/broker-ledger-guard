@@ -123,6 +123,7 @@ export default function FOCashModulePage() {
           amount: amt,
           type: cashType,
           narration,
+          module: 'fo',
         }),
       });
 

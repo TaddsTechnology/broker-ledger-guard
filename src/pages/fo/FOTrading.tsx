@@ -48,6 +48,7 @@ const FOTrading = () => {
   const [uploadedFiles, setUploadedFiles] = useState<ProcessedFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [billDate, setBillDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [selectedFileIndex, setSelectedFileIndex] = useState<number>(0);
   const [parties, setParties] = useState<Party[]>([]);
   const [brokers, setBrokers] = useState<Broker[]>([]);
@@ -233,39 +234,6 @@ const FOTrading = () => {
     handleFileUpload(e.dataTransfer.files);
   }, [handleFileUpload]);
 
-  // Convert to Excel and download
-  const downloadAsExcel = useCallback((file: ProcessedFile) => {
-    try {
-      const wb = XLSX.utils.book_new();
-      const wsData = [file.headers, ...file.content];
-      const ws = XLSX.utils.aoa_to_sheet(wsData);
-      
-      // Auto-size columns
-      const colWidths = file.headers.map((_, colIndex) => {
-        const maxLength = Math.max(
-          file.headers[colIndex]?.length || 0,
-          ...file.content.map(row => (row[colIndex]?.toString() || '').length)
-        );
-        return { wch: Math.min(maxLength + 2, 50) };
-      });
-      ws['!cols'] = colWidths;
-      
-      XLSX.utils.book_append_sheet(wb, ws, "FO Trade Data");
-      // Generate filename
-      let excelName = file.name;
-      if (file.name.toLowerCase().endsWith('.txt')) {
-        excelName = file.name.replace(/\.txt$/i, '.xlsx');
-      } else if (file.name.toLowerCase().endsWith('.csv')) {
-        excelName = file.name.replace(/\.csv$/i, '.xlsx');
-      } else if (!file.name.toLowerCase().endsWith('.xlsx')) {
-        excelName = file.name.replace(/\.[^/.]+$/, "") + '.xlsx';
-      }
-      XLSX.writeFile(wb, excelName);
-    } catch (error) {
-      alert('Failed to convert to Excel. Please try again.');
-    }
-  }, []);
-
   // Remove file
   const removeFile = useCallback((index: number) => {
     setUploadedFiles(prev => prev.filter((_, i) => i !== index));
@@ -290,6 +258,26 @@ const FOTrading = () => {
           ...file,
           editableHeaders,
           editableContent: newContent
+        };
+      }
+      return file;
+    }));
+  }, []);
+
+  // Add a new empty row to the file data
+  const addRow = useCallback((fileIndex: number) => {
+    setUploadedFiles(prev => prev.map((file, index) => {
+      if (index === fileIndex) {
+        const editableHeaders = file.editableHeaders || [...file.headers];
+        const colCount = editableHeaders.length || (file.content[0]?.length || 0);
+        const editableContent = file.editableContent || file.content.map(row => [...row]);
+        const emptyRow = Array(colCount).fill("");
+        const newContent = [...editableContent, emptyRow];
+        return {
+          ...file,
+          editableHeaders,
+          editableContent: newContent,
+          rowCount: newContent.length,
         };
       }
       return file;
@@ -357,7 +345,7 @@ const FOTrading = () => {
         },
         body: JSON.stringify({
           trades,
-          billDate: new Date().toISOString().split('T')[0]
+          billDate: billDate || new Date().toISOString().split('T')[0],
         }),
       });
       
@@ -384,7 +372,7 @@ const FOTrading = () => {
         variant: "destructive"
       });
     }
-  }, [toast]);
+  }, [toast, billDate]);
 
   // Format file size
   const formatFileSize = (bytes: number) => {
@@ -452,10 +440,21 @@ const FOTrading = () => {
         {uploadedFiles.length > 0 && (
           <Card className="border-purple-200">
             <CardHeader className="flex flex-row items-center justify-between bg-purple-50">
-              <CardTitle className="flex items-center gap-2 text-purple-900">
-                <FileSpreadsheet className="h-5 w-5" />
-                Processed Files ({uploadedFiles.length})
-              </CardTitle>
+              <div className="flex items-center gap-4">
+                <CardTitle className="flex items-center gap-2 text-purple-900">
+                  <FileSpreadsheet className="h-5 w-5" />
+                  Processed Files ({uploadedFiles.length})
+                </CardTitle>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold uppercase text-purple-800">Bill Date</span>
+                  <Input
+                    type="date"
+                    value={billDate}
+                    onChange={(e) => setBillDate(e.target.value)}
+                    className="h-8 w-40 text-xs bg-white border-purple-300"
+                  />
+                </div>
+              </div>
               <Button 
                 variant="outline" 
                 size="sm" 
@@ -586,16 +585,48 @@ const FOTrading = () => {
                             <tbody>
                               {(file.editableContent || file.content).map((row, rowIndex) => (
                                 <tr key={rowIndex} className="border-b hover:bg-purple-50">
-                                  {row.map((cell, colIndex) => (
-                                    <td key={colIndex} className="px-2 py-1 border-r last:border-r-0">
-                                      <Input
-                                        value={cell}
-                                        onChange={(e) => updateCellValue(index, rowIndex, colIndex, e.target.value)}
-                                        className="h-6 px-1 py-0 text-xs"
-                                        onBlur={() => {}}
-                                      />
-                                    </td>
-                                  ))}
+                                  {row.map((cell, colIndex) => {
+                                    const headers = file.editableHeaders || file.headers;
+                                    const headerName = headers[colIndex] || '';
+                                    const normalizedHeader = headerName.replace(/\s+/g, '');
+                                    const isClientIdCol = /clientid/i.test(normalizedHeader);
+                                    const isBrokerIdCol = /brokerid/i.test(normalizedHeader);
+                                    const clientDatalistId = `fo-clientid-options-${index}-${colIndex}`;
+                                    const brokerDatalistId = `fo-brokerid-options-${index}-${colIndex}`;
+                                    return (
+                                      <td key={colIndex} className="px-2 py-1 border-r last:border-r-0">
+                                        <Input
+                                          value={cell}
+                                          list={isClientIdCol ? clientDatalistId : isBrokerIdCol ? brokerDatalistId : undefined}
+                                          onChange={(e) => updateCellValue(index, rowIndex, colIndex, e.target.value.toUpperCase())}
+                                          className="h-6 px-1 py-0 text-xs"
+                                          onBlur={() => {}}
+                                        />
+                                        {isClientIdCol && (
+                                          <datalist id={clientDatalistId}>
+                                            {parties.map((p) => (
+                                              <option
+                                                key={p.id}
+                                                value={p.party_code}
+                                                label={p.name}
+                                              />
+                                            ))}
+                                          </datalist>
+                                        )}
+                                        {isBrokerIdCol && (
+                                          <datalist id={brokerDatalistId}>
+                                            {brokers.map((b) => (
+                                              <option
+                                                key={b.id}
+                                                value={b.broker_code}
+                                                label={b.name}
+                                              />
+                                            ))}
+                                          </datalist>
+                                        )}
+                                      </td>
+                                    );
+                                  })}
                                 </tr>
                               ))}
                             </tbody>
@@ -605,12 +636,11 @@ const FOTrading = () => {
                       
                       <div className="flex gap-2">
                         <Button
-                          onClick={() => downloadAsExcel(file)}
+                          onClick={() => addRow(index)}
                           className="flex-1 bg-purple-600 hover:bg-purple-700"
                           tabIndex={4 + index * 4}
                         >
-                          <Download className="h-4 w-4 mr-2" />
-                          Download as Excel
+                          <span className="text-xs">+ Add Row</span>
                         </Button>
                         <Button
                           onClick={() => addColumn(index)}

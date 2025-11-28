@@ -177,6 +177,17 @@ const FOLedgerBills = () => {
       
       // Enhance entries with bill information if they reference bills
       const enhancedEntries = await enhanceEntriesWithBillInfo(result || []);
+
+      // Sort passbook-wise: oldest date first, then by created_at
+      enhancedEntries.sort((a, b) => {
+        const da = new Date(a.entry_date).getTime();
+        const db = new Date(b.entry_date).getTime();
+        if (da !== db) return da - db;
+        const ca = new Date(a.created_at).getTime();
+        const cb = new Date(b.created_at).getTime();
+        return ca - cb;
+      });
+
       setLedgerEntries(enhancedEntries);
     } catch (error) {
       console.error('Error fetching ledger entries:', error);
@@ -483,10 +494,18 @@ const FOLedgerBills = () => {
                     <TableCell className="text-right font-mono text-accent">
                       {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                     </TableCell>
-                    <TableCell className={`text-right font-mono font-medium ${
-                      entry.party_id ? 'text-red-600' : 'text-green-600'
-                    }`}>
-                      {entry.party_id ? '-' : '+'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
+                    <TableCell
+                      className={`text-right font-mono font-medium ${
+                        Number(entry.credit_amount) > 0
+                          ? 'text-green-600'
+                          : Number(entry.debit_amount) > 0
+                          ? 'text-red-600'
+                          : 'text-muted-foreground'
+                      }`}
+                    >
+                      {Number(entry.balance) >= 0
+                        ? `+₹${Number(entry.balance).toFixed(2)}`
+                        : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">

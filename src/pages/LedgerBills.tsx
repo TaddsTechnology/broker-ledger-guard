@@ -103,10 +103,12 @@ const LedgerBills = () => {
         // Fetch party ledger entries
         result = await ledgerQueries.getByPartyId(selectedPartyId);
       } else if (selectedBrokerId && selectedBrokerId !== "all") {
-        // Fetch broker ledger entries (entries with null party_id that mention broker)
+        // Fetch broker ledger entries (entries with null party_id that belong to broker accounts)
+        // Include both main broker bills (broker_brokerage) and sub-broker profit entries
         result = await ledgerQueries.getAll();
         result = result.filter(entry => 
-          !entry.party_id && entry.particulars.includes('Brokerage')
+          !entry.party_id &&
+          (entry.reference_type === 'broker_brokerage' || entry.reference_type === 'sub_broker_profit')
         );
       } else {
         // Fetch all ledger entries
@@ -115,6 +117,17 @@ const LedgerBills = () => {
       
       // Enhance entries with bill information if they reference bills
       const enhancedEntries = await enhanceEntriesWithBillInfo(result || []);
+
+      // Sort passbook-wise: oldest date first, then by created_at
+      enhancedEntries.sort((a, b) => {
+        const da = new Date(a.entry_date).getTime();
+        const db = new Date(b.entry_date).getTime();
+        if (da !== db) return da - db;
+        const ca = new Date(a.created_at).getTime();
+        const cb = new Date(b.created_at).getTime();
+        return ca - cb;
+      });
+
       setLedgerEntries(enhancedEntries);
     } catch (error) {
       console.error('Error fetching ledger entries:', error);
@@ -403,10 +416,22 @@ const LedgerBills = () => {
                     <TableCell className="text-sm">{new Date(entry.entry_date).toLocaleDateString()}</TableCell>
                     <TableCell>
                       <div className="font-medium">
-                        {entry.party_code ? entry.party_code : (entry.particulars.includes('Sub-Broker Profit') ? 'Sub-Broker' : entry.particulars.includes('Brokerage') ? 'Main Broker' : 'N/A')}
+                        {entry.party_code
+                          ? entry.party_code
+                          : entry.particulars.includes('Sub-Broker Profit')
+                          ? 'Sub-Broker'
+                          : entry.particulars.includes('Brokerage') || entry.particulars.includes('Main Broker Payment')
+                          ? 'Main Broker'
+                          : 'N/A'}
                       </div>
                       <div className="text-sm text-muted-foreground">
-                        {entry.party_name ? entry.party_name : (entry.particulars.includes('Sub-Broker Profit') ? 'Profit Entry' : entry.particulars.includes('Brokerage') ? 'Broker Transaction' : 'N/A')}
+                        {entry.party_name
+                          ? entry.party_name
+                          : entry.particulars.includes('Sub-Broker Profit')
+                          ? 'Profit Entry'
+                          : entry.particulars.includes('Brokerage') || entry.particulars.includes('Main Broker Payment')
+                          ? 'Broker Transaction'
+                          : 'N/A'}
                       </div>
                     </TableCell>
                     <TableCell className="font-medium">
@@ -429,10 +454,18 @@ const LedgerBills = () => {
                     <TableCell className="text-right font-mono text-accent">
                       {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                     </TableCell>
-                    <TableCell className={`text-right font-mono font-medium ${
-                      (entry.particulars.includes('Sub-Broker Profit') || (entry.particulars.includes('Brokerage') && !entry.party_id)) ? 'text-green-600' : 'text-red-600'
-                    }`}>
-                      {(entry.particulars.includes('Sub-Broker Profit') || (entry.particulars.includes('Brokerage') && !entry.party_id)) ? '+' : '-'}₹{Math.abs(Number(entry.balance)).toFixed(2)}
+                    <TableCell
+                      className={`text-right font-mono font-medium ${
+                        Number(entry.credit_amount) > 0
+                          ? 'text-green-600'
+                          : Number(entry.debit_amount) > 0
+                          ? 'text-red-600'
+                          : 'text-muted-foreground'
+                      }`}
+                    >
+                      {Number(entry.balance) >= 0
+                        ? `+₹${Number(entry.balance).toFixed(2)}`
+                        : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">

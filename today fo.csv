@@ -1,0 +1,5 @@
+SecurityName,Side,ClientId,brokerid,Type,BuyAvg,BuyQty,SellQty,SellAvg
+BIOCON,buy,11NTN,4622,T,402,25000,0,0
+BANKNIFTY,sell,11ANK,GPL1,T,0,0,70,60128.2
+SBI,sell,11RMV,11SHMB,T,0,0,750,984.5
+SBI,buy,11RMV,11SHMB,T,984.9,750,0,0

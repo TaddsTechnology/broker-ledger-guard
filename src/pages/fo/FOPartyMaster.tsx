@@ -119,8 +119,8 @@ const FOPartyMaster = () => {
       address: "",
       city: "",
       phone: "",
-      trading_slab: "1.00",
-      delivery_slab: "0.50",
+      trading_slab: "0.10",
+      delivery_slab: "1.30",
       interest_rate: "0.00",
     });
     setEditingParty(null);
