@@ -306,8 +306,8 @@ const FOTrading = () => {
     }));
   }, []);
 
-  // Generate bills from F&O trade data
-  const generateBills = useCallback(async (file: ProcessedFile) => {
+  // Import F&O trades and update positions (no direct bills)
+  const importTrades = useCallback(async (file: ProcessedFile) => {
     try {
       if (!(file.editableContent || file.content).length) {
         toast({
@@ -320,8 +320,8 @@ const FOTrading = () => {
       
       // Show processing message
       toast({
-        title: "F&O Bill Generation Started",
-        description: `Processing F&O trades...`
+        title: "F&O Trades Import Started",
+        description: `Importing F&O trades and updating positions...`
       });
       
       // Use editable data if available, otherwise use original data
@@ -337,8 +337,8 @@ const FOTrading = () => {
         return trade;
       });
       
-      // Call the F&O trades API endpoint
-      const response = await fetch('http://localhost:3001/api/fo/trades/process', {
+      // Call the F&O import API endpoint (no bills here)
+      const response = await fetch('http://localhost:3001/api/fo/trades/import', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -358,17 +358,17 @@ const FOTrading = () => {
       
       // Show success message
       toast({
-        title: "F&O Bills Generated Successfully",
-        description: `Created ${result.clientBills?.length || 0} client bills and updated positions.`
+        title: "F&O Trades Imported Successfully",
+        description: `Imported ${result.importedCount ?? 0} trades and updated positions. Bills can be generated later from contracts.`
       });
       
       // Clear the uploaded files after successful bill generation
       setUploadedFiles([]);
     } catch (error) {
-      console.error('Error generating F&O bills:', error);
+      console.error('Error importing F&O trades:', error);
       toast({
         title: "Error",
-        description: "Failed to generate F&O bills: " + (error as Error).message,
+        description: "Failed to import F&O trades: " + (error as Error).message,
         variant: "destructive"
       });
     }
@@ -650,12 +650,12 @@ const FOTrading = () => {
                           <span className="text-xs">+ Add Column</span>
                         </Button>
                         <Button
-                          onClick={() => generateBills(file)}
+                          onClick={() => importTrades(file)}
                           className="flex-1 bg-purple-600 hover:bg-purple-700"
                           tabIndex={6 + index * 4}
                         >
                           <IndianRupee className="h-4 w-4 mr-2" />
-                          Generate F&O Bills
+                          Import F&O Trades
                         </Button>
                       </div>
                     </>

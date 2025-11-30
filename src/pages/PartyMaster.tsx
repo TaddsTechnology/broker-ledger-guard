@@ -63,8 +63,8 @@ const PartyMaster = () => {
     address: "",
     city: "",
     phone: "",
-    trading_slab: "0.00",
-    delivery_slab: "0.00",
+    trading_slab: "0.10",
+    delivery_slab: "1.30",
     interest_rate: "0.00",
   });
 
@@ -565,7 +565,7 @@ const PartyMaster = () => {
                     value={formData.trading_slab}
                     onChange={(e) => setFormData({ ...formData, trading_slab: e.target.value })}
                     className="bg-secondary h-10"
-                    placeholder="0.00"
+                    placeholder="0.10"
                     tabIndex={8}
                   />
                 </div>
@@ -581,7 +581,7 @@ const PartyMaster = () => {
                     value={formData.delivery_slab}
                     onChange={(e) => setFormData({ ...formData, delivery_slab: e.target.value })}
                     className="bg-secondary h-10"
-                    placeholder="0.00"
+                    placeholder="1.30"
                     tabIndex={9}
                   />
                 </div>

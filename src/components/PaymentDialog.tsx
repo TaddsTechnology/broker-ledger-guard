@@ -65,6 +65,9 @@ export function PaymentDialog({
   const [isLoading, setIsLoading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  
+  // Check if this is a main broker payment
+  const isMainBrokerPayment = partyCode === "MAIN-BROKER";
 
   const formatCurrency = (value: number) => {
     if (isNaN(value)) return "₹0.00";
@@ -145,9 +148,6 @@ export function PaymentDialog({
         return v.toString(16);
       });
 
-      // Check if this is a main broker payment
-      const isMainBrokerPayment = partyId === "main-broker";
-      
       if (isMainBrokerPayment) {
         // For main broker payments, we need to create a direct ledger entry
         try {
@@ -166,8 +166,12 @@ export function PaymentDialog({
                 // Use the F&O broker payment endpoint
                 const endpoint = `http://localhost:3001/api/fo/bills/${billId}/payment`;
                 
+                // For Main Broker, Pay-In should make the balance zero
+                // So we pay the full outstanding amount
+                const paymentAmount = paymentType === 'payin' ? Math.abs(currentBalance) : amountValue;
+                
                 const payload = {
-                  amount: amountValue,
+                  amount: paymentAmount,
                   payment_date: new Date().toISOString().split('T')[0],
                   payment_method: "cash",
                   payment_type: paymentType,
@@ -214,8 +218,12 @@ export function PaymentDialog({
                 // Use the broker payment endpoint
                 const endpoint = `http://localhost:3001/api/bills/${billId}/payment`;
                 
+                // For Main Broker, Pay-In should make the balance zero
+                // So we pay the full outstanding amount
+                const paymentAmount = paymentType === 'payin' ? Math.abs(currentBalance) : amountValue;
+                
                 const payload = {
-                  amount: amountValue,
+                  amount: paymentAmount,
                   payment_date: new Date().toISOString().split('T')[0],
                   payment_method: "cash",
                   payment_type: paymentType,
@@ -292,6 +300,11 @@ export function PaymentDialog({
             payment_type: paymentType,
           };
         }
+        
+        // For regular parties, Pay-Out should make the balance zero
+        // So we pay the full outstanding amount when it's a payout
+        const finalAmount = paymentType === 'payout' ? Math.abs(currentBalance) : amountValue;
+        payload.amount = finalAmount;
         
         const response = await fetch(endpoint, {
           method: 'POST',
@@ -413,7 +426,15 @@ export function PaymentDialog({
               step="0.01"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              placeholder={`Enter ${paymentType === 'payin' ? 'received' : 'paid'} amount`}
+              placeholder={
+                isMainBrokerPayment 
+                  ? (paymentType === 'payin' 
+                      ? `Enter amount (Pay-In clears balance: ₹${Math.abs(currentBalance).toFixed(2)})` 
+                      : "Enter payout amount")
+                  : (paymentType === 'payout' 
+                      ? `Enter amount (Pay-Out clears balance: ₹${Math.abs(currentBalance).toFixed(2)})` 
+                      : "Enter pay-in amount")
+              }
               className={errors.amount ? "border-destructive" : ""}
             />
             {errors.amount && (

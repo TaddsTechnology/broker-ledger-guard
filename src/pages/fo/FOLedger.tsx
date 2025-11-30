@@ -847,9 +847,9 @@ const FOLedger = () => {
                               : 'text-muted-foreground'
                           }`}
                         >
-                          {Number(entry.balance) >= 0
-                            ? `+₹${Number(entry.balance).toFixed(2)}`
-                            : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
+                          {Number(entry.balance) <= 0
+                            ? `+₹${Math.abs(Number(entry.balance)).toFixed(2)}`
+                            : `-₹${Number(entry.balance).toFixed(2)}`}
                         </TableCell>
                         <TableCell className={`text-right text-xs font-mono font-semibold ${
                           (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -929,9 +929,9 @@ const FOLedger = () => {
                           : 'text-muted-foreground'
                       }`}
                     >
-                      {Number(entry.balance) >= 0
-                        ? `+₹${Number(entry.balance).toFixed(2)}`
-                        : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
+                      {Number(entry.balance) <= 0
+                        ? `+₹${Math.abs(Number(entry.balance)).toFixed(2)}`
+                        : `-₹${Number(entry.balance).toFixed(2)}`}
                     </TableCell>
                     <TableCell className={`text-right font-mono font-semibold ${
                       (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'

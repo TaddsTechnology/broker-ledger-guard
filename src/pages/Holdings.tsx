@@ -1,28 +1,16 @@
 import { useState, useEffect } from "react";
-import { PageHeader } from "@/components/PageHeader";
-import { useToast } from "@/hooks/use-toast";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/hooks/use-toast";
 import { partyQueries } from "@/lib/database";
-import { TrendingUp, TrendingDown, Package, History } from "lucide-react";
+import { format } from "date-fns";
+import { History, Package, TrendingDown, TrendingUp, Users } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 
 interface Party {
   id: string;
@@ -33,17 +21,17 @@ interface Party {
 interface Holding {
   id: string;
   party_id: string;
+  party_code?: string;
+  party_name?: string;
   company_id: string;
+  company_code: string;
+  company_name?: string;
+  nse_code?: string;
   quantity: number;
   avg_buy_price: number;
   total_invested: number;
   last_trade_date: string | null;
-  party_code?: string;
-  party_name?: string;
-  company_code: string;
-  company_name: string;
-  nse_code: string | null;
-  broker_codes?: string | null; // e.g. "BRK1, BRK2"
+  broker_codes?: string | null;
   broker_qty_breakdown?: string | null; // e.g. "4622:1000, 2025:1500"
 }
 
@@ -67,11 +55,26 @@ interface Transaction {
   created_at: string;
 }
 
+interface BrokerHolding {
+  broker_code: string;
+  broker_name?: string;
+  company_code: string;
+  company_name?: string;
+  nse_code?: string;
+  total_quantity: number;
+  avg_price: number;
+  total_invested: number;
+  client_count: number;
+  last_trade_date: string | null;
+}
+
 const Holdings = () => {
   const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [brokerHoldings, setBrokerHoldings] = useState<BrokerHolding[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [selectedParty, setSelectedParty] = useState<string>("all");
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingBrokerHoldings, setIsLoadingBrokerHoldings] = useState(true);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(false);
   const [activeTab, setActiveTab] = useState("holdings");
@@ -86,18 +89,23 @@ const Holdings = () => {
 
   useEffect(() => {
     if (selectedParty) {
-      fetchHoldings();
-      if (activeTab === "transactions") {
+      if (activeTab === "holdings") {
+        fetchHoldings();
+      } else if (activeTab === "transactions") {
         fetchTransactions();
       }
     }
-  }, [selectedParty]);
+  }, [selectedParty, activeTab, fromDate, toDate]);
 
   useEffect(() => {
     if (activeTab === "transactions") {
       fetchTransactions();
+    } else if (activeTab === "broker") {
+      fetchBrokerHoldings();
+    } else if (activeTab === "holdings") {
+      fetchHoldings();
     }
-  }, [activeTab]);
+  }, [activeTab, fromDate, toDate]);
 
   const fetchParties = async () => {
     try {
@@ -116,10 +124,17 @@ const Holdings = () => {
   const fetchHoldings = async () => {
     setIsLoading(true);
     try {
+      // Build query parameters
+      const params = new URLSearchParams();
+      if (fromDate) params.append('from_date', fromDate);
+      if (toDate) params.append('to_date', toDate);
+      
+      const queryString = params.toString();
+      
       const endpoint =
         selectedParty === "all" || !selectedParty
-          ? "/api/holdings"
-          : `/api/holdings/party/${selectedParty}`;
+          ? `/api/holdings${queryString ? `?${queryString}` : ''}`
+          : `/api/holdings/party/${selectedParty}${queryString ? `?${queryString}` : ''}`;
       
       const response = await fetch(`http://localhost:3001${endpoint}`);
       if (!response.ok) throw new Error("Failed to fetch holdings");
@@ -135,6 +150,33 @@ const Holdings = () => {
       });
     }
     setIsLoading(false);
+  };
+
+  const fetchBrokerHoldings = async () => {
+    setIsLoadingBrokerHoldings(true);
+    try {
+      // Build query parameters
+      const params = new URLSearchParams();
+      if (fromDate) params.append('from_date', fromDate);
+      if (toDate) params.append('to_date', toDate);
+      
+      const queryString = params.toString();
+      const endpoint = `/api/holdings/broker${queryString ? `?${queryString}` : ''}`;
+      
+      const response = await fetch(`http://localhost:3001${endpoint}`);
+      if (!response.ok) throw new Error("Failed to fetch broker holdings");
+      
+      const result = await response.json();
+      setBrokerHoldings(result || []);
+    } catch (error) {
+      console.error("Error fetching broker holdings:", error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch broker holdings",
+        variant: "destructive",
+      });
+    }
+    setIsLoadingBrokerHoldings(false);
   };
 
   const fetchTransactions = async () => {
@@ -257,12 +299,16 @@ const Holdings = () => {
           </div>
         </div>
 
-        {/* Tabs: Holdings and Transaction History */}
+        {/* Tabs: Holdings, Broker Holdings and Transaction History */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsList className="grid w-full max-w-md grid-cols-3">
             <TabsTrigger value="holdings" className="flex items-center gap-2">
               <Package className="w-4 h-4" />
               Current Holdings
+            </TabsTrigger>
+            <TabsTrigger value="broker" className="flex items-center gap-2">
+              <Users className="w-4 h-4" />
+              Broker Holdings
             </TabsTrigger>
             <TabsTrigger value="transactions" className="flex items-center gap-2">
               <History className="w-4 h-4" />
@@ -270,7 +316,52 @@ const Holdings = () => {
             </TabsTrigger>
           </TabsList>
 
+          {/* Current Holdings Tab */}
           <TabsContent value="holdings" className="space-y-6">
+            {/* Date Filters */}
+            <div className="flex flex-wrap gap-4 mb-6">
+              <div className="space-y-2">
+                <Label htmlFor="holdings-from-date" className="text-xs font-semibold uppercase tracking-wide">
+                  From Date
+                </Label>
+                <Input
+                  id="holdings-from-date"
+                  type="date"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="w-40"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="holdings-to-date" className="text-xs font-semibold uppercase tracking-wide">
+                  To Date
+                </Label>
+                <Input
+                  id="holdings-to-date"
+                  type="date"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="w-40"
+                />
+              </div>
+              <div className="flex items-end gap-2">
+                <Button onClick={fetchHoldings} disabled={isLoading}>
+                  {isLoading ? "Loading..." : "Apply Filters"}
+                </Button>
+                <Button 
+                  variant="outline" 
+                  onClick={() => {
+                    setFromDate("");
+                    setToDate("");
+                    setTimeout(() => fetchHoldings(), 0);
+                  }}
+                  disabled={isLoading}
+                >
+                  Reset
+                </Button>
+              </div>
+            </div>
+            
             {/* Summary Cards */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <Card>
@@ -576,79 +667,282 @@ const Holdings = () => {
                 </CardContent>
               </Card>
             )}
+
+            {/* Closed Positions Table */}
+            {closedPositions.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-lg text-gray-600">Closed Positions</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-6">
+                    {selectedParty === "all" ? (
+                      // Group by party when showing all
+                      Object.entries(closedPositionsByParty).map(([partyName, partyHoldings]) => (
+                        <div key={partyName} className="space-y-2">
+                          <h3 className="text-sm font-semibold text-primary border-b pb-2">
+                            {partyName}
+                          </h3>
+                          <div className="rounded-lg border border-gray-200">
+                            <Table>
+                              <TableHeader>
+                                <TableRow className="bg-gray-50">
+                                  <TableHead>Stock</TableHead>
+                                  <TableHead>NSE Code</TableHead>
+                                  <TableHead className="text-right">Quantity</TableHead>
+                                  <TableHead className="text-right">Avg Price</TableHead>
+                                  <TableHead className="text-right">Total Invested</TableHead>
+                                  <TableHead>Last Trade</TableHead>
+                                  <TableHead>Broker Codes</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {partyHoldings.map((holding) => (
+                                  <TableRow key={holding.id} className="bg-gray-50/30">
+                                    <TableCell>
+                                      <div className="font-medium">{holding.company_code}</div>
+                                      <div className="text-sm text-muted-foreground">
+                                        {holding.company_name}
+                                      </div>
+                                    </TableCell>
+                                    <TableCell className="font-mono text-sm">
+                                      {holding.nse_code || "-"}
+                                    </TableCell>
+                                    <TableCell className="text-right font-mono">
+                                      {Number(holding.quantity).toLocaleString()}
+                                    </TableCell>
+                                    <TableCell className="text-right font-mono">
+                                      ₹{Number(holding.avg_buy_price).toFixed(2)}
+                                    </TableCell>
+                                    <TableCell className="text-right font-mono font-medium">
+                                      ₹{Number(holding.total_invested).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                                    </TableCell>
+                                    <TableCell className="text-sm">
+                                      {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
+                                    </TableCell>
+                                    <TableCell className="text-sm">
+                                      {holding.broker_codes || '-'}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      // Single table for specific party
+                      <div className="rounded-lg border border-gray-200">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="bg-gray-50">
+                              <TableHead>Stock</TableHead>
+                              <TableHead>NSE Code</TableHead>
+                              <TableHead className="text-right">Quantity</TableHead>
+                              <TableHead className="text-right">Avg Price</TableHead>
+                              <TableHead className="text-right">Total Invested</TableHead>
+                              <TableHead>Last Trade</TableHead>
+                              <TableHead>Broker Codes</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {closedPositions.map((holding) => (
+                              <TableRow key={holding.id} className="bg-gray-50/30">
+                                <TableCell>
+                                  <div className="font-medium">{holding.company_code}</div>
+                                  <div className="text-sm text-muted-foreground">
+                                    {holding.company_name}
+                                  </div>
+                                </TableCell>
+                                <TableCell className="font-mono text-sm">
+                                  {holding.nse_code || "-"}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  {Number(holding.quantity).toLocaleString()}
+                                </TableCell>
+                                <TableCell className="text-right font-mono">
+                                  ₹{Number(holding.avg_buy_price).toFixed(2)}
+                                </TableCell>
+                                <TableCell className="text-right font-mono font-medium">
+                                  ₹{Number(holding.total_invested).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                                </TableCell>
+                                <TableCell className="text-sm">
+                                  {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
+                                </TableCell>
+                                <TableCell className="text-sm">
+                                  {holding.broker_codes || '-'}
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* Broker Holdings Tab */}
+          <TabsContent value="broker" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Broker Holdings Summary</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  View holdings aggregated by broker across all clients
+                </p>
+              </CardHeader>
+              
+              {/* Date Filters */}
+              <div className="px-6 pb-4 flex flex-wrap gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="broker-holdings-from-date" className="text-xs font-semibold uppercase tracking-wide">
+                    From Date
+                  </Label>
+                  <Input
+                    id="broker-holdings-from-date"
+                    type="date"
+                    value={fromDate}
+                    onChange={(e) => setFromDate(e.target.value)}
+                    className="w-40"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="broker-holdings-to-date" className="text-xs font-semibold uppercase tracking-wide">
+                    To Date
+                  </Label>
+                  <Input
+                    id="broker-holdings-to-date"
+                    type="date"
+                    value={toDate}
+                    onChange={(e) => setToDate(e.target.value)}
+                    className="w-40"
+                  />
+                </div>
+                <div className="flex items-end gap-2">
+                  <Button onClick={fetchBrokerHoldings} disabled={isLoadingBrokerHoldings}>
+                    {isLoadingBrokerHoldings ? "Loading..." : "Apply Filters"}
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    onClick={() => {
+                      setFromDate("");
+                      setToDate("");
+                      setTimeout(() => fetchBrokerHoldings(), 0);
+                    }}
+                    disabled={isLoadingBrokerHoldings}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </div>
+              <CardContent>
+                {isLoadingBrokerHoldings ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    Loading broker holdings...
+                  </div>
+                ) : brokerHoldings.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    No broker holdings found.
+                  </div>
+                ) : (
+                  <div className="rounded-lg border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/50">
+                          <TableHead>Broker</TableHead>
+                          <TableHead>Stock</TableHead>
+                          <TableHead>NSE Code</TableHead>
+                          <TableHead className="text-right">Quantity</TableHead>
+                          <TableHead className="text-right">Avg Price</TableHead>
+                          <TableHead className="text-right">Total Invested</TableHead>
+                          <TableHead className="text-right">Clients</TableHead>
+                          <TableHead>Last Trade</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {brokerHoldings.map((holding, index) => (
+                          <TableRow key={index}>
+                            <TableCell>
+                              <div className="font-medium">{holding.broker_code}</div>
+                              <div className="text-sm text-muted-foreground">
+                                {holding.broker_name || "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="font-medium">{holding.company_code}</div>
+                              <div className="text-sm text-muted-foreground">
+                                {holding.company_name || "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="font-mono text-sm">
+                              {holding.nse_code || "-"}
+                            </TableCell>
+                            <TableCell className="text-right font-mono font-bold">
+                              {Number(holding.total_quantity).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right font-mono">
+                              ₹{Number(holding.avg_price).toFixed(2)}
+                            </TableCell>
+                            <TableCell className="text-right font-mono font-medium">
+                              ₹{Number(holding.total_invested).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                            </TableCell>
+                            <TableCell className="text-right font-mono">
+                              {holding.client_count}
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
 
           {/* Transaction History Tab */}
           <TabsContent value="transactions" className="space-y-6">
-            {/* Date Filter Section */}
             <Card>
-              <CardContent className="pt-6">
-                <div className="flex items-end gap-4">
-                  <div className="flex-1">
-                    <Label htmlFor="fromDate" className="text-xs font-semibold uppercase">From Date</Label>
+              <CardHeader>
+                <CardTitle className="text-lg">Transaction History</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Detailed history of buy/sell transactions
+                </p>
+              </CardHeader>
+              <CardContent>
+                <div className="flex flex-wrap gap-4 mb-6">
+                  <div className="space-y-2">
+                    <Label htmlFor="from-date" className="text-xs font-semibold uppercase tracking-wide">
+                      From Date
+                    </Label>
                     <Input
-                      id="fromDate"
+                      id="from-date"
                       type="date"
                       value={fromDate}
                       onChange={(e) => setFromDate(e.target.value)}
-                      className="mt-1"
+                      className="w-40"
                     />
                   </div>
-                  <div className="flex-1">
-                    <Label htmlFor="toDate" className="text-xs font-semibold uppercase">To Date</Label>
+                  <div className="space-y-2">
+                    <Label htmlFor="to-date" className="text-xs font-semibold uppercase tracking-wide">
+                      To Date
+                    </Label>
                     <Input
-                      id="toDate"
+                      id="to-date"
                       type="date"
                       value={toDate}
                       onChange={(e) => setToDate(e.target.value)}
-                      className="mt-1"
+                      className="w-40"
                     />
                   </div>
-                  <Button 
-                    onClick={fetchTransactions}
-                    className="bg-blue-600 hover:bg-blue-700"
-                  >
-                    Apply Filter
-                  </Button>
-                  <Button 
-                    onClick={() => {
-                      setFromDate("");
-                      setToDate("");
-                      setTimeout(() => fetchTransactions(), 100);
-                    }}
-                    variant="outline"
-                  >
-                    All Time
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Transaction History (Date-wise Buy/Sell)</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {/* Party filter inside Transactions tab */}
-                <div className="flex items-end gap-4 mb-4">
-                  <div className="w-64">
-                    <Label htmlFor="partyFilter" className="text-xs font-semibold uppercase">Party</Label>
-                    <Select
-                      value={selectedParty}
-                      onValueChange={(value) => setSelectedParty(value)}
-                    >
-                      <SelectTrigger id="partyFilter" className="mt-1 h-9">
-                        <SelectValue placeholder="All Parties" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All Parties</SelectItem>
-                        {parties.map((party) => (
-                          <SelectItem key={party.id} value={party.id}>
-                            {party.party_code} - {party.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                  <div className="flex items-end">
+                    <Button onClick={fetchTransactions} disabled={isLoadingTransactions}>
+                      {isLoadingTransactions ? "Loading..." : "Apply Filters"}
+                    </Button>
                   </div>
                 </div>
 
@@ -666,60 +960,56 @@ const Holdings = () => {
                       <TableHeader>
                         <TableRow className="bg-muted/50">
                           <TableHead>Date</TableHead>
-                          <TableHead>Bill No</TableHead>
                           <TableHead>Client</TableHead>
-                          <TableHead>Company</TableHead>
+                          <TableHead>Stock</TableHead>
                           <TableHead>Type</TableHead>
                           <TableHead className="text-right">Quantity</TableHead>
                           <TableHead className="text-right">Rate</TableHead>
                           <TableHead className="text-right">Amount</TableHead>
-                          <TableHead className="text-right">Running Balance</TableHead>
+                          <TableHead className="text-right">Brokerage</TableHead>
+                          <TableHead>Bill No</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {transactions.map((txn) => (
-                          <TableRow key={txn.id}>
+                        {transactions.map((transaction) => (
+                          <TableRow key={transaction.id}>
                             <TableCell className="text-sm">
-                              {new Date(txn.bill_date).toLocaleDateString('en-IN')}
+                              {new Date(transaction.bill_date).toLocaleDateString()}
                             </TableCell>
                             <TableCell>
-                              <span className="font-mono text-xs text-blue-600 cursor-pointer hover:underline">
-                                {txn.bill_number}
-                              </span>
-                            </TableCell>
-                            <TableCell>
-                              <div className="text-xs">
-                                <div className="font-medium">{txn.party_code}</div>
-                                <div className="text-muted-foreground">{txn.party_name}</div>
+                              <div className="font-medium">{transaction.party_code}</div>
+                              <div className="text-sm text-muted-foreground">
+                                {transaction.party_name}
                               </div>
                             </TableCell>
-                            <TableCell className="font-medium text-sm">
-                              {txn.company_code}
+                            <TableCell className="font-medium">
+                              {transaction.company_code}
                             </TableCell>
                             <TableCell>
-                              <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-semibold ${
-                                txn.type === 'BUY' ? 'bg-green-100 text-green-700' : 
-                                txn.type === 'SELL' ? 'bg-red-100 text-red-700' : 
-                                'bg-gray-100 text-gray-700'
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                transaction.type === 'BUY' 
+                                  ? 'bg-green-100 text-green-800' 
+                                  : transaction.type === 'SELL' 
+                                    ? 'bg-red-100 text-red-800' 
+                                    : 'bg-gray-100 text-gray-800'
                               }`}>
-                                {txn.type}
+                                {transaction.type}
                               </span>
                             </TableCell>
                             <TableCell className="text-right font-mono">
-                              {txn.quantity.toLocaleString()}
+                              {Number(transaction.quantity).toLocaleString()}
                             </TableCell>
-                            <TableCell className="text-right font-mono text-sm">
-                              ₹{txn.rate.toFixed(2)}
+                            <TableCell className="text-right font-mono">
+                              ₹{Number(transaction.rate).toFixed(2)}
                             </TableCell>
                             <TableCell className="text-right font-mono font-medium">
-                              ₹{txn.amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                              ₹{Number(transaction.amount).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                             </TableCell>
-                            <TableCell className={`text-right font-mono font-bold ${
-                              txn.balance > 0 ? 'text-green-600' : 
-                              txn.balance < 0 ? 'text-red-600' : 
-                              'text-gray-600'
-                            }`}>
-                              {txn.balance.toLocaleString()}
+                            <TableCell className="text-right font-mono">
+                              ₹{Number(transaction.brokerage_amount).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                            </TableCell>
+                            <TableCell className="font-mono text-sm">
+                              {transaction.bill_number}
                             </TableCell>
                           </TableRow>
                         ))}

@@ -1,4 +1,4 @@
-﻿﻿const express = require('express');
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 require('dotenv').config();
@@ -78,6 +78,32 @@ app.delete('/api/companies/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to delete company' });
   }
 });
+
+// Cash Transaction API routes
+app.delete('/api/cash/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // First, get the transaction to check if it exists and get its details
+    const transactionResult = await pool.query(
+      'SELECT * FROM cash_transactions WHERE id = $1',
+      [id]
+    );
+    
+    if (transactionResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Cash transaction not found' });
+    }
+    
+    // Delete the cash transaction
+    await pool.query('DELETE FROM cash_transactions WHERE id = $1', [id]);
+    
+    res.json({ message: 'Cash transaction deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting cash transaction:', error);
+    res.status(500).json({ error: 'Failed to delete cash transaction' });
+  }
+});
+
 
 // Party Master API routes
 app.get('/api/parties', async (req, res) => {
@@ -236,7 +262,7 @@ app.delete('/api/settlements/:id', async (req, res) => {
 // Bills API routes
 app.get('/api/bills', async (req, res) => {
   try {
-    const { type } = req.query;
+    const { type, from_date, to_date } = req.query;
     
     let query = `
       SELECT b.*, p.party_code, p.name as party_name 
@@ -245,13 +271,32 @@ app.get('/api/bills', async (req, res) => {
     `;
     
     const params = [];
+    let paramIndex = 1;
+    
+    // Add WHERE clause if we have any filters
+    let hasWhereClause = false;
     
     if (type) {
-      query += ' WHERE b.bill_type = $1';
+      query += ` WHERE b.bill_type = $${paramIndex}`;
       params.push(type);
+      paramIndex++;
+      hasWhereClause = true;
     }
     
-    query += ' ORDER BY b.created_at DESC';
+    if (from_date) {
+      query += hasWhereClause ? ` AND b.bill_date >= $${paramIndex}` : ` WHERE b.bill_date >= $${paramIndex}`;
+      params.push(from_date);
+      paramIndex++;
+      hasWhereClause = true;
+    }
+    
+    if (to_date) {
+      query += hasWhereClause ? ` AND b.bill_date <= $${paramIndex}` : ` WHERE b.bill_date <= $${paramIndex}`;
+      params.push(to_date);
+      paramIndex++;
+    }
+    
+    query += ' ORDER BY b.bill_date DESC, b.created_at DESC';
     
     const result = await pool.query(query, params);
     res.json(result.rows);
@@ -436,12 +481,33 @@ app.get('/api/fo/bills/outstanding/:partyId', async (req, res) => {
 // Ledger API routes
 app.get('/api/ledger', async (req, res) => {
   try {
-    const result = await pool.query(`
+    const { from_date, to_date } = req.query;
+    
+    let query = `
       SELECT l.*, p.party_code, p.name as party_name 
       FROM ledger_entries l 
       LEFT JOIN party_master p ON l.party_id = p.id 
-      ORDER BY l.entry_date DESC, l.created_at DESC
-    `);
+    `;
+    
+    const queryParams = [];
+    
+    if (from_date || to_date) {
+      query += ' WHERE 1=1';
+      
+      if (from_date) {
+        queryParams.push(from_date);
+        query += ` AND l.entry_date >= $${queryParams.length}`;
+      }
+      
+      if (to_date) {
+        queryParams.push(to_date);
+        query += ` AND l.entry_date <= $${queryParams.length}`;
+      }
+    }
+    
+    query += ' ORDER BY l.entry_date DESC, l.created_at DESC';
+    
+    const result = await pool.query(query, queryParams);
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching ledger entries:', error);
@@ -452,10 +518,26 @@ app.get('/api/ledger', async (req, res) => {
 app.get('/api/ledger/party/:partyId', async (req, res) => {
   try {
     const { partyId } = req.params;
-    const result = await pool.query(
-      'SELECT * FROM ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC',
-      [partyId]
-    );
+    const { from_date, to_date } = req.query;
+    
+    let query = 'SELECT * FROM ledger_entries WHERE party_id = $1';
+    const queryParams = [partyId];
+    
+    if (from_date || to_date) {
+      if (from_date) {
+        queryParams.push(from_date);
+        query += ` AND entry_date >= $${queryParams.length}`;
+      }
+      
+      if (to_date) {
+        queryParams.push(to_date);
+        query += ` AND entry_date <= $${queryParams.length}`;
+      }
+    }
+    
+    query += ' ORDER BY entry_date DESC, created_at DESC';
+    
+    const result = await pool.query(query, queryParams);
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching party ledger entries:', error);
@@ -1483,6 +1565,23 @@ app.post('/api/stock-trades/process', async (req, res) => {
       if (!shouldGenerateBill) {
         console.log(`Skipping client bill for ${party.party_code} due to zero total (likely carry forward)`);
       } else {
+        // Before creating a new bill, check if an identical bill already exists for this
+        // party, date and amount (idempotency guard for repeated uploads of same file).
+        const existingBillRes = await client.query(
+          `SELECT id, bill_number FROM bills
+           WHERE party_id = $1 AND bill_date = $2 AND bill_type = 'party'
+             AND ABS(total_amount - $3) < 0.01
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          [party.id, billDateStr, finalClientBalance]
+        );
+
+        if (existingBillRes.rows.length > 0) {
+          console.log(`Skipping duplicate bill for ${party.party_code} on ${billDateStr} amount=${finalClientBalance.toFixed(2)} (existing bill ${existingBillRes.rows[0].bill_number})`);
+          // Do not create another bill / ledger / bill_items for this exact combination
+          continue;
+        }
+
         // Update the running balance
         const newClientBalance = currentClientBalance + finalClientBalance;
 
@@ -1555,26 +1654,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
           brokerGroups[key].totalBrokerageAllClients += (item.brokerage_amount || 0);
         }
 
-        // Insert bill items with trade_type
-        for (const item of billItems) {
-          await client.query(
-            'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
-            [
-              billId,
-              item.description,
-              item.quantity,
-              item.rate,
-              item.amount,
-              item.client_code,
-              item.company_code,
-              item.brokerage_rate_pct,
-              item.brokerage_amount,
-              item.trade_type,
-            ]
-          );
-        }
-
-        // Insert bill items with trade_type
+        // Insert bill items with trade_type (once)
         for (const item of billItems) {
           await client.query(
             'INSERT INTO bill_items (bill_id, description, quantity, rate, amount, client_code, company_code, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
@@ -1729,8 +1809,13 @@ app.post('/api/stock-trades/process', async (req, res) => {
       brokerBrokerageAmount = (totalTradingAmount * brokerTradingSlab / 100) + 
                               (totalDeliveryAmount * brokerDeliverySlab / 100);
       
-      // Main broker bill total = Net Trade Amount + Broker's Brokerage
-      const mainBrokerBillTotal = Math.abs(netTradeAmount) + brokerBrokerageAmount;
+      // Main broker bill total logic:
+      // - For net BUY (we buy from market via broker): broker bill = Trade + Broker's Brokerage
+      // - For net SELL (we sell via broker): broker bill = Trade - Broker's Brokerage (broker keeps brokerage from proceeds)
+      const grossTrade = Math.abs(netTradeAmount);
+      const mainBrokerBillTotal = netTradeAmount >= 0
+        ? grossTrade + brokerBrokerageAmount   // net BUY
+        : grossTrade - brokerBrokerageAmount;  // net SELL
       
       // Sub-broker profit = Total CLIENT brokerage (what client paid to us)
       //                     minus Main Broker's brokerage (their share)
@@ -1787,18 +1872,29 @@ app.post('/api/stock-trades/process', async (req, res) => {
       if (brokerBalanceQuery.rows.length > 0) {
         brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
       }
-      // Track full broker bill (net trade + brokerage) in the broker ledger balance
-      brokerBalance += mainBrokerBillTotal;
-
-      // Create Main Broker ledger entry with full amount as credit (net trade + brokerage)
+      // For main broker, the balance should be negative as per requirement
+      // Money owed to main broker should be shown as negative balance
+      let debitForBroker = 0;
+      let creditForBroker = 0;
+      
+      if (netTradeAmount > 0) {
+        // Net BUY → broker has to receive money from us → credit
+        creditForBroker = mainBrokerBillTotal;
+        brokerBalance -= mainBrokerBillTotal;
+      } else {
+        // Net SELL or flat → broker payable reduces / we owe less → debit
+        debitForBroker = mainBrokerBillTotal;
+        brokerBalance -= mainBrokerBillTotal;
+      }
+ 
       const brokerLedgerResult = await client.query(
         'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
           `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${brokerBrokerageAmount.toFixed(2)}`,
-          0,
-          mainBrokerBillTotal,
+          debitForBroker,
+          creditForBroker,
           brokerBalance,
           'broker_brokerage',
           brokerBillId
@@ -1815,7 +1911,9 @@ app.post('/api/stock-trades/process', async (req, res) => {
       if (profitBalanceQuery.rows.length > 0) {
         subBrokerProfitBalance = Number(profitBalanceQuery.rows[0].balance) || 0;
       }
-      subBrokerProfitBalance += subBrokerProfit;
+      // For sub-broker profit, the balance should be negative as per requirement
+      // Profit for sub-broker should be shown as negative balance
+      subBrokerProfitBalance -= subBrokerProfit;
       
       const profitLedgerResult = await client.query(
         'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
@@ -1911,18 +2009,48 @@ app.get('/api/summary/parties', async (req, res) => {
 
     const sql = `
       SELECT
-        COALESCE(p.party_code, CASE WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER' ELSE NULL END) AS party_code,
-        COALESCE(p.name,       CASE WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'   ELSE NULL END) AS party_name,
+        COALESCE(
+          p.party_code,
+          CASE 
+            WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+            WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
+            ELSE NULL
+          END
+        ) AS party_code,
+        COALESCE(
+          p.name,
+          CASE 
+            WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
+            WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'Sub Broker Profit'
+            ELSE NULL
+          END
+        ) AS party_name,
         COALESCE(SUM(l.debit_amount), 0)  AS total_debit,
         COALESCE(SUM(l.credit_amount), 0) AS total_credit,
-        -- Closing = Credit - Debit (if Debit > Credit → negative, if Credit > Debit → positive)
-        COALESCE(SUM(l.credit_amount - l.debit_amount), 0) AS closing_balance
+        -- Closing = Debit - Credit so that client receivable (they owe us) shows as positive,
+        -- and payable (we owe them / main broker) shows as negative.
+        COALESCE(SUM(l.debit_amount - l.credit_amount), 0) AS closing_balance
       FROM ${table} l
       LEFT JOIN party_master p ON l.party_id = p.id
       WHERE (l.party_id IS NOT NULL)
-         OR (l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment'))
-      GROUP BY COALESCE(p.party_code, CASE WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER' ELSE NULL END),
-               COALESCE(p.name,       CASE WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'   ELSE NULL END)
+         OR (l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment','sub_broker_profit'))
+      GROUP BY 
+        COALESCE(
+          p.party_code,
+          CASE 
+            WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+            WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
+            ELSE NULL
+          END
+        ),
+        COALESCE(
+          p.name,
+          CASE 
+            WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
+            WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'Sub Broker Profit'
+            ELSE NULL
+          END
+        )
       ORDER BY party_code
     `;
 
@@ -1984,8 +2112,10 @@ app.get('/api/dashboard/recent-bills', async (req, res) => {
 // Stock Holdings API endpoints
 app.get('/api/holdings', async (req, res) => {
   try {
-    // Include all holdings, even zero quantity ones, and enrich with last trade date and broker breakdown
-    const result = await pool.query(`
+    const { from_date, to_date } = req.query;
+    
+    // Base query for holdings
+    let baseQuery = `
       WITH raw AS (
         -- Derive per-broker net quantity and last trade date per (party, company, broker)
         SELECT 
@@ -2004,6 +2134,19 @@ app.get('/api/holdings', async (req, res) => {
         INNER JOIN bills b ON bi.bill_id = b.id
         INNER JOIN party_master pm ON UPPER(pm.party_code) = UPPER(bi.client_code)
         WHERE b.bill_type = 'broker' AND b.broker_code IS NOT NULL
+    `;
+    
+    // Add date filters if provided
+    if (from_date || to_date) {
+      if (from_date) {
+        baseQuery += ` AND b.bill_date >= '${from_date}'`;
+      }
+      if (to_date) {
+        baseQuery += ` AND b.bill_date <= '${to_date}'`;
+      }
+    }
+    
+    baseQuery += `
         GROUP BY pm.id, bi.company_code, b.broker_code
       ),
       tx AS (
@@ -2031,7 +2174,9 @@ app.get('/api/holdings', async (req, res) => {
       LEFT JOIN company_master c ON h.company_id = c.id
       LEFT JOIN tx ON tx.party_id = h.party_id AND tx.company_code = c.company_code
       ORDER BY h.quantity DESC, p.name, c.name
-    `);
+    `;
+    
+    const result = await pool.query(baseQuery);
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching holdings:', error);
@@ -2042,8 +2187,10 @@ app.get('/api/holdings', async (req, res) => {
 app.get('/api/holdings/party/:partyId', async (req, res) => {
   try {
     const { partyId } = req.params;
-    // Include all holdings, even zero quantity ones, and enrich with last trade date and broker breakdown
-    const result = await pool.query(`
+    const { from_date, to_date } = req.query;
+    
+    // Base query for holdings
+    let baseQuery = `
       WITH raw AS (
         -- Derive per-broker net quantity and last trade date per (party, company, broker)
         SELECT 
@@ -2062,6 +2209,22 @@ app.get('/api/holdings/party/:partyId', async (req, res) => {
         INNER JOIN bills b ON bi.bill_id = b.id
         INNER JOIN party_master pm ON UPPER(pm.party_code) = UPPER(bi.client_code)
         WHERE b.bill_type = 'broker' AND b.broker_code IS NOT NULL
+    `;
+    
+    // Add party filter
+    baseQuery += ` AND pm.id = '${partyId}'`;
+    
+    // Add date filters if provided
+    if (from_date || to_date) {
+      if (from_date) {
+        baseQuery += ` AND b.bill_date >= '${from_date}'`;
+      }
+      if (to_date) {
+        baseQuery += ` AND b.bill_date <= '${to_date}'`;
+      }
+    }
+    
+    baseQuery += `
         GROUP BY pm.id, bi.company_code, b.broker_code
       ),
       tx AS (
@@ -2087,7 +2250,9 @@ app.get('/api/holdings/party/:partyId', async (req, res) => {
       LEFT JOIN tx ON tx.party_id = h.party_id AND tx.company_code = c.company_code
       WHERE h.party_id = $1
       ORDER BY h.quantity DESC, c.name
-    `, [partyId]);
+    `;
+    
+    const result = await pool.query(baseQuery, [partyId]);
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching party holdings:', error);
@@ -2201,6 +2366,105 @@ app.get('/api/holdings/transactions', async (req, res) => {
   } catch (error) {
     console.error('Error fetching transaction history:', error);
     res.status(500).json({ error: 'Failed to fetch transaction history' });
+  }
+});
+
+// Get broker holdings summary (aggregated by broker across all clients)
+app.get('/api/holdings/broker', async (req, res) => {
+  try {
+    const { from_date, to_date } = req.query;
+    
+    // Base query for broker holdings
+    let baseQuery = `
+      WITH broker_raw AS (
+        -- Derive per-broker net quantity and last trade date per (broker, company)
+        SELECT 
+          b.broker_code,
+          bi.company_code,
+          MAX(b.bill_date) AS last_trade_date,
+          SUM(
+            CASE 
+              WHEN UPPER(bi.description) LIKE '%BUY%' THEN COALESCE(bi.quantity,0)
+              WHEN UPPER(bi.description) LIKE '%SELL%' THEN -COALESCE(bi.quantity,0)
+              ELSE 0
+            END
+          ) AS broker_net_qty,
+          COUNT(DISTINCT pm.id) AS client_count
+        FROM bill_items bi
+        INNER JOIN bills b ON bi.bill_id = b.id
+        INNER JOIN party_master pm ON UPPER(pm.party_code) = UPPER(bi.client_code)
+        WHERE b.bill_type = 'broker' AND b.broker_code IS NOT NULL
+    `;
+    
+    // Add date filters if provided
+    if (from_date || to_date) {
+      if (from_date) {
+        baseQuery += ` AND b.bill_date >= '${from_date}'`;
+      }
+      if (to_date) {
+        baseQuery += ` AND b.bill_date <= '${to_date}'`;
+      }
+    }
+    
+    baseQuery += `
+        GROUP BY b.broker_code, bi.company_code
+      ),
+      broker_summary AS (
+        SELECT 
+          broker_code,
+          company_code,
+          MAX(last_trade_date) AS last_trade_date,
+          SUM(broker_net_qty) AS total_quantity,
+          COUNT(DISTINCT client_count) AS client_count
+        FROM broker_raw
+        GROUP BY broker_code, company_code
+      ),
+      company_details AS (
+        SELECT 
+          c.company_code,
+          c.name as company_name,
+          c.nse_code
+        FROM company_master c
+      ),
+      broker_details AS (
+        SELECT 
+          bm.broker_code,
+          bm.name as broker_name
+        FROM broker_master bm
+      )
+      SELECT 
+        bs.broker_code,
+        bd.broker_name,
+        bs.company_code,
+        cd.company_name,
+        cd.nse_code,
+        bs.total_quantity,
+        COALESCE(AVG(bi.rate), 0) AS avg_price,
+        COALESCE(SUM(bi.amount), 0) AS total_invested,
+        bs.client_count,
+        bs.last_trade_date
+      FROM broker_summary bs
+      LEFT JOIN company_details cd ON bs.company_code = cd.company_code
+      LEFT JOIN broker_details bd ON bs.broker_code = bd.broker_code
+      LEFT JOIN bills b ON b.broker_code = bs.broker_code AND b.bill_type = 'broker'
+      LEFT JOIN bill_items bi ON bi.bill_id = b.id AND bi.company_code = bs.company_code
+      GROUP BY 
+        bs.broker_code, 
+        bd.broker_name, 
+        bs.company_code, 
+        cd.company_name, 
+        cd.nse_code, 
+        bs.total_quantity, 
+        bs.client_count, 
+        bs.last_trade_date
+      ORDER BY bs.total_quantity DESC, bs.broker_code, bs.company_code
+    `;
+    
+    const result = await pool.query(baseQuery);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching broker holdings:', error);
+    res.status(500).json({ error: 'Failed to fetch broker holdings' });
   }
 });
 
@@ -2405,7 +2669,7 @@ app.post('/api/payments', async (req, res) => {
         `SELECT balance FROM ledger_entries 
          WHERE party_id = $1
          ORDER BY entry_date DESC, created_at DESC LIMIT 1`,
-        [party_id]
+        [actualPartyId]
       );
       
       const newBalance = partyLedgerResult.rows.length > 0 ? 
@@ -2423,24 +2687,43 @@ app.post('/api/payments', async (req, res) => {
     }
     
     // Validate party exists
-    const partyResult = await client.query(
-      'SELECT id, party_code FROM party_master WHERE id = $1',
-      [party_id]
-    );
+    // Handle special case for main broker payments
+    let actualPartyId = party_id;
+    let party;
     
-    if (partyResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ error: 'Party not found' });
+    if (party_id === 'main-broker') {
+      // Look up the actual main broker party ID
+      const mainBrokerResult = await client.query(
+        `SELECT id, party_code FROM party_master WHERE party_code = 'MAIN-BROKER' LIMIT 1`
+      );
+      
+      if (mainBrokerResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Main broker party not found' });
+      }
+      
+      party = mainBrokerResult.rows[0];
+      actualPartyId = party.id;
+    } else {
+      const partyResult = await client.query(
+        'SELECT id, party_code FROM party_master WHERE id = $1',
+        [party_id]
+      );
+      
+      if (partyResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'Party not found' });
+      }
+      
+      party = partyResult.rows[0];
     }
-    
-    const party = partyResult.rows[0];
     
     // Validate bill if provided
     let bill = null;
     if (apply_to_bill_id) {
       const billResult = await client.query(
         'SELECT id, total_amount, paid_amount, status FROM bills WHERE id = $1 AND party_id = $2',
-        [apply_to_bill_id, party_id]
+        [apply_to_bill_id, actualPartyId]
       );
       
       if (billResult.rows.length === 0) {
@@ -2465,7 +2748,7 @@ app.post('/api/payments', async (req, res) => {
       `SELECT balance FROM ledger_entries 
        WHERE party_id = $1
        ORDER BY entry_date DESC, created_at DESC LIMIT 1`,
-      [party_id]
+      [actualPartyId]
     );
     
     const currentPartyBalance = partyLedgerResult.rows.length > 0 ? 
@@ -2531,7 +2814,7 @@ app.post('/api/payments', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
-        party_id, 
+        actualPartyId, 
         date, 
         particulars,
         debitAmount,
@@ -2615,7 +2898,7 @@ app.post('/api/payments', async (req, res) => {
       [
         payment_id,
         paymentNumber,
-        party_id,
+        actualPartyId,
         apply_to_bill_id,
         date,
         amountValue,
@@ -3714,6 +3997,320 @@ app.delete('/api/fo/instruments/:id', async (req, res) => {
   }
 });
 
+// Import F&O trades from CSV and create contracts with broker information
+app.post('/api/fo/trades/import', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { trades, billDate } = req.body || {};
+    if (!Array.isArray(trades) || trades.length === 0) {
+      return res.status(400).json({ error: 'trades array is required' });
+    }
+
+    await client.query('BEGIN');
+
+    const now = new Date();
+    let billDateStr = now.toISOString().slice(0, 10);
+    if (typeof billDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(billDate)) {
+      billDateStr = billDate;
+    }
+
+    const imported = [];
+    const clientGroups = {};
+
+    // Group trades by client
+    for (const trade of trades) {
+      const clientId = (trade.ClientId || trade.clientId || '').toString().trim().toUpperCase();
+      if (!clientId) continue;
+      
+      if (!clientGroups[clientId]) clientGroups[clientId] = [];
+      clientGroups[clientId].push(trade);
+    }
+
+    // Process each client
+    for (const [clientId, clientTrades] of Object.entries(clientGroups)) {
+      // Get party details
+      const partyQuery = await client.query(
+        'SELECT id, party_code, name, trading_slab, delivery_slab FROM party_master WHERE UPPER(party_code) = $1',
+        [clientId]
+      );
+
+      if (partyQuery.rows.length === 0) {
+        console.warn(`Party not found: ${clientId}`);
+        continue;
+      }
+
+      const party = partyQuery.rows[0];
+
+      // Process each F&O trade for this client
+      for (const trade of clientTrades) {
+        let symbol = (trade.Symbol || trade.symbol || trade.SecurityName || trade.securityName || '').toString().toUpperCase();
+        let instrumentType = (trade.InstrumentType || trade.instrumentType || 'FUT').toString().toUpperCase();
+        let expiryDate = trade.ExpiryDate || trade.expiryDate || '';
+        let strikePrice = Number(trade.StrikePrice || trade.strikePrice || 0);
+        
+        // Parse ExpiryDate if it's in format like "25NOV2025" or "25NOV25"
+        if (expiryDate && typeof expiryDate === 'string') {
+          const expiryMatch = expiryDate.match(/(\d{2})([A-Z]{3})(\d{2,4})/);
+          if (expiryMatch) {
+            const day = expiryMatch[1];
+            const month = expiryMatch[2];
+            let year = expiryMatch[3];
+            if (year.length === 2) year = '20' + year;
+            
+            const monthMap = {
+              'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
+              'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
+              'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
+            };
+            const monthNum = monthMap[month] || '01';
+            expiryDate = `${year}-${monthNum}-${day}`;
+          }
+        }
+        
+        // Parse SecurityName if Symbol is not provided (format: NIFTY25OCT24800PE)
+        const securityName = (trade.SecurityName || trade.securityName || '').toString().toUpperCase();
+        if (securityName && !symbol) {
+          // Try to match F&O format: NIFTY25OCT24800PE
+          const foMatch = securityName.match(/^([A-Z]+)(\d{2})([A-Z]{3})(\d+)(CE|PE)$/);
+          if (foMatch) {
+            symbol = foMatch[1];
+            const day = foMatch[2];
+            const month = foMatch[3];
+            strikePrice = Number(foMatch[4]);
+            instrumentType = foMatch[5];
+            
+            const monthMap = {
+              'JAN': '01', 'FEB': '02', 'MAR': '03', 'APR': '04',
+              'MAY': '05', 'JUN': '06', 'JUL': '07', 'AUG': '08',
+              'SEP': '09', 'OCT': '10', 'NOV': '11', 'DEC': '12'
+            };
+            const monthNum = monthMap[month] || '01';
+            
+            const now = new Date();
+            const currentYear = now.getFullYear();
+            const currentMonth = now.getMonth() + 1;
+            const expiryMonth = parseInt(monthNum);
+            const year = (expiryMonth < currentMonth) ? currentYear + 1 : currentYear;
+            
+            expiryDate = `${year}-${monthNum}-${day}`;
+          } else {
+            symbol = securityName;
+            instrumentType = 'FUT';
+            
+            const rawTradeDate = trade.TradeDate || trade.tradeDate || trade.Date || billDateStr;
+            if (rawTradeDate) {
+              const d = new Date(rawTradeDate);
+              if (!isNaN(d.getTime())) {
+                expiryDate = d.toISOString().slice(0, 10);
+              } else {
+                expiryDate = billDateStr;
+              }
+            } else {
+              expiryDate = billDateStr;
+            }
+            
+            strikePrice = 0;
+          }
+        }
+        
+        const side = (trade.Side || trade.side || '').toString().toUpperCase();
+        
+        // Get quantity (in lots)
+        let lotQuantity = 0;
+        if (side === 'BUY') {
+          lotQuantity = Number(trade.BuyQty || trade.Quantity || trade.quantity || 0);
+        } else if (side === 'SELL') {
+          lotQuantity = Number(trade.SellQty || trade.Quantity || trade.quantity || 0);
+        } else {
+          lotQuantity = Number(trade.BuyQty || trade.SellQty || trade.Quantity || trade.quantity || 0);
+        }
+        
+        // Get price
+        let price = 0;
+        if (side === 'BUY') {
+          price = Number(trade.BuyAvg || trade.Price || trade.price || 0);
+        } else if (side === 'SELL') {
+          price = Number(trade.SellAvg || trade.Price || trade.price || 0);
+        } else {
+          price = Number(trade.BuyAvg || trade.SellAvg || trade.Price || trade.price || 0);
+        }
+        
+        const type = (trade.Type || trade.type || 'T').toString().toUpperCase();
+        const isCarryForward = type === 'CF';
+        
+        // Skip if quantity or price is 0
+        if (lotQuantity === 0 || price === 0) {
+          console.warn(`Skipping F&O trade with zero quantity or price: ${symbol}`);
+          continue;
+        }
+
+        // Find instrument in database
+        let instrument = null;
+        let lotSize = 1;
+        
+        let instrumentQuery;
+        const expiryDateValue = expiryDate || null;
+        
+        if (instrumentType === 'FUT') {
+          instrumentQuery = await client.query(
+            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND (expiry_date = $3 OR ($3 IS NULL AND expiry_date IS NULL)) AND is_active = true',
+            [symbol, 'FUT', expiryDateValue]
+          );
+        } else if (instrumentType === 'CE' || instrumentType === 'PE') {
+          instrumentQuery = await client.query(
+            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND (expiry_date = $3 OR ($3 IS NULL AND expiry_date IS NULL)) AND strike_price = $4 AND is_active = true',
+            [symbol, instrumentType, expiryDateValue, strikePrice]
+          );
+        }
+        
+        if (instrumentQuery && instrumentQuery.rows.length > 0) {
+          instrument = instrumentQuery.rows[0];
+          lotSize = Number(instrument.lot_size) || 1;
+        } else {
+          // Auto-create instrument if not found
+          console.log(`Auto-creating F&O instrument: ${symbol} ${instrumentType}`);
+          
+          // Ensure we have a valid expiry date, default to 1 month from now if missing
+          let validExpiryDate = expiryDateValue;
+          if (!validExpiryDate) {
+            const defaultExpiry = new Date();
+            defaultExpiry.setMonth(defaultExpiry.getMonth() + 1);
+            validExpiryDate = defaultExpiry.toISOString().slice(0, 10);
+          }
+          
+          let displayName = symbol;
+          if (validExpiryDate) {
+            const expiryParts = validExpiryDate.split('-');
+            if (expiryParts.length === 3) {
+              const monthNum = expiryParts[1];
+              const day = expiryParts[2];
+              const monthMap = {
+                '01': 'JAN', '02': 'FEB', '03': 'MAR', '04': 'APR',
+                '05': 'MAY', '06': 'JUN', '07': 'JUL', '08': 'AUG',
+                '09': 'SEP', '10': 'OCT', '11': 'NOV', '12': 'DEC'
+              };
+              const monthStr = monthMap[monthNum] || 'JAN';
+              displayName = `${symbol}${day}${monthStr}`;
+              if (strikePrice) {
+                displayName += Math.round(strikePrice).toString();
+              }
+            }
+          }
+          if (instrumentType === 'CE' || instrumentType === 'PE') {
+            displayName += instrumentType;
+          }
+          
+          const newInstrumentResult = await client.query(
+            `INSERT INTO fo_instrument_master 
+              (symbol, instrument_type, expiry_date, strike_price, lot_size, segment, underlying_asset, display_name, is_active) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+             RETURNING *`,
+            [
+              symbol,
+              instrumentType,
+              validExpiryDate,
+              strikePrice || null,
+              lotSize,
+              'NFO',
+              symbol,
+              displayName,
+              true
+            ]
+          );
+          instrument = newInstrumentResult.rows[0];
+        }
+
+        // Calculate actual quantity (lots * lot size)
+        const actualQuantity = lotQuantity * lotSize;
+        const amount = actualQuantity * price;
+        
+        // Calculate brokerage (CF has 0 brokerage, others have normal brokerage)
+        const brokerageRate = isCarryForward ? 0 : (type === 'T' ? Number(party.trading_slab) : Number(party.delivery_slab));
+        const brokerageAmount = isCarryForward ? 0 : (amount * brokerageRate) / 100;
+
+        // Get broker information
+        let brokerId = null;
+        let brokerCode = null;
+        
+        // Check for broker ID in various formats
+        const brokerIdRaw = trade.brokerid || trade.brokerId || trade.BrokerId || trade.BrokerID || '';
+        if (brokerIdRaw) {
+          // Try to find broker by ID
+          const brokerQuery = await client.query(
+            'SELECT id, broker_code FROM broker_master WHERE id = $1 OR UPPER(broker_code) = $2',
+            [brokerIdRaw, brokerIdRaw.toString().toUpperCase()]
+          );
+          
+          if (brokerQuery.rows.length > 0) {
+            brokerId = brokerQuery.rows[0].id;
+            brokerCode = brokerQuery.rows[0].broker_code;
+          } else {
+            // If broker not found by ID, try to find by code
+            const brokerCodeRaw = brokerIdRaw.toString().toUpperCase();
+            const brokerByCodeQuery = await client.query(
+              'SELECT id, broker_code FROM broker_master WHERE UPPER(broker_code) = $1',
+              [brokerCodeRaw]
+            );
+            
+            if (brokerByCodeQuery.rows.length > 0) {
+              brokerId = brokerByCodeQuery.rows[0].id;
+              brokerCode = brokerByCodeQuery.rows[0].broker_code;
+            } else {
+              console.warn(`Broker not found: ${brokerIdRaw}`);
+            }
+          }
+        }
+
+        // Create contract with broker information
+        const tradeDateValue = trade.TradeDate || trade.tradeDate || trade.Date || billDateStr;
+        const contractNumber = `FO-${party.party_code}-${instrument.symbol}-${new Date(tradeDateValue).getTime()}-${Math.floor(Math.random() * 1000)}`;
+        
+        const contractResult = await client.query(
+          `INSERT INTO fo_contracts 
+            (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date, 
+             trade_type, quantity, price, amount, brokerage_rate, brokerage_amount, status, notes)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) 
+           RETURNING *`,
+          [
+            contractNumber, 
+            party.id, 
+            instrument.id, 
+            brokerId, 
+            brokerCode,
+            tradeDateValue,
+            type,
+            actualQuantity,
+            price,
+            amount,
+            brokerageRate,
+            brokerageAmount,
+            'open',
+            'Imported from trading file'
+          ]
+        );
+
+        imported.push({ 
+          clientId, 
+          instrumentId: instrument.id, 
+          qty: actualQuantity, 
+          price,
+          brokerId,
+          brokerCode
+        });
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, importedCount: imported.length, importedData: imported });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error importing F&O trades:', error);
+    res.status(500).json({ error: 'Failed to import F&O trades', details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
 // Process F&O trades and create ledger entries, positions, and bills
 app.post('/api/fo/trades/process', async (req, res) => {
   const client = await pool.connect();
@@ -4607,9 +5204,6 @@ app.post('/api/fo/trades/process', async (req, res) => {
       const hasNormalTrades = allBrokerBillItems.length > 0; // Non-CF items exist
       
       // Create main broker ledger entry
-      // For ledger balance we only want main broker's brokerage (income), not full trade amount
-      const ledgerAmount = mainBrokerBrokerage;
-      
       let brokerBrokerageBalance = 0;
       const brokerageBalanceQuery = await client.query(
         'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
@@ -4618,16 +5212,18 @@ app.post('/api/fo/trades/process', async (req, res) => {
       if (brokerageBalanceQuery.rows.length > 0) {
         brokerBrokerageBalance = Number(brokerageBalanceQuery.rows[0].balance) || 0;
       }
-      brokerBrokerageBalance += ledgerAmount;
-
+      // For main broker, the balance should be negative as per requirement
+      // Money owed to main broker should be shown as negative balance
+      brokerBrokerageBalance -= mainBrokerBrokerage;
+      
       const brokerageEntryResult = await client.query(
         'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
-          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
-          0,
-          ledgerAmount,
+          `Main Broker Bill ${brokerBillNumber} - Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
+          0,                    // No debit
+          mainBrokerBrokerage,  // Credit - money owed to main broker (shown as negative in UI)
           brokerBrokerageBalance,
           'broker_brokerage',
           brokerBillId
@@ -4651,7 +5247,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
         [
           null,
           billDateStr,
-          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ?${totalBrokerageAllClients.toFixed(2)}, Main Broker: ?${mainBrokerBrokerage.toFixed(2)}, Profit: ?${subBrokerProfit.toFixed(2)}`,
+          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${mainBrokerBrokerage.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
           0,
           subBrokerProfit,
           subBrokerProfitBalance,
@@ -4663,15 +5259,203 @@ app.post('/api/fo/trades/process', async (req, res) => {
     }
 
     await client.query('COMMIT');
-    res.json(results);
+    res.json({ success: true, bills: createdBills });
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Error processing F&O trades:', error);
-    res.status(500).json({ error: 'Failed to process F&O trades', details: error.message });
+    console.error('Error generating FO bills from contracts:', error);
+    res.status(500).json({ error: 'Failed to generate FO bills', details: error.message });
   } finally {
     client.release();
   }
 });
+
+// Helper function to generate broker bills and sub-broker profit entries
+async function generateFOBrokerBills(client, contracts, billDateStr) {
+  const results = {
+    brokerBills: [],
+    brokerEntries: []
+  };
+  
+  try {
+    // Group contracts by broker
+    const brokerGroups = new Map();
+    for (const contract of contracts) {
+      if (!contract.broker_id) continue;
+      const brokerId = String(contract.broker_id);
+      if (!brokerGroups.has(brokerId)) {
+        brokerGroups.set(brokerId, []);
+      }
+      brokerGroups.get(brokerId).push(contract);
+    }
+    
+    // Process each broker group
+    for (const [brokerId, brokerContracts] of brokerGroups.entries()) {
+      // Calculate total brokerage collected from all clients for this broker
+      let totalBrokerageAllClients = 0;
+      const allBrokerBillItems = [];
+      
+      for (const contract of brokerContracts) {
+        totalBrokerageAllClients += Number(contract.brokerage_amount || 0);
+        
+        // Get instrument details for bill items
+        if (contract.instrument_id) {
+          try {
+            const instrumentResult = await client.query(
+              'SELECT * FROM fo_instrument_master WHERE id = $1',
+              [contract.instrument_id]
+            );
+            const instrument = instrumentResult.rows[0];
+            
+            allBrokerBillItems.push({
+              description: `${instrument?.display_name || contract.instrument_id} - ${contract.trade_type || 'T'}`,
+              quantity: contract.quantity,
+              rate: contract.price,
+              amount: contract.amount,
+              client_code: contract.party_code,
+              instrument_id: contract.instrument_id,
+              brokerage_rate_pct: contract.brokerage_rate,
+              brokerage_amount: contract.brokerage_amount,
+              trade_type: contract.trade_type || 'T',
+            });
+          } catch (error) {
+            console.warn('Could not fetch instrument details for contract:', contract.id);
+          }
+        }
+      }
+      
+      // Skip if no brokerage
+      if (Math.abs(totalBrokerageAllClients) < 0.01) {
+        continue;
+      }
+      
+      // Get broker details
+      const brokerResult = await client.query(
+        'SELECT * FROM broker_master WHERE id = $1',
+        [brokerId]
+      );
+      const broker = brokerResult.rows[0];
+      const brokerCode = broker?.broker_code || 'BRK';
+      
+      // Calculate main broker's share (80% example - you may want to make this configurable)
+      const mainBrokerSharePercent = 80; // This should come from broker settings
+      const mainBrokerBrokerage = (totalBrokerageAllClients * mainBrokerSharePercent) / 100;
+      const subBrokerProfit = totalBrokerageAllClients - mainBrokerBrokerage;
+      
+      // Skip if no meaningful amounts
+      if (
+        Math.abs(mainBrokerBrokerage) < 0.01 && 
+        Math.abs(totalBrokerageAllClients) < 0.01
+      ) {
+        continue;
+      }
+      
+      // Generate broker bill number
+      const now = new Date(billDateStr);
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      const brokerBillNumber = `FO-BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
+      
+      // Create broker bill
+      const brokerBillResult = await client.query(
+        'INSERT INTO fo_bills (bill_number, party_id, broker_id, broker_code, bill_date, total_amount, bill_type, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+        [
+          brokerBillNumber,
+          null, // No party for broker bills
+          brokerId,
+          brokerCode,
+          billDateStr,
+          mainBrokerBrokerage,
+          'broker',
+          'pending',
+          `Sub-Broker Profit: ₹${subBrokerProfit.toFixed(2)}, Total Collected: ₹${totalBrokerageAllClients.toFixed(2)}`
+        ]
+      );
+      const brokerBillId = brokerBillResult.rows[0].id;
+      results.brokerBills.push(brokerBillResult.rows[0]);
+      
+      // Insert broker bill items
+      for (const item of allBrokerBillItems) {
+        await client.query(
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+          [
+            brokerBillId,
+            item.description,
+            item.quantity,
+            item.rate,
+            item.amount,
+            item.client_code,
+            item.instrument_id,
+            item.brokerage_rate_pct,
+            item.brokerage_amount,
+            item.trade_type,
+          ]
+        );
+      }
+      
+      // Create main broker ledger entry
+      let brokerBrokerageBalance = 0;
+      const brokerageBalanceQuery = await client.query(
+        'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['broker_brokerage']
+      );
+      if (brokerageBalanceQuery.rows.length > 0) {
+        brokerBrokerageBalance = Number(brokerageBalanceQuery.rows[0].balance) || 0;
+      }
+      // For main broker, the balance should be negative as per requirement
+      // Money owed to main broker should be shown as negative balance
+      brokerBrokerageBalance -= mainBrokerBrokerage;
+      
+      const brokerageEntryResult = await client.query(
+        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `Main Broker Bill ${brokerBillNumber} - Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
+          0,                    // No debit
+          mainBrokerBrokerage,  // Credit - money owed to main broker (shown as negative in UI)
+          brokerBrokerageBalance,
+          'broker_brokerage',
+          brokerBillId
+        ]
+      );
+      results.brokerEntries.push(brokerageEntryResult.rows[0]);
+      
+      // Create sub-broker profit ledger entry
+      let subBrokerProfitBalance = 0;
+      const profitBalanceQuery = await client.query(
+        'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['sub_broker_profit']
+      );
+      if (profitBalanceQuery.rows.length > 0) {
+        subBrokerProfitBalance = Number(profitBalanceQuery.rows[0].balance) || 0;
+      }
+      // For sub-broker profit, the balance should be negative as per requirement
+      // Profit for sub-broker should be shown as negative balance
+      subBrokerProfitBalance -= subBrokerProfit;
+      
+      const profitLedgerResult = await client.query(
+        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${mainBrokerBrokerage.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
+          0,                    // No debit
+          subBrokerProfit,      // Credit - profit for sub-broker (shown as negative in UI)
+          subBrokerProfitBalance,
+          'sub_broker_profit',
+          brokerBillId
+        ]
+      );
+      results.brokerEntries.push(profitLedgerResult.rows[0]);
+    }
+    
+    return results;
+  } catch (error) {
+    console.error('Error generating FO broker bills:', error);
+    throw error;
+  }
+}
 
 // ========================================
 // NOTE: F&O uses Equity party_master and broker_master (shared)
@@ -4997,6 +5781,31 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
           [brokerBillNumber, brokerId, billDateStr, totalBrokerBrokerage, totalBrokerBrokerage, 'broker', 'pending']
         );
         brokerBills.push(brokerBillResult.rows[0]);
+        
+        // Create broker ledger entry
+        let brokerBalance = 0;
+        const brokerBalanceQuery = await client.query(
+          'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+          ['broker_brokerage']
+        );
+        if (brokerBalanceQuery.rows.length > 0) {
+          brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
+        }
+        brokerBalance += totalBrokerBrokerage;
+        
+        await client.query(
+          'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+          [
+            null,
+            billDateStr,
+            `Broker Bill ${brokerBillNumber} - Brokerage: ₹${totalBrokerBrokerage.toFixed(2)}`,
+            totalBrokerBrokerage,  // Debit - money owed to broker
+            0,                     // No credit
+            brokerBalance,
+            'broker_brokerage',
+            brokerBillResult.rows[0].id
+          ]
+        );
       }
     } else {
       // Just create contracts without bills
@@ -5024,6 +5833,188 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Error creating F&O contracts batch:', error);
     res.status(500).json({ error: 'Failed to create F&O contracts batch', details: error.message });
+  } finally {
+    client.release();
+  }
+});
+
+// ========================================
+// F&O BILLING FROM CONTRACTS (manual run)
+// ========================================
+
+// Generate FO party bills (and basic ledger) from fo_contracts
+app.post('/api/fo/billing/generate', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { fromDate, toDate, billDate, partyId } = req.body || {};
+
+    if (!fromDate || !toDate) {
+      return res.status(400).json({
+        error: 'fromDate and toDate are required',
+      });
+    }
+
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(fromDate) || !dateRegex.test(toDate)) {
+      return res.status(400).json({ error: 'fromDate/toDate must be YYYY-MM-DD' });
+    }
+
+    const now = new Date();
+    let billDateStr = now.toISOString().slice(0, 10);
+    if (typeof billDate === 'string' && dateRegex.test(billDate.trim())) {
+      billDateStr = billDate.trim();
+    }
+
+    await client.query('BEGIN');
+
+    // Build base contracts query
+    // Convert dates to handle timezone differences (contracts stored in UTC, search in local time)
+    let contractsSql = `
+      SELECT c.*, p.party_code
+      FROM fo_contracts c
+      LEFT JOIN party_master p ON p.id = c.party_id
+      WHERE c.trade_date::date >= $1::date AND c.trade_date::date <= $2::date
+    `;
+    const params = [fromDate, toDate];
+
+    if (partyId) {
+      contractsSql += ' AND c.party_id = $3';
+      params.push(partyId);
+    }
+
+    const contractsRes = await client.query(contractsSql, params);
+    const contracts = contractsRes.rows || [];
+
+    if (!contracts.length) {
+      await client.query('ROLLBACK');
+      return res.json({ success: true, message: 'No FO contracts found for given range', bills: [] });
+    }
+
+    // Group contracts by party
+    const partyGroups = new Map();
+    for (const c of contracts) {
+      if (!c.party_id) continue;
+      const key = String(c.party_id);
+      if (!partyGroups.has(key)) partyGroups.set(key, []);
+      partyGroups.get(key).push(c);
+    }
+
+    const createdBills = [];
+
+    for (const [partyIdKey, partyContracts] of partyGroups.entries()) {
+      // Party IDs are UUIDs, not numbers, so we shouldn't convert them
+      const partyId = partyIdKey;
+      if (!partyId) continue;
+
+      // Compute totals from contracts
+      let totalBuyAmount = 0;
+      let totalSellAmount = 0;
+      let totalBrokerage = 0;
+
+      for (const c of partyContracts) {
+        const qty = Number(c.quantity) || 0;
+        const amt = Number(c.amount) || (qty * (Number(c.price) || 0));
+        const side = (c.trade_type || '').toString().toUpperCase();
+
+        // For now, treat positive quantity as BUY, negative as SELL if trade_type is not clear
+        if (side === 'BUY' || (side !== 'SELL' && qty > 0)) {
+          totalBuyAmount += amt;
+        } else if (side === 'SELL' || (side !== 'BUY' && qty < 0)) {
+          totalSellAmount += Math.abs(amt);
+        }
+
+        totalBrokerage += Number(c.brokerage_amount || 0);
+      }
+
+      const finalClientBalance = (totalBuyAmount - totalSellAmount) + totalBrokerage;
+      if (Math.abs(finalClientBalance) < 0.01) {
+        continue; // nothing to bill
+      }
+
+      // Generate FO-PTY bill number using selected bill date
+      const [yy, mm, dd] = billDateStr.split('-');
+      const suffix = String(Math.floor(Math.random() * 900) + 100);
+      const billNumber = `FO-PTY${yy}${mm}${dd}-${suffix}`;
+
+      const billInsert = await client.query(
+        'INSERT INTO fo_bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        [billNumber, partyId, billDateStr, finalClientBalance, 'party', 'pending']
+      );
+      const bill = billInsert.rows[0];
+
+      // Insert bill items from contracts (one per contract)
+      for (const c of partyContracts) {
+        const qty = Math.abs(Number(c.quantity) || 0);
+        const rate = Number(c.price) || 0;
+        const amt = qty * rate;
+
+        await client.query(
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+          [
+            bill.id,
+            c.contract_number || c.notes || 'FO Contract',
+            qty,
+            rate,
+            amt,
+            c.client_code || c.party_code || null,
+            c.instrument_id,
+            Number(c.brokerage_rate || 0),
+            Number(c.brokerage_amount || 0),
+            (c.trade_type || '').toString().toUpperCase(),
+          ]
+        );
+      }
+
+      // FO client ledger entry
+      let currentBalance = 0;
+      const balRes = await client.query(
+        'SELECT balance FROM fo_ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        [partyId]
+      );
+      if (balRes.rows.length > 0) {
+        currentBalance = Number(balRes.rows[0].balance) || 0;
+      }
+      const newBalance = currentBalance + finalClientBalance;
+
+      const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
+      const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
+
+      await client.query(
+        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+        [
+          partyId,
+          billDateStr,
+          `F&O Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${partyContracts.length} contracts)`,
+          debitAmount,
+          creditAmount,
+          newBalance,
+          'client_settlement',
+          bill.id,
+        ]
+      );
+
+      createdBills.push({
+        billId: bill.id,
+        billNumber,
+        partyId: partyId,
+        totalBuyAmount,
+        totalSellAmount,
+        totalBrokerage,
+        netAmount: finalClientBalance,
+        contracts: partyContracts.length,
+      });
+    }
+
+    await client.query('COMMIT');
+    
+    // Now generate broker bills and sub-broker profit entries
+    const brokerResults = await generateFOBrokerBills(client, contracts, billDateStr);
+    
+    res.json({ success: true, bills: createdBills, brokerResults });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error generating FO bills from contracts:', error);
+    res.status(500).json({ error: 'Failed to generate FO bills', details: error.message });
   } finally {
     client.release();
   }
@@ -5939,6 +6930,31 @@ app.delete('/api/fo/ledger/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting F&O ledger entry:', error);
     res.status(500).json({ error: 'Failed to delete F&O ledger entry' });
+  }
+});
+
+// Cash Transaction API routes
+app.delete('/api/cash/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // First, get the transaction to check if it exists and get its details
+    const transactionResult = await pool.query(
+      'SELECT * FROM cash_transactions WHERE id = $1',
+      [id]
+    );
+    
+    if (transactionResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Cash transaction not found' });
+    }
+    
+    // Delete the cash transaction
+    await pool.query('DELETE FROM cash_transactions WHERE id = $1', [id]);
+    
+    res.json({ message: 'Cash transaction deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting cash transaction:', error);
+    res.status(500).json({ error: 'Failed to delete cash transaction' });
   }
 });
 

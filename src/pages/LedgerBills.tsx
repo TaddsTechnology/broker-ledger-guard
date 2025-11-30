@@ -13,6 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Select,
@@ -57,8 +58,8 @@ const LedgerBills = () => {
   const [parties, setParties] = useState<Party[]>([]);
   const [brokers, setBrokers] = useState<Party[]>([]); // Using Party interface for brokers too
   const [isLoading, setIsLoading] = useState(true);
-  const [selectedPartyId, setSelectedPartyId] = useState<string>("");
-  const [selectedBrokerId, setSelectedBrokerId] = useState<string>("");
+  const [selectedPartyId, setSelectedPartyId] = useState<string>("all");
+  const [selectedBrokerId, setSelectedBrokerId] = useState<string>("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [filteredEntries, setFilteredEntries] = useState<LedgerEntry[]>([]);
   const [viewBillId, setViewBillId] = useState<string | null>(null);
@@ -69,6 +70,10 @@ const LedgerBills = () => {
   const [selectedPartyForPayment, setSelectedPartyForPayment] = useState<{id: string, code: string, balance: number} | null>(null);
   const { toast } = useToast();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  
+  // Date filter states
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
 
   useEffect(() => {
     fetchParties();
@@ -78,7 +83,7 @@ const LedgerBills = () => {
   // Fetch ledger entries on component mount and when filters change
   useEffect(() => {
     fetchLedgerEntries();
-  }, [selectedPartyId, selectedBrokerId]);
+  }, [selectedPartyId, selectedBrokerId, fromDate, toDate]);
 
   useEffect(() => {
     if (searchTerm.trim() === "") {
@@ -99,20 +104,33 @@ const LedgerBills = () => {
     setIsLoading(true);
     try {
       let result;
-      if (selectedPartyId && selectedPartyId !== "all") {
-        // Fetch party ledger entries
-        result = await ledgerQueries.getByPartyId(selectedPartyId);
-      } else if (selectedBrokerId && selectedBrokerId !== "all") {
+      
+      // If "None" is selected for broker filter, show only party entries
+      if (selectedBrokerId === "none") {
+        // Fetch only party ledger entries (exclude broker entries)
+        result = await ledgerQueries.getAll(fromDate || undefined, toDate || undefined);
+        result = result.filter(entry => entry.party_id);
+      } else if (selectedPartyId && selectedPartyId !== "" && selectedPartyId !== "all") {
+        // Fetch party ledger entries with date filters
+        result = await ledgerQueries.getByPartyId(selectedPartyId, fromDate || undefined, toDate || undefined);
+      } else if (selectedBrokerId && selectedBrokerId !== "" && selectedBrokerId !== "all") {
         // Fetch broker ledger entries (entries with null party_id that belong to broker accounts)
         // Include both main broker bills (broker_brokerage) and sub-broker profit entries
-        result = await ledgerQueries.getAll();
+        result = await ledgerQueries.getAll(fromDate || undefined, toDate || undefined);
         result = result.filter(entry => 
           !entry.party_id &&
           (entry.reference_type === 'broker_brokerage' || entry.reference_type === 'sub_broker_profit')
         );
+        
+        // Further filter by broker type if needed
+        if (selectedBrokerId === 'main-broker') {
+          result = result.filter(entry => entry.reference_type === 'broker_brokerage');
+        } else if (selectedBrokerId === 'sub-broker') {
+          result = result.filter(entry => entry.reference_type === 'sub_broker_profit');
+        }
       } else {
-        // Fetch all ledger entries
-        result = await ledgerQueries.getAll();
+        // Fetch all ledger entries with date filters
+        result = await ledgerQueries.getAll(fromDate || undefined, toDate || undefined);
       }
       
       // Enhance entries with bill information if they reference bills
@@ -326,61 +344,113 @@ const LedgerBills = () => {
         description="View ledger entries with associated bill details"
         action={
           <div className="flex gap-2">
-            <div className="flex gap-2">
-              <Select
-                value={selectedPartyId}
-                onValueChange={(value) => {
-                  setSelectedPartyId(value);
-                  if (value !== "all") setSelectedBrokerId("");
-                }}
-              >
-                <SelectTrigger className="w-48 bg-secondary">
-                  <SelectValue placeholder="Filter by party" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Parties</SelectItem>
-                  {parties
-                    .filter(party => party.id && party.id.trim() !== "")
-                    .map((party) => (
-                      <SelectItem key={party.id} value={party.id}>
-                        {party.party_code} - {party.name}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-              
-              <Select
-                value={selectedBrokerId}
-                onValueChange={(value) => {
-                  setSelectedBrokerId(value);
-                  if (value !== "all") setSelectedPartyId("");
-                }}
-              >
-                <SelectTrigger className="w-48 bg-secondary">
-                  <SelectValue placeholder="Filter by broker" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Brokers</SelectItem>
-                  <SelectItem value="broker-entries">Broker Entries Only</SelectItem>
-                </SelectContent>
-              </Select>
-              
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  ref={searchInputRef}
-                  placeholder="Search ledger entries..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="pl-8 w-64 bg-secondary"
-                />
-              </div>
-            </div>
+            <Select
+              value={selectedPartyId}
+              onValueChange={(value) => {
+                setSelectedPartyId(value);
+                if (value !== "all") setSelectedBrokerId("none");
+              }}
+            >
+              <SelectTrigger className="w-48 bg-secondary">
+                <SelectValue placeholder="Filter by party" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Parties</SelectItem>
+                {parties
+                  .filter(party => party.id && party.id.trim() !== "")
+                  .map((party) => (
+                    <SelectItem key={party.id} value={party.id}>
+                      {party.party_code} - {party.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            
+            <Select
+              value={selectedBrokerId}
+              onValueChange={(value) => {
+                setSelectedBrokerId(value);
+                if (value !== "all" && value !== "none") setSelectedPartyId("all");
+                else if (value === "none") setSelectedPartyId("all");
+              }}
+            >
+              <SelectTrigger className="w-48 bg-secondary">
+                <SelectValue placeholder="Filter by broker" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                <SelectItem value="all">All Brokers</SelectItem>
+                <SelectItem value="main-broker">Main Broker Only</SelectItem>
+                <SelectItem value="sub-broker">Sub Broker Only</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         }
       />
 
       <div className="p-6">
+        {/* Date Filters Section */}
+        <div className="mb-6 p-4 bg-secondary rounded-lg">
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="ledger-from-date" className="text-sm font-medium">
+                From Date
+              </Label>
+              <Input
+                id="ledger-from-date"
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="w-40 bg-background"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="ledger-to-date" className="text-sm font-medium">
+                To Date
+              </Label>
+              <Input
+                id="ledger-to-date"
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="w-40 bg-background"
+              />
+            </div>
+            
+            <div className="flex gap-2">
+              <Button 
+                onClick={fetchLedgerEntries}
+                className="h-10"
+              >
+                Apply Filters
+              </Button>
+              <Button 
+                variant="outline" 
+                onClick={() => {
+                  setFromDate("");
+                  setToDate("");
+                  setTimeout(() => fetchLedgerEntries(), 0);
+                }}
+                className="h-10"
+              >
+                Reset
+              </Button>
+            </div>
+            
+            <div className="relative ml-auto">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                ref={searchInputRef}
+                placeholder="Search ledger entries..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-10 w-64 bg-background"
+              />
+            </div>
+          </div>
+        </div>
+        
         <div className="rounded-lg border border-border bg-card overflow-hidden">
           <Table>
             <TableHeader>
@@ -456,16 +526,26 @@ const LedgerBills = () => {
                     </TableCell>
                     <TableCell
                       className={`text-right font-mono font-medium ${
-                        Number(entry.credit_amount) > 0
-                          ? 'text-green-600'
-                          : Number(entry.debit_amount) > 0
-                          ? 'text-red-600'
-                          : 'text-muted-foreground'
-                      }`}
-                    >
-                      {Number(entry.balance) >= 0
-                        ? `+₹${Number(entry.balance).toFixed(2)}`
-                        : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
+                        // Color coding based on entry type and actual debit/credit amounts
+                        entry.party_id
+                          ? entry.credit_amount > 0
+                            ? 'text-green-600'  // Party credit: green
+                            : 'text-red-600'    // Party debit: red
+                          : entry.reference_type === 'broker_brokerage'
+                          ? entry.credit_amount > 0
+                            ? 'text-green-600'  // Main broker credit: green
+                            : 'text-red-600'    // Main broker debit: red
+                          : 'text-green-600'    // Sub broker: always green
+                      }`}>
+                      {entry.party_id
+                        ? entry.credit_amount > 0
+                          ? `+₹${Math.abs(entry.balance).toFixed(2)}`
+                          : `-₹${Math.abs(entry.balance).toFixed(2)}`
+                        : entry.reference_type === 'broker_brokerage'
+                        ? entry.credit_amount > 0
+                          ? `+₹${Math.abs(entry.balance).toFixed(2)}`
+                          : `-₹${Math.abs(entry.balance).toFixed(2)}`
+                        : `+₹${Math.abs(entry.balance).toFixed(2)}`}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">

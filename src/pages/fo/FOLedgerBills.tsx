@@ -102,6 +102,12 @@ const FOLedgerBills = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filteredEntries, setFilteredEntries] = useState<LedgerEntry[]>([]);
   const [viewBillId, setViewBillId] = useState<string | null>(null);
+
+  // FO bill generation controls
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
+  const [billDate, setBillDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
+  const [generateLoading, setGenerateLoading] = useState(false);
   const [billViewOpen, setBillViewOpen] = useState(false);
   const [viewBillType, setViewBillType] = useState<'party' | 'broker' | 'main_broker'>('party');
   const [viewBillData, setViewBillData] = useState<ViewBillData | null>(null);
@@ -254,6 +260,61 @@ const FOLedgerBills = () => {
       setFilteredEntries(filtered);
     }
   }, [ledgerEntries, searchTerm]);
+
+  const handleGenerateBills = async () => {
+    if (!fromDate || !toDate) {
+      toast({
+        title: "Date Required",
+        description: "Please select From Date and To Date to generate bills.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setGenerateLoading(true);
+    try {
+      const payload: any = {
+        fromDate,
+        toDate,
+        billDate: billDate || new Date().toISOString().slice(0, 10),
+      };
+      if (selectedPartyId && selectedPartyId !== "all") {
+        payload.partyId = selectedPartyId;
+      }
+
+      const response = await fetch("http://localhost:3001/api/fo/billing/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to generate F&O bills");
+      }
+
+      const data = await response.json();
+      const count = Array.isArray(data?.bills) ? data.bills.length : 0;
+
+      toast({
+        title: "F&O Bills Generated",
+        description: count > 0
+          ? `Generated ${count} F&O bill(s) from contracts.`
+          : "No eligible contracts found in this date range.",
+      });
+
+      // Refresh ledger entries so new bills show here
+      fetchLedgerEntries();
+    } catch (error) {
+      console.error("Error generating F&O bills:", error);
+      toast({
+        title: "Error",
+        description: "Failed to generate F&O bills from contracts.",
+        variant: "destructive",
+      });
+    } finally {
+      setGenerateLoading(false);
+    }
+  };
 
   const handleViewBill = async (entry: LedgerEntry) => {
     if (entry.bill_id) {
@@ -432,7 +493,59 @@ const FOLedgerBills = () => {
         }
       />
 
-      <div className="p-6">
+      <div className="p-6 space-y-4">
+        {/* FO Bill Generation From Contracts */}
+        <Card className="border-purple-200">
+          <CardHeader className="py-3 flex flex-row items-center justify-between gap-4">
+            <div>
+              <CardTitle className="text-sm font-semibold text-purple-900">
+                Generate F&O Bills From Contracts
+              </CardTitle>
+              <p className="text-xs text-muted-foreground mt-1">
+                Select date range and (optional) party, then click Generate Bills. Trades must be imported first.
+              </p>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0 pb-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold uppercase text-muted-foreground">From Date</label>
+                <Input
+                  type="date"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  className="h-8 w-40"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold uppercase text-muted-foreground">To Date</label>
+                <Input
+                  type="date"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  className="h-8 w-40"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold uppercase text-muted-foreground">Bill Date</label>
+                <Input
+                  type="date"
+                  value={billDate}
+                  onChange={(e) => setBillDate(e.target.value)}
+                  className="h-8 w-40"
+                />
+              </div>
+              <Button
+                onClick={handleGenerateBills}
+                disabled={generateLoading}
+                className="ml-auto bg-[#9333ea] hover:bg-[#7e22ce] h-8 px-4 text-xs font-semibold"
+              >
+                {generateLoading ? "Generating..." : "Generate FO Bills"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
         <div className="rounded-lg border border-border bg-card overflow-hidden">
           <Table>
             <TableHeader>
@@ -503,9 +616,9 @@ const FOLedgerBills = () => {
                           : 'text-muted-foreground'
                       }`}
                     >
-                      {Number(entry.balance) >= 0
-                        ? `+₹${Number(entry.balance).toFixed(2)}`
-                        : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
+                      {Number(entry.balance) <= 0
+                        ? `+₹${Math.abs(Number(entry.balance)).toFixed(2)}`
+                        : `-₹${Number(entry.balance).toFixed(2)}`}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">

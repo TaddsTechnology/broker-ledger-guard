@@ -1,2 +1,2 @@
 SecurityName,Side,ClientId,brokerid,Type,BuyAvg,BuyQty,SellQty,SellAvg
-NIFTY25OCT24800PE,buy,STV001,BRK01,T,1000,150,0,0
+VEL,sell,STV001,4622,T,0,0,100,2000

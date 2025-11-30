@@ -117,8 +117,14 @@ export const settlementQueries = {
 
 // Bills operations
 export const billQueries = {
-  getAll: (type?: 'party' | 'broker') => 
-    type ? apiCall(`/bills?type=${type}`) : apiCall('/bills'),
+  getAll: (type?: 'party' | 'broker', fromDate?: string, toDate?: string) => {
+    const params = new URLSearchParams();
+    if (type) params.append('type', type);
+    if (fromDate) params.append('from_date', fromDate);
+    if (toDate) params.append('to_date', toDate);
+    const queryString = params.toString();
+    return apiCall(`/bills${queryString ? `?${queryString}` : ''}`);
+  },
   getById: (id: string) => apiCall(`/bills/${id}`),
   getByNumber: (billNumber: string) => apiCall(`/bills/by-number/${billNumber}`),
   getItems: (id: string) => apiCall(`/bills/${id}/items`),
@@ -221,8 +227,20 @@ export const getOutstandingFoBills = async (partyId: string) => {
 
 // Ledger operations
 export const ledgerQueries = {
-  getAll: () => apiCall('/ledger'),
-  getByPartyId: (partyId: string) => apiCall(`/ledger/party/${partyId}`),
+  getAll: (fromDate?: string, toDate?: string) => {
+    const params = new URLSearchParams();
+    if (fromDate) params.append('from_date', fromDate);
+    if (toDate) params.append('to_date', toDate);
+    const queryString = params.toString();
+    return apiCall(`/ledger${queryString ? `?${queryString}` : ''}`);
+  },
+  getByPartyId: (partyId: string, fromDate?: string, toDate?: string) => {
+    const params = new URLSearchParams();
+    if (fromDate) params.append('from_date', fromDate);
+    if (toDate) params.append('to_date', toDate);
+    const queryString = params.toString();
+    return apiCall(`/ledger/party/${partyId}${queryString ? `?${queryString}` : ''}`);
+  },
   create: (data: {
     party_id: string;
     entry_date: string;
@@ -320,4 +338,9 @@ export const contractQueries = {
       body: JSON.stringify(data),
     }),
   delete: (id: string) => apiCall(`/contracts/${id}`, { method: 'DELETE' }),
+};
+
+// Cash transaction operations
+export const cashTransactionQueries = {
+  delete: (id: string) => apiCall(`/cash/${id}`, { method: 'DELETE' }),
 };

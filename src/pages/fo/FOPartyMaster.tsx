@@ -57,8 +57,8 @@ const FOPartyMaster = () => {
     address: "",
     city: "",
     phone: "",
-    trading_slab: "1.00",
-    delivery_slab: "0.50",
+    trading_slab: "0.10",
+    delivery_slab: "1.30",
     interest_rate: "0.00",
   });
 
@@ -352,6 +352,7 @@ const FOPartyMaster = () => {
                       step="0.01"
                       value={formData.trading_slab}
                       onChange={(e) => setFormData({ ...formData, trading_slab: e.target.value })}
+                      placeholder="0.10"
                     />
                   </div>
 
@@ -363,6 +364,7 @@ const FOPartyMaster = () => {
                       step="0.01"
                       value={formData.delivery_slab}
                       onChange={(e) => setFormData({ ...formData, delivery_slab: e.target.value })}
+                      placeholder="1.30"
                     />
                   </div>
 

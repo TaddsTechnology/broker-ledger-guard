@@ -38,6 +38,32 @@ const formatCurrency = (value: number) => {
   })}`;
 };
 
+// New component to format closing balance with CR/DR symbols and colors
+const ClosingBalanceDisplay = ({ value }: { value: number }) => {
+  if (isNaN(value)) return <span>₹0.00</span>;
+  const absValue = Math.abs(value);
+  const formattedValue = `₹${absValue.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+  
+  if (value < 0) {
+    return (
+      <span>
+        {formattedValue} <span className="text-red-500 font-medium">DR</span>
+      </span>
+    );
+  } else if (value > 0) {
+    return (
+      <span>
+        {formattedValue} <span className="text-green-500 font-medium">CR</span>
+      </span>
+    );
+  } else {
+    return <span>{formattedValue}</span>;
+  }
+};
+
 export default function EquitySummaryModulePage() {
   const [rows, setRows] = useState<PartySummaryRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -243,7 +269,7 @@ export default function EquitySummaryModulePage() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                {formatCurrency(totalClosing)}
+                <ClosingBalanceDisplay value={totalClosing} />
               </div>
             </CardContent>
           </Card>
@@ -284,24 +310,37 @@ export default function EquitySummaryModulePage() {
                       </TableRow>
                     ) : (
                       <>
-                        {filteredRows.map((row) => (
-                          <TableRow 
-                            key={row.party_code}
-                            className="hover:bg-muted/30 transition-colors"
-                          >
-                            <TableCell className="font-medium">{row.party_code}</TableCell>
-                            <TableCell>{row.party_name}</TableCell>
-                            <TableCell className="text-right text-emerald-600">
-                              {formatCurrency(row.total_debit)}
-                            </TableCell>
-                            <TableCell className="text-right text-rose-600">
-                              {formatCurrency(row.total_credit)}
-                            </TableCell>
-                            <TableCell className="text-right font-semibold">
-                              {formatCurrency(row.closing_balance)}
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                        {filteredRows.map((row) => {
+                          // Display sign convention:
+                          // - Normal parties: show positive (amount they owe us) ⇒ abs(closing_balance)
+                          // - SUB-BROKER (profit): show positive ⇒ abs(closing_balance)
+                          // - MAIN-BROKER (what we owe broker): show negative ⇒ -abs(closing_balance)
+                          let displayClosing = row.closing_balance;
+                          if (row.party_code === 'MAIN-BROKER') {
+                            displayClosing = -Math.abs(row.closing_balance || 0);
+                          } else {
+                            displayClosing = Math.abs(row.closing_balance || 0);
+                          }
+
+                          return (
+                            <TableRow 
+                              key={row.party_code}
+                              className="hover:bg-muted/30 transition-colors"
+                            >
+                              <TableCell className="font-medium">{row.party_code}</TableCell>
+                              <TableCell>{row.party_name}</TableCell>
+                              <TableCell className="text-right text-emerald-600">
+                                {formatCurrency(row.total_debit)}
+                              </TableCell>
+                              <TableCell className="text-right text-rose-600">
+                                {formatCurrency(row.total_credit)}
+                              </TableCell>
+                              <TableCell className="text-right font-semibold">
+                                <ClosingBalanceDisplay value={displayClosing} />
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
                         <TableRow className="bg-muted font-semibold">
                           <TableCell colSpan={2}>Totals</TableCell>
                           <TableCell className="text-right text-emerald-600">
@@ -311,7 +350,7 @@ export default function EquitySummaryModulePage() {
                             {formatCurrency(totalCredit)}
                           </TableCell>
                           <TableCell className="text-right">
-                            {formatCurrency(totalClosing)}
+                            <ClosingBalanceDisplay value={totalClosing} />
                           </TableCell>
                         </TableRow>
                       </>

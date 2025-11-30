@@ -123,6 +123,7 @@ const FOContracts = () => {
       price: "",
     }
   ]);
+
   useEffect(() => {
     fetchContracts();
     fetchParties();
@@ -319,68 +320,41 @@ const FOContracts = () => {
         };
       });
 
-      // Separate trades:
-      // BUY + SELL → Generate settlement bills with brokerage
-      // CF → No bills, no brokerage (just rollover tracking)
+      // Separate trades (for info only, all of them just create contracts now)
       const billableTrades = contractsData.filter(c => c.trade_type === 'BUY' || c.trade_type === 'SELL');
       const cfTrades = contractsData.filter(c => c.trade_type === 'CF');
       
       let createdContracts = 0;
-      let partyBillsCount = 0;
-      let brokerBillsCount = 0;
+      const totalTrades = contractsData.length;
 
-      // Create BUY/SELL trades with settlement bills
-      if (billableTrades.length > 0) {
-        const billableResponse = await fetch('http://localhost:3001/api/fo/contracts/batch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contracts: billableTrades,
-            billDate: contractRows[0].trade_date,
-            generateBills: true,
-          }),
-        });
+      // Store all contracts (no bills here)
+      const response = await fetch('http://localhost:3001/api/fo/contracts/batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contracts: contractsData,
+          billDate: contractRows[0].trade_date,
+          generateBills: false,
+        }),
+      });
 
-        if (!billableResponse.ok) {
-          throw new Error('Failed to create contracts and bills');
-        }
-
-        const billableResult = await billableResponse.json();
-        createdContracts += billableResult.contracts?.length || 0;
-        partyBillsCount = billableResult.partyBills?.length || 0;
-        brokerBillsCount = billableResult.brokerBills?.length || 0;
+      if (!response.ok) {
+        throw new Error('Failed to create contracts');
       }
 
-      // Create CF trades without bills (just tracking records)
-      if (cfTrades.length > 0) {
-        for (const contract of cfTrades) {
-          const response = await fetch('http://localhost:3001/api/fo/contracts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(contract),
-          });
-
-          if (response.ok) {
-            createdContracts++;
-          }
-        }
-      }
+      const result = await response.json();
+      createdContracts = result.contracts?.length || totalTrades;
 
       const buyCount = billableTrades.filter(c => c.trade_type === 'BUY').length;
       const sellCount = billableTrades.filter(c => c.trade_type === 'SELL').length;
       const cfCount = cfTrades.length;
       
       let billsMessage = '';
-      if (partyBillsCount > 0) {
-        billsMessage = `, ${partyBillsCount} bills (${buyCount} BUY, ${sellCount} SELL)`;
-      }
-      if (cfCount > 0) {
-        billsMessage += `, ${cfCount} CF (no bills)`;
-      }
+      billsMessage = ` (${buyCount} BUY, ${sellCount} SELL, ${cfCount} CF)`;
 
       toast({
-        title: "Success! 🎉",
-        description: `Created ${createdContracts} contracts${billsMessage}`,
+        title: "Success",
+        description: `Created ${createdContracts} contracts${billsMessage}. Generate bills later from FO Contracts or FO Ledger Bills.`,
       });
 
       resetForm();
@@ -390,7 +364,7 @@ const FOContracts = () => {
       console.error('Error saving contracts:', error);
       toast({
         title: "Error",
-        description: "Failed to create contracts and generate bills",
+        description: "Failed to create contracts",
         variant: "destructive",
       });
     }
@@ -491,7 +465,7 @@ const FOContracts = () => {
     <div className="flex-1 overflow-auto">
       <PageHeader
         title={editingContract ? `F&O Contracts - Edit ${editingContract.contract_number}` : "F&O Contracts - New Entry"}
-        description={editingContract ? "Update F&O contract details" : "Add multiple F&O contracts and generate bills automatically"}
+        description={editingContract ? "Update F&O contract details" : "Add multiple F&O contracts. Bills are generated later from contracts."}
         action={
           <div className="flex gap-2">
             <Button
@@ -582,7 +556,7 @@ const FOContracts = () => {
             </CardContent>
           </Card>
 
-          {/* Contract Items Section */}
+          {/* Contract Items Section (store contracts only; no bills here) */}
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
@@ -591,6 +565,20 @@ const FOContracts = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
+              {/* Info box directing users to FO Ledger Bills for bill generation */}
+              <div className="mb-4 rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+                <div className="font-semibold text-[13px] w-full md:w-auto">Generate F&O Bills</div>
+                <div className="w-full text-[11px] text-blue-800 mt-1">
+                  Bills are generated from the FO Ledger Bills page. After saving contracts here, go to FO → Ledger Bills to generate bills.
+                </div>
+                <Button
+                  onClick={() => window.location.hash = '/fo/ledger/bills'}
+                  className="mt-2 bg-blue-600 hover:bg-blue-700 h-7 px-3 text-[11px] font-semibold"
+                >
+                  Go to FO Ledger Bills
+                </Button>
+              </div>
+
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>

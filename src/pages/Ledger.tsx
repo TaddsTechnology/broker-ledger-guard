@@ -61,6 +61,8 @@ const Ledger = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filteredEntries, setFilteredEntries] = useState<LedgerEntry[]>([]);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
   const { toast } = useToast();
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -83,10 +85,10 @@ const Ledger = () => {
     fetchParties();
   }, []);
 
-  // Fetch ledger entries on component mount and when selected party changes
+  // Fetch ledger entries on component mount and when selected party or date filters change
   useEffect(() => {
     fetchLedgerEntries();
-  }, [selectedPartyId]);
+  }, [selectedPartyId, fromDate, toDate]);
 
   useEffect(() => {
     let entries = ledgerEntries;
@@ -127,9 +129,9 @@ const Ledger = () => {
     try {
       let result;
       if (selectedPartyId) {
-        result = await ledgerQueries.getByPartyId(selectedPartyId);
+        result = await ledgerQueries.getByPartyId(selectedPartyId, fromDate || undefined, toDate || undefined);
       } else {
-        result = await ledgerQueries.getAll();
+        result = await ledgerQueries.getAll(fromDate || undefined, toDate || undefined);
       }
       setLedgerEntries(result || []);
     } catch (error) {
@@ -631,6 +633,51 @@ const Ledger = () => {
       />
 
       <div className="p-6">
+        {/* Date Filters */}
+        <div className="mb-4 flex flex-wrap gap-4 items-end bg-secondary p-4 rounded-lg">
+          <div className="space-y-2">
+            <Label htmlFor="from-date" className="text-sm font-medium">
+              From Date
+            </Label>
+            <Input
+              id="from-date"
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="bg-background h-10"
+            />
+          </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="to-date" className="text-sm font-medium">
+              To Date
+            </Label>
+            <Input
+              id="to-date"
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="bg-background h-10"
+            />
+          </div>
+          
+          <div className="flex gap-2">
+            <Button 
+              onClick={fetchLedgerEntries}
+              className="h-10"
+            >
+              Apply Filters
+            </Button>
+            <Button 
+              variant="outline" 
+              onClick={resetDateFilters}
+              className="h-10"
+            >
+              Reset
+            </Button>
+          </div>
+        </div>
+        
         <div className="rounded-lg border border-border bg-card overflow-hidden">
           <Table>
             <TableHeader>
@@ -798,19 +845,19 @@ const Ledger = () => {
                           <TableCell className="text-right text-xs font-mono">
                             {Number(entry.credit_amount) > 0 ? `₹${Number(entry.credit_amount).toFixed(2)}` : "-"}
                           </TableCell>
-                          <TableCell
-                            className={`text-right text-xs font-mono ${
-                              Number(entry.credit_amount) > 0
-                                ? 'text-green-600'
-                                : Number(entry.debit_amount) > 0
-                                ? 'text-red-600'
-                                : 'text-muted-foreground'
-                            }`}
-                          >
-                            {Number(entry.balance) >= 0
-                              ? `+₹${Number(entry.balance).toFixed(2)}`
-                              : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
-                          </TableCell>
+                        <TableCell
+                          className={`text-right text-xs font-mono ${
+                            Number(entry.credit_amount) > 0
+                              ? 'text-green-600'
+                              : Number(entry.debit_amount) > 0
+                              ? 'text-red-600'
+                              : 'text-muted-foreground'
+                          }`}
+                        >
+                          {Number(entry.balance) <= 0
+                            ? `+₹${Math.abs(Number(entry.balance)).toFixed(2)}`
+                            : `-₹${Number(entry.balance).toFixed(2)}`}
+                        </TableCell>
                           <TableCell className={`text-right text-xs font-mono font-semibold ${
                             (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
                           }`}>
@@ -887,9 +934,9 @@ const Ledger = () => {
                           : 'text-muted-foreground'
                       }`}
                     >
-                      {Number(entry.balance) >= 0
-                        ? `+₹${Number(entry.balance).toFixed(2)}`
-                        : `-₹${Math.abs(Number(entry.balance)).toFixed(2)}`}
+                      {Number(entry.balance) <= 0
+                        ? `+₹${Math.abs(Number(entry.balance)).toFixed(2)}`
+                        : `-₹${Number(entry.balance).toFixed(2)}`}
                     </TableCell>
                     <TableCell className={`text-right font-mono font-semibold ${
                       (Number(entry.credit_amount) - Number(entry.debit_amount)) >= 0 ? 'text-green-600' : 'text-red-600'
@@ -928,6 +975,14 @@ const Ledger = () => {
 
   // Add function to open payment dialog
   // Add function to handle payment success
+
+  // Add function to handle date filter reset
+  const resetDateFilters = () => {
+    setFromDate("");
+    setToDate("");
+    // Refresh the ledger entries after resetting filters
+    setTimeout(() => fetchLedgerEntries(), 0);
+  };
 
   // Main render based on current view
   return (

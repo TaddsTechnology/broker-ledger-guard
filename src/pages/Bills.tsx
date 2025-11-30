@@ -79,6 +79,10 @@ const Bills = () => {
   const formRef = useRef<HTMLFormElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // Date filter states
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
+
   const [formData, setFormData] = useState({
     bill_number: "",
     party_id: "",
@@ -93,13 +97,13 @@ const Bills = () => {
     fetchParties();
   }, []);
 
-  // Fetch bills based on bill type from search params
+  // Fetch bills based on bill type from search params and date filters
   useEffect(() => {
     const fetchBillsByType = async () => {
       setIsLoading(true);
       try {
         const type = searchParams.get('type') as 'party' | 'broker' | null;
-        const result = await billQueries.getAll(type || undefined);
+        const result = await billQueries.getAll(type || undefined, fromDate || undefined, toDate || undefined);
         setBills(result || []);
       } catch (error) {
         console.error('Error fetching bills:', error);
@@ -113,7 +117,7 @@ const Bills = () => {
     };
     
     fetchBillsByType();
-  }, [searchParams]);
+  }, [searchParams, fromDate, toDate]);
 
   // Filter bills based on search term
   useEffect(() => {
@@ -142,7 +146,7 @@ const Bills = () => {
     setIsLoading(true);
     try {
       const type = searchParams.get('type') as 'party' | 'broker' | null;
-      const result = await billQueries.getAll(type || undefined);
+      const result = await billQueries.getAll(type || undefined, fromDate || undefined, toDate || undefined);
       setBills(result || []);
     } catch (error) {
       console.error('Error fetching bills:', error);
@@ -202,7 +206,7 @@ const Bills = () => {
         setCurrentView('list');
         resetForm();
         const type = searchParams.get('type') as 'party' | 'broker' | null;
-        const result = await billQueries.getAll(type || undefined);
+        const result = await billQueries.getAll(type || undefined, fromDate || undefined, toDate || undefined);
         setBills(result || []);
       } else {
         await billQueries.create(billData);
@@ -242,7 +246,7 @@ const Bills = () => {
           ),
         });
         const type2 = searchParams.get('type') as 'party' | 'broker' | null;
-        const result2 = await billQueries.getAll(type2 || undefined);
+        const result2 = await billQueries.getAll(type2 || undefined, fromDate || undefined, toDate || undefined);
         setBills(result2 || []);
       }
     } catch (error) {
@@ -304,7 +308,7 @@ const Bills = () => {
         variant: "default"
       });
       const type = searchParams.get('type') as 'party' | 'broker' | null;
-      const result = await billQueries.getAll(type || undefined);
+      const result = await billQueries.getAll(type || undefined, fromDate || undefined, toDate || undefined);
       setBills(result || []);
     } catch (error) {
       console.error('Error deleting bill:', error);
@@ -323,7 +327,7 @@ const Bills = () => {
       setCurrentView('list');
       setEditingBill(null);
       const type = searchParams.get('type') as 'party' | 'broker' | null;
-      const result = await billQueries.getAll(type || undefined);
+      const result = await billQueries.getAll(type || undefined, fromDate || undefined, toDate || undefined);
       setBills(result || []);
     } catch (error) {
       console.error('Error saving bill:', error);
@@ -606,35 +610,85 @@ const Bills = () => {
         title="Bills"
         description="Generate and manage billing"
         action={
-          <div className="flex gap-2">
-            <div className="relative">
-              <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Button
+            onClick={() => {
+              resetForm();
+              setCurrentView('form');
+            }}
+            className="bg-primary hover:bg-primary-hover group relative"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Add Bill
+            <kbd className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]">
+              F4
+            </kbd>
+          </Button>
+        }
+      />
+
+      <div className="p-6">
+        {/* Date Filters Section */}
+        <div className="mb-6 p-4 bg-secondary rounded-lg">
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="from-date" className="text-sm font-medium">
+                From Date
+              </Label>
+              <Input
+                id="from-date"
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="w-40 bg-background"
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <Label htmlFor="to-date" className="text-sm font-medium">
+                To Date
+              </Label>
+              <Input
+                id="to-date"
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="w-40 bg-background"
+              />
+            </div>
+            
+            <div className="flex gap-2">
+              <Button 
+                onClick={fetchBills}
+                className="h-10"
+              >
+                Apply Filters
+              </Button>
+              <Button 
+                variant="outline" 
+                onClick={() => {
+                  setFromDate("");
+                  setToDate("");
+                  setTimeout(() => fetchBills(), 0);
+                }}
+                className="h-10"
+              >
+                Reset
+              </Button>
+            </div>
+            
+            <div className="relative ml-auto">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
                 ref={searchInputRef}
                 placeholder="Search bills... (F3)"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-8 w-64 bg-secondary"
+                className="pl-10 w-64 bg-background"
               />
             </div>
-            <Button
-              onClick={() => {
-                resetForm();
-                setCurrentView('form');
-              }}
-              className="bg-primary hover:bg-primary-hover group relative"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Add Bill
-              <kbd className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]">
-                F4
-              </kbd>
-            </Button>
           </div>
-        }
-      />
-
-      <div className="p-6">
+        </div>
+        
         <div className="rounded-lg border border-border bg-card overflow-hidden">
           <Table>
             <TableHeader>

@@ -582,7 +582,9 @@ const FOHoldings = () => {
                                     {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
                                   </TableCell>
                                   <TableCell className="text-sm">
-                                    {holding.broker_codes || '-'}
+                                    {holding.broker_qty_breakdown
+                                      ? holding.broker_qty_breakdown
+                                      : (holding.broker_codes || '-')}
                                   </TableCell>
                                 </TableRow>
                               );
@@ -643,7 +645,9 @@ const FOHoldings = () => {
                                 {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
                               </TableCell>
                               <TableCell className="text-sm">
-                                {holding.broker_codes || '-'}
+                                {holding.broker_qty_breakdown
+                                  ? holding.broker_qty_breakdown
+                                  : (holding.broker_codes || '-')}
                               </TableCell>
                             </TableRow>
                           );

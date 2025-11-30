@@ -17,7 +17,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { RefreshCw, Plus, Wallet } from "lucide-react";
+import { RefreshCw, Plus, Wallet, Trash2 } from "lucide-react";
+import { cashTransactionQueries } from "@/lib/database";
+import { useToast } from "@/hooks/use-toast";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 
 interface CashTransaction {
   id: string;
@@ -79,6 +82,9 @@ const formatCurrency = (value: number) => {
 };
 
 export default function CashModulePage() {
+  // Toast hook
+  const { toast } = useToast();
+  
   // View state
   const [currentView, setCurrentView] = useState<'form' | 'list'>('form');
   
@@ -105,6 +111,10 @@ export default function CashModulePage() {
   // Recent transactions state
   const [recentTransactions, setRecentTransactions] = useState<CashTransaction[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(false);
+  
+  // Delete confirmation dialog state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [transactionToDelete, setTransactionToDelete] = useState<CashTransaction | null>(null);
 
   const handleCreateCash = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -189,6 +199,39 @@ export default function CashModulePage() {
       console.error("Failed to load recent transactions", err);
     } finally {
       setLoadingRecent(false);
+    }
+  };
+
+  const handleDeleteTransaction = async (transaction: CashTransaction) => {
+    setTransactionToDelete(transaction);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteTransaction = async () => {
+    if (!transactionToDelete) return;
+    
+    try {
+      await cashTransactionQueries.delete(transactionToDelete.id);
+      // Refresh the recent transactions list
+      fetchRecentTransactions();
+      // Also refresh the cash book
+      fetchCashBook(bookDate);
+      
+      toast({
+        title: "Success",
+        description: "Cash transaction deleted successfully",
+        variant: "default",
+      });
+    } catch (error) {
+      console.error("Failed to delete cash transaction", error);
+      toast({
+        title: "Error",
+        description: "Failed to delete cash transaction",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleteDialogOpen(false);
+      setTransactionToDelete(null);
     }
   };
 
@@ -416,6 +459,7 @@ export default function CashModulePage() {
                       <TableHead>Type</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
                       <TableHead>Narration</TableHead>
+                      <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -447,6 +491,16 @@ export default function CashModulePage() {
                           </TableCell>
                           <TableCell className="text-muted-foreground">
                             {t.narration || "-"}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeleteTransaction(t)}
+                              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
                           </TableCell>
                         </TableRow>
                       ))
@@ -525,6 +579,7 @@ export default function CashModulePage() {
                         <TableHead>Party</TableHead>
                         <TableHead className="text-right">Credit</TableHead>
                         <TableHead className="text-right">Debit</TableHead>
+                        <TableHead>Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -536,23 +591,33 @@ export default function CashModulePage() {
                         </TableRow>
                       ) : (
                         <>
-                          {cashBook.transactions.map((t) => (
+                          {cashBook.transactions.map((transaction) => (
                             <TableRow 
-                              key={t.id}
+                              key={transaction.id}
                               className="hover:bg-muted/30 transition-colors"
                             >
                               <TableCell className="text-xs text-muted-foreground">
-                                {String(t.id).slice(0, 8)}
+                                {String(transaction.id).slice(0, 8)}
                               </TableCell>
                               <TableCell>
-                                <div className="font-medium">{t.party_code}</div>
-                                <div className="text-xs text-muted-foreground">{t.narration}</div>
+                                <div className="font-medium">{transaction.party_code}</div>
+                                <div className="text-xs text-muted-foreground">{transaction.narration}</div>
                               </TableCell>
                               <TableCell className="text-right text-emerald-600">
-                                {t.type === "RECEIPT" ? formatCurrency(t.amount) : "-"}
+                                {transaction.type === "RECEIPT" ? formatCurrency(transaction.amount) : "-"}
                               </TableCell>
                               <TableCell className="text-right text-rose-600">
-                                {t.type === "PAYMENT" ? formatCurrency(t.amount) : "-"}
+                                {transaction.type === "PAYMENT" ? formatCurrency(transaction.amount) : "-"}
+                              </TableCell>
+                              <TableCell>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleDeleteTransaction(transaction)}
+                                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
                               </TableCell>
                             </TableRow>
                           ))}
@@ -574,6 +639,7 @@ export default function CashModulePage() {
                                   .reduce((s, t) => s + Number(t.amount || 0), 0)
                               )}
                             </TableCell>
+                            <TableCell></TableCell>
                           </TableRow>
                         </>
                       )}
@@ -592,6 +658,16 @@ export default function CashModulePage() {
   return (
     <>
       {currentView === 'form' ? renderFormView() : renderListView()}
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        title="Delete Cash Transaction"
+        description="Are you sure you want to delete this cash transaction? This action cannot be undone."
+        onConfirm={confirmDeleteTransaction}
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="destructive"
+      />
     </>
   );
 }

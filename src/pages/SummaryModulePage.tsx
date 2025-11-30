@@ -21,6 +21,25 @@ const formatCurrency = (value: number) => {
   })}`;
 };
 
+// New function to format closing balance with CR/DR symbols
+const formatClosingBalance = (value: number) => {
+  if (isNaN(value)) return "₹0.00";
+  const absValue = Math.abs(value);
+  const formattedValue = `₹${absValue.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+  
+  // Show DR for negative (debit) and CR for positive (credit)
+  if (value < 0) {
+    return `${formattedValue} DR`;
+  } else if (value > 0) {
+    return `${formattedValue} CR`;
+  } else {
+    return formattedValue;
+  }
+};
+
 export default function SummaryModulePage() {
   const [module, setModule] = useState<"equity" | "fo">("equity");
   const [rows, setRows] = useState<PartySummaryRow[]>([]);
@@ -99,7 +118,7 @@ export default function SummaryModulePage() {
                     <td className="px-2 py-1 align-top text-muted-foreground">{r.party_name}</td>
                     <td className="px-2 py-1 text-right align-top">{formatCurrency(r.total_debit)}</td>
                     <td className="px-2 py-1 text-right align-top">{formatCurrency(r.total_credit)}</td>
-                    <td className="px-2 py-1 text-right align-top font-semibold">{formatCurrency(r.closing_balance)}</td>
+                    <td className="px-2 py-1 text-right align-top font-semibold">{formatClosingBalance(r.closing_balance)}</td>
                   </tr>
                 ))}
                 {rows.length === 0 && (
@@ -116,7 +135,7 @@ export default function SummaryModulePage() {
                     </td>
                     <td className="px-2 py-1 text-right">{formatCurrency(totalDebit)}</td>
                     <td className="px-2 py-1 text-right">{formatCurrency(totalCredit)}</td>
-                    <td className="px-2 py-1 text-right">{formatCurrency(totalClosing)}</td>
+                    <td className="px-2 py-1 text-right">{formatClosingBalance(totalClosing)}</td>
                   </tr>
                 )}
               </tbody>
