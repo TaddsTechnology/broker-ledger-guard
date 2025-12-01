@@ -380,6 +380,10 @@ const Trading = () => {
       
       // Clear the uploaded files after successful bill generation
       setUploadedFiles([]);
+      // Reset file input to allow uploading new files
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     } catch (error) {
       console.error('Error generating bills:', error);
       toast({

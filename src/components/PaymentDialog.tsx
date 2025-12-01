@@ -67,7 +67,7 @@ export function PaymentDialog({
   const [errors, setErrors] = useState<Record<string, string>>({});
   
   // Check if this is a main broker payment
-  const isMainBrokerPayment = partyCode === "MAIN-BROKER";
+  const isMainBrokerPayment = partyId === "main-broker" || partyCode === "MAIN-BROKER" || partyCode === "Main Broker";
 
   const formatCurrency = (value: number) => {
     if (isNaN(value)) return "₹0.00";
@@ -166,9 +166,10 @@ export function PaymentDialog({
                 // Use the F&O broker payment endpoint
                 const endpoint = `http://localhost:3001/api/fo/bills/${billId}/payment`;
                 
-                // For Main Broker, Pay-In should make the balance zero
-                // So we pay the full outstanding amount
-                const paymentAmount = paymentType === 'payin' ? Math.abs(currentBalance) : amountValue;
+                // For Main Broker:
+                // - Pay-In (you pay the main broker) should reduce negative balance toward zero
+                // - Pay-Out (main broker pays you) should reduce positive balance toward zero
+                const paymentAmount = (paymentType === 'payin' || paymentType === 'payout') ? Math.abs(currentBalance) : amountValue;
                 
                 const payload = {
                   amount: paymentAmount,
@@ -218,9 +219,10 @@ export function PaymentDialog({
                 // Use the broker payment endpoint
                 const endpoint = `http://localhost:3001/api/bills/${billId}/payment`;
                 
-                // For Main Broker, Pay-In should make the balance zero
-                // So we pay the full outstanding amount
-                const paymentAmount = paymentType === 'payin' ? Math.abs(currentBalance) : amountValue;
+                // For Main Broker:
+                // - Pay-In (you pay the main broker) should reduce negative balance toward zero
+                // - Pay-Out (main broker pays you) should reduce positive balance toward zero
+                const paymentAmount = (paymentType === 'payin' || paymentType === 'payout') ? Math.abs(currentBalance) : amountValue;
                 
                 const payload = {
                   amount: paymentAmount,
@@ -301,9 +303,10 @@ export function PaymentDialog({
           };
         }
         
-        // For regular parties, Pay-Out should make the balance zero
-        // So we pay the full outstanding amount when it's a payout
-        const finalAmount = paymentType === 'payout' ? Math.abs(currentBalance) : amountValue;
+        // For regular parties:
+        // - Pay-Out (you pay the party) should reduce positive balance toward zero
+        // - Pay-In (party pays you) should reduce negative balance toward zero
+        const finalAmount = (paymentType === 'payout' || paymentType === 'payin') ? Math.abs(currentBalance) : amountValue;
         payload.amount = finalAmount;
         
         const response = await fetch(endpoint, {

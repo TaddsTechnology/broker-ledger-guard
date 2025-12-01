@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const express = require('express');
+﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 require('dotenv').config();
@@ -2565,7 +2565,7 @@ app.post('/api/bills/:billId/payment', async (req, res) => {
       const currentBalance = balRes.rows.length > 0 ? Number(balRes.rows[0].balance) || 0 : 0;
 
       // Convention: positive balance = you owe main broker (credit from bills).
-      // A payment TO main broker reduces that balance ? debit.
+      // A payment TO main broker reduces that balance.
       const newBalance = currentBalance - amountValue;
 
       await client.query(
@@ -2773,11 +2773,11 @@ app.post('/api/payments', async (req, res) => {
     
     if (payType === 'payin') {
       // Party pays you (Money IN from party).
-      // Current implementation of bills writes a NEGATIVE balance when client owes you.
-      // So receiving money should move that negative balance TOWARDS ZERO → add the amount.
+      // Convention: positive balance = client owes you.
+      // So receiving money should move that positive balance TOWARDS ZERO → subtract the amount.
       creditAmount = amountValue;
       debitAmount = 0;
-      newPartyBalance = currentPartyBalance + amountValue;
+      newPartyBalance = currentPartyBalance - amountValue;
       particulars = apply_to_bill_id 
         ? `Pay-In (${paymentMethod}) applied to bill ${bill?.bill_number || apply_to_bill_id}` 
         : `Pay-In received (${paymentMethod})`;
@@ -2791,9 +2791,9 @@ app.post('/api/payments', async (req, res) => {
       // You pay party (Money OUT to party)
       // Convention: positive balance = client owes you, negative = you owe client.
       // A Pay-Out that settles a bill should move a POSITIVE balance back toward zero.
-      // So we post on CREDIT side and DECREASE the running balance.
-      debitAmount = 0;
-      creditAmount = amountValue;
+      // So we post on DEBIT side and DECREASE the running balance.
+      debitAmount = amountValue;
+      creditAmount = 0;
       newPartyBalance = currentPartyBalance - amountValue;
       particulars = apply_to_bill_id 
         ? `Pay-Out (${paymentMethod}) for bill ${bill?.bill_number || apply_to_bill_id}` 
@@ -3366,7 +3366,7 @@ app.post('/api/fo/bills/:billId/payment', async (req, res) => {
       const currentBalance = balRes.rows.length > 0 ? Number(balRes.rows[0].balance) || 0 : 0;
 
       // Convention: positive balance = you owe main broker (credit from bills).
-      // A payment TO main broker reduces that balance ? debit.
+      // A payment TO main broker reduces that balance.
       const newBalance = currentBalance - amountValue;
 
       await client.query(
