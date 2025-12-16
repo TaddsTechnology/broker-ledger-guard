@@ -382,7 +382,8 @@ const FOLedgerBills = () => {
         }
         
         // Try to fetch the F&O bill by number and type
-        const response = await fetch(`http://localhost:3001/api/fo/bills?type=${billType}`);
+        const apiBillType = billType === 'main_broker' ? 'broker' : billType;
+        const response = await fetch(`http://localhost:3001/api/fo/bills?type=${apiBillType}`);
         const bills = await response.json();
         const bill = (Array.isArray(bills) ? bills : []).find((b: FOBill) => b.bill_number === entry.bill_number);
         if (bill && bill.id) {
@@ -609,16 +610,26 @@ const FOLedgerBills = () => {
                     </TableCell>
                     <TableCell
                       className={`text-right font-mono font-medium ${
-                        Number(entry.credit_amount) > 0
-                          ? 'text-green-600'
-                          : Number(entry.debit_amount) > 0
-                          ? 'text-red-600'
-                          : 'text-muted-foreground'
-                      }`}
-                    >
-                      {Number(entry.balance) <= 0
-                        ? `+₹${Math.abs(Number(entry.balance)).toFixed(2)}`
-                        : `-₹${Number(entry.balance).toFixed(2)}`}
+                        // Color coding based on entry type and actual debit/credit amounts
+                        entry.party_id
+                          ? entry.credit_amount > 0
+                            ? 'text-green-600'  // Party credit: green
+                            : 'text-red-600'    // Party debit: red
+                          : entry.reference_type === 'broker_brokerage'
+                          ? entry.credit_amount > 0
+                            ? 'text-green-600'  // Main broker credit: green
+                            : 'text-red-600'    // Main broker debit: red
+                          : 'text-green-600'    // Sub broker: always green
+                      }`}>
+                      {entry.party_id
+                        ? entry.credit_amount > 0
+                          ? `+₹${Math.abs(entry.balance).toFixed(2)}`
+                          : `-₹${Math.abs(entry.balance).toFixed(2)}`
+                        : entry.reference_type === 'broker_brokerage'
+                        ? entry.credit_amount > 0
+                          ? `+₹${Math.abs(entry.balance).toFixed(2)}`
+                          : `-₹${Math.abs(entry.balance).toFixed(2)}`
+                        : `+₹${Math.abs(entry.balance).toFixed(2)}`}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">

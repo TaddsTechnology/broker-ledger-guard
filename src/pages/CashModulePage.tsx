@@ -472,7 +472,7 @@ export default function CashModulePage() {
                     ) : (
                       recentTransactions.map((t) => (
                         <TableRow 
-                          key={t.id}
+                          key={`recent-${t.id}`}
                           className="hover:bg-muted/30 transition-colors"
                         >
                           <TableCell>{String(t.date).slice(0, 10)}</TableCell>
@@ -593,7 +593,7 @@ export default function CashModulePage() {
                         <>
                           {cashBook.transactions.map((transaction) => (
                             <TableRow 
-                              key={transaction.id}
+                              key={`cashbook-${transaction.id}`}
                               className="hover:bg-muted/30 transition-colors"
                             >
                               <TableCell className="text-xs text-muted-foreground">

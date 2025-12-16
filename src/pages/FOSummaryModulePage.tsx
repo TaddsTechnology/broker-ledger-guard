@@ -38,6 +38,54 @@ const formatCurrency = (value: number) => {
   })}`;
 };
 
+// New function to format closing balance with CR/DR symbols and colors
+const formatClosingBalance = (value: number, partyCode: string = '') => {
+  if (isNaN(value)) return "₹0.00";
+  const absValue = Math.abs(value);
+  const formattedValue = `₹${absValue.toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+  // In FO summary we present:
+  // - MAIN-BROKER as DR
+  // - Parties as DR
+  // - SUB-BROKER as CR
+  if (partyCode === 'SUB-BROKER') {
+    return (
+      <span>
+        {formattedValue} <span className="text-green-600 font-medium">CR</span>
+      </span>
+    );
+  }
+
+  if (partyCode === 'MAIN-BROKER' || partyCode) {
+    // Default DR for parties/main broker in FO summary
+    if (absValue === 0) return <span>{formattedValue}</span>;
+    return (
+      <span>
+        {formattedValue} <span className="text-red-600 font-medium">DR</span>
+      </span>
+    );
+  }
+
+  // Totals row: use sign to decide (usually will be 0.00)
+  if (value > 0) {
+    return (
+      <span>
+        {formattedValue} <span className="text-red-600 font-medium">DR</span>
+      </span>
+    );
+  } else if (value < 0) {
+    return (
+      <span>
+        {formattedValue} <span className="text-green-600 font-medium">CR</span>
+      </span>
+    );
+  }
+  return <span>{formattedValue}</span>;
+};
+
 export default function FOSummaryModulePage() {
   const [rows, setRows] = useState<PartySummaryRow[]>([]);
   const [loading, setLoading] = useState(false);
@@ -298,7 +346,7 @@ export default function FOSummaryModulePage() {
                               {formatCurrency(row.total_credit)}
                             </TableCell>
                             <TableCell className="text-right font-semibold">
-                              {formatCurrency(row.closing_balance)}
+                              {formatClosingBalance(row.closing_balance, row.party_code)}
                             </TableCell>
                           </TableRow>
                         ))}
@@ -311,7 +359,7 @@ export default function FOSummaryModulePage() {
                             {formatCurrency(totalCredit)}
                           </TableCell>
                           <TableCell className="text-right">
-                            {formatCurrency(totalClosing)}
+                            {formatClosingBalance(totalClosing)}
                           </TableCell>
                         </TableRow>
                       </>

@@ -21,7 +21,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { TrendingUp, TrendingDown, Package, History } from "lucide-react";
+import { TrendingUp, TrendingDown, Package, History, Users } from "lucide-react";
 
 interface Party {
   id: string;
@@ -81,6 +81,8 @@ const FOHoldings = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(false);
+  const [brokerHoldings, setBrokerHoldings] = useState<any[]>([]);
+  const [isLoadingBrokerHoldings, setIsLoadingBrokerHoldings] = useState(false);
   const [activeTab, setActiveTab] = useState("positions");
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
@@ -150,10 +152,16 @@ const FOHoldings = () => {
   const fetchPositions = async () => {
     setIsLoading(true);
     try {
-      const endpoint =
-        selectedParty === "all" || !selectedParty
-          ? "/api/fo/positions"
-          : `/api/fo/positions?party_id=${selectedParty}`;
+      // Build query parameters
+      const params = new URLSearchParams();
+      if (selectedParty && selectedParty !== "all") {
+        params.append('party_id', selectedParty);
+      }
+      if (fromDate) params.append('from_date', fromDate);
+      if (toDate) params.append('to_date', toDate);
+      
+      const queryString = params.toString();
+      const endpoint = `/api/fo/positions${queryString ? `?${queryString}` : ""}`;
       
       const response = await fetch(`http://localhost:3001${endpoint}`);
       if (!response.ok) throw new Error("Failed to fetch F&O positions");
@@ -201,6 +209,39 @@ const FOHoldings = () => {
     }
     setIsLoadingTransactions(false);
   };
+
+  const fetchBrokerHoldings = async () => {
+    setIsLoadingBrokerHoldings(true);
+    try {
+      // Build query parameters
+      const params = new URLSearchParams();
+      if (fromDate) params.append('from_date', fromDate);
+      if (toDate) params.append('to_date', toDate);
+      
+      const queryString = params.toString();
+      const endpoint = `/api/fo/positions/broker${queryString ? `?${queryString}` : ""}`;
+      
+      const response = await fetch(`http://localhost:3001${endpoint}`);
+      if (!response.ok) throw new Error("Failed to fetch broker holdings");
+      
+      const result = await response.json();
+      setBrokerHoldings(Array.isArray(result) ? result : []);
+    } catch (error) {
+      console.error("Error fetching broker holdings:", error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch broker holdings",
+        variant: "destructive",
+      });
+    }
+    setIsLoadingBrokerHoldings(false);
+  };
+
+  useEffect(() => {
+    if (activeTab === "broker") {
+      fetchBrokerHoldings();
+    }
+  }, [activeTab, fromDate, toDate]);
 
   // Calculate total positions and P&L
   const calculateTotals = () => {
@@ -294,6 +335,67 @@ const FOHoldings = () => {
             </div>
           </div>
         </div>
+        
+        {/* Date Filters */}
+        <div className="flex flex-wrap gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="holdings-from-date" className="text-xs font-semibold uppercase tracking-wide">
+              From Date
+            </Label>
+            <Input
+              id="holdings-from-date"
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="w-40"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="holdings-to-date" className="text-xs font-semibold uppercase tracking-wide">
+              To Date
+            </Label>
+            <Input
+              id="holdings-to-date"
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="w-40"
+            />
+          </div>
+          <div className="flex items-end gap-2">
+            <Button 
+              onClick={() => {
+                // Trigger refresh with new date filters
+                if (activeTab === "positions") {
+                  fetchPositions();
+                } else {
+                  fetchTransactions();
+                }
+              }} 
+              disabled={isLoading || isLoadingTransactions}
+            >
+              {isLoading || isLoadingTransactions ? "Loading..." : "Apply Filters"}
+            </Button>
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setFromDate("");
+                setToDate("");
+                // Trigger refresh after clearing filters
+                setTimeout(() => {
+                  if (activeTab === "positions") {
+                    fetchPositions();
+                  } else {
+                    fetchTransactions();
+                  }
+                }, 0);
+              }}
+              disabled={isLoading || isLoadingTransactions}
+            >
+              Reset
+            </Button>
+          </div>
+        </div>
 
         {/* Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -345,12 +447,16 @@ const FOHoldings = () => {
           </Card>
         </div>
 
-        {/* Tabs: Positions and Transaction History */}
+        {/* Tabs: Positions, Broker Holdings and Transaction History */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsList className="grid w-full max-w-md grid-cols-3">
             <TabsTrigger value="positions" className="flex items-center gap-2">
               <Package className="w-4 h-4" />
               Current Positions
+            </TabsTrigger>
+            <TabsTrigger value="broker" className="flex items-center gap-2">
+              <Users className="w-4 h-4" />
+              Broker Holdings
             </TabsTrigger>
             <TabsTrigger value="transactions" className="flex items-center gap-2">
               <History className="w-4 h-4" />
@@ -662,6 +768,122 @@ const FOHoldings = () => {
         )}
           </TabsContent>
 
+          {/* Broker Holdings Tab */}
+          <TabsContent value="broker" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg">Broker Holdings Summary</CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  View holdings aggregated by broker across all clients
+                </p>
+              </CardHeader>
+              
+              {/* Date Filters */}
+              <div className="px-6 pb-4 flex flex-wrap gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="broker-holdings-from-date" className="text-xs font-semibold uppercase tracking-wide">
+                    From Date
+                  </Label>
+                  <Input
+                    id="broker-holdings-from-date"
+                    type="date"
+                    value={fromDate}
+                    onChange={(e) => setFromDate(e.target.value)}
+                    className="w-40"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="broker-holdings-to-date" className="text-xs font-semibold uppercase tracking-wide">
+                    To Date
+                  </Label>
+                  <Input
+                    id="broker-holdings-to-date"
+                    type="date"
+                    value={toDate}
+                    onChange={(e) => setToDate(e.target.value)}
+                    className="w-40"
+                  />
+                </div>
+                <div className="flex items-end gap-2">
+                  <Button onClick={fetchBrokerHoldings} disabled={isLoadingBrokerHoldings}>
+                    {isLoadingBrokerHoldings ? "Loading..." : "Apply Filters"}
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    onClick={() => {
+                      setFromDate("");
+                      setToDate("");
+                      setTimeout(() => fetchBrokerHoldings(), 0);
+                    }}
+                    disabled={isLoadingBrokerHoldings}
+                  >
+                    Reset
+                  </Button>
+                </div>
+              </div>
+              <CardContent>
+                {isLoadingBrokerHoldings ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    Loading broker holdings...
+                  </div>
+                ) : brokerHoldings.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    No broker holdings found.
+                  </div>
+                ) : (
+                  <div className="rounded-lg border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="bg-muted/50">
+                          <TableHead>Broker</TableHead>
+                          <TableHead>Instrument</TableHead>
+                          <TableHead className="text-right">Quantity</TableHead>
+                          <TableHead className="text-right">Avg Price</TableHead>
+                          <TableHead className="text-right">Total Invested</TableHead>
+                          <TableHead className="text-right">Clients</TableHead>
+                          <TableHead>Last Trade</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {brokerHoldings.map((holding, index) => (
+                          <TableRow key={index}>
+                            <TableCell>
+                              <div className="font-medium">{holding.broker_code}</div>
+                              <div className="text-sm text-muted-foreground">
+                                {holding.broker_name || "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="font-medium">{holding.display_name || holding.symbol}</div>
+                              <div className="text-sm text-muted-foreground">
+                                {holding.symbol || "-"}
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right font-mono font-bold">
+                              {Number(holding.total_quantity).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right font-mono">
+                              ₹{Number(holding.avg_price || 0).toFixed(2)}
+                            </TableCell>
+                            <TableCell className="text-right font-mono font-medium">
+                              ₹{Number(holding.total_invested || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                            </TableCell>
+                            <TableCell className="text-right font-mono">
+                              {holding.client_count || 0}
+                            </TableCell>
+                            <TableCell className="text-sm">
+                              {holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           {/* Transaction History Tab */}
           <TabsContent value="transactions" className="space-y-6">
             {/* Date Filter Section */}
@@ -791,20 +1013,20 @@ const FOHoldings = () => {
                               </span>
                             </TableCell>
                             <TableCell className="text-right font-mono">
-                              {txn.quantity.toLocaleString()}
+                              {(txn.quantity || 0).toLocaleString()}
                             </TableCell>
                             <TableCell className="text-right font-mono text-sm">
-                              ₹{txn.rate.toFixed(2)}
+                              ₹{(txn.rate || 0).toFixed(2)}
                             </TableCell>
                             <TableCell className="text-right font-mono font-medium">
-                              ₹{txn.amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                              ₹{(txn.amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                             </TableCell>
                             <TableCell className={`text-right font-mono font-bold ${
-                              txn.balance > 0 ? 'text-green-600' : 
-                              txn.balance < 0 ? 'text-red-600' : 
+                              (txn.balance || 0) > 0 ? 'text-green-600' : 
+                              (txn.balance || 0) < 0 ? 'text-red-600' : 
                               'text-gray-600'
                             }`}>
-                              {txn.balance.toLocaleString()}
+                              {(txn.balance || 0).toLocaleString()}
                             </TableCell>
                           </TableRow>
                         ))}

@@ -130,9 +130,53 @@ export function BillView({ bill: propBill, billId, open, onOpenChange }: { bill?
         const billData = await buildBillDataFromItems(bill, items);
         setBillData(billData);
       } else {
-        // Fall back to parsing notes if no items found
-        console.log('No items found, falling back to parsing notes');
-        parseBillNotes(bill);
+        // If no items, try a lightweight backend summary (for older bills that lack items)
+        try {
+          const res = await fetch(`http://localhost:3001/api/equity/bills/${bill.id}/summary`);
+          if (res.ok) {
+            const summary = await res.json();
+            console.log('Bill summary from backend:', summary);
+
+            const parsedBillData: BillData = {
+              billNumber: bill.bill_number,
+              partyCode: bill.party_code || bill.broker_code || 'Unknown',
+              partyName: bill.party_name || bill.broker_name || 'Unknown',
+              billDate: bill.bill_date
+                ? new Date(bill.bill_date).toLocaleDateString()
+                : new Date().toLocaleDateString(),
+              fileName: 'Summary from ledger',
+              totalTransactions: summary.totalTransactions || 0,
+              buyAmount: summary.buyAmount || 0,
+              sellAmount: summary.sellAmount || 0,
+              netAmount: bill.total_amount ? Number(bill.total_amount) : 0,
+              deliveryAmount: summary.deliveryAmount || 0,
+              tradingAmount: summary.tradingAmount || 0,
+              billType: bill.bill_type || 'party',
+              totalTransactionValue: (summary.buyAmount || 0) + (summary.sellAmount || 0),
+              brokerageRate: 0,
+              deliveryBrokerageAmount: 0,
+              tradingBrokerageAmount: summary.totalBrokerage || 0,
+              deliverySlab: 0,
+              tradingSlab: 0,
+              brokerId: bill.broker_code,
+              mainBrokerBillTotal:
+                bill.bill_type === 'broker' && bill.total_amount
+                  ? Number(bill.total_amount)
+                  : undefined,
+              notes: bill.notes || undefined,
+              transactions: [],
+            };
+
+            setBillData(parsedBillData);
+          } else {
+            console.log('Summary endpoint not available, falling back to notes');
+            parseBillNotes(bill);
+          }
+        } catch (err) {
+          console.error('Error fetching bill summary:', err);
+          console.log('Error fetching summary, falling back to parsing notes');
+          parseBillNotes(bill);
+        }
       }
     } catch (error) {
       console.error("Error fetching bill items:", error);

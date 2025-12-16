@@ -19,6 +19,7 @@ interface PartySummaryRow {
   total_debit: number;
   total_credit: number;
   closing_balance: number;
+  entity_type?: string; // Add entity_type to distinguish between party, main_broker, sub_broker
 }
 
 // Add Party interface for autocomplete
@@ -39,7 +40,7 @@ const formatCurrency = (value: number) => {
 };
 
 // New component to format closing balance with CR/DR symbols and colors
-const ClosingBalanceDisplay = ({ value }: { value: number }) => {
+const ClosingBalanceDisplay = ({ value, partyCode }: { value: number; partyCode?: string }) => {
   if (isNaN(value)) return <span>₹0.00</span>;
   const absValue = Math.abs(value);
   const formattedValue = `₹${absValue.toLocaleString("en-IN", {
@@ -47,13 +48,25 @@ const ClosingBalanceDisplay = ({ value }: { value: number }) => {
     maximumFractionDigits: 2,
   })}`;
   
-  if (value < 0) {
+  // Special case: Sub-Broker Profit is always CR (your earnings)
+  if (partyCode === 'SUB-BROKER') {
+    return (
+      <span>
+        {formattedValue} <span className="text-green-500 font-medium">CR</span>
+      </span>
+    );
+  }
+  
+  // Accounting convention for regular parties:
+  // Positive balance (Debit > Credit) = DR (party owes you money)
+  // Negative balance (Credit > Debit) = CR (you owe party money)
+  if (value > 0) {
     return (
       <span>
         {formattedValue} <span className="text-red-500 font-medium">DR</span>
       </span>
     );
-  } else if (value > 0) {
+  } else if (value < 0) {
     return (
       <span>
         {formattedValue} <span className="text-green-500 font-medium">CR</span>
@@ -148,13 +161,18 @@ export default function EquitySummaryModulePage() {
     fetchSummary(partyFilter);
   };
 
-  // Create filtered rows for display
+  // Update the filteredRows calculation to handle all entity types
   const filteredRows = partyFilter.trim() 
     ? rows.filter(row => 
         row.party_code.toLowerCase().includes(partyFilter.toLowerCase()) ||
         row.party_name.toLowerCase().includes(partyFilter.toLowerCase())
       )
     : rows;
+
+  // Calculate totals separately for each entity type
+  const mainBrokerRows = filteredRows.filter(row => row.entity_type === 'main_broker');
+  const subBrokerRows = filteredRows.filter(row => row.entity_type === 'sub_broker');
+  const partyRows = filteredRows.filter(row => row.entity_type === 'party');
 
   const totalDebit = filteredRows.reduce((s, r) => s + (Number(r.total_debit) || 0), 0);
   const totalCredit = filteredRows.reduce((s, r) => s + (Number(r.total_credit) || 0), 0);
@@ -234,10 +252,19 @@ export default function EquitySummaryModulePage() {
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Parties</CardTitle>
+              <CardTitle className="text-sm font-medium">Total Entities</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{filteredRows.length}</div>
+            </CardContent>
+          </Card>
+          
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium">Parties</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{partyRows.length}</div>
             </CardContent>
           </Card>
           
@@ -262,19 +289,7 @@ export default function EquitySummaryModulePage() {
               </div>
             </CardContent>
           </Card>
-          
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Net Closing</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                <ClosingBalanceDisplay value={totalClosing} />
-              </div>
-            </CardContent>
-          </Card>
         </div>
-
         {/* Summary Table */}
         <Card>
           <CardHeader>
@@ -311,23 +326,42 @@ export default function EquitySummaryModulePage() {
                     ) : (
                       <>
                         {filteredRows.map((row) => {
-                          // Display sign convention:
-                          // - Normal parties: show positive (amount they owe us) ⇒ abs(closing_balance)
-                          // - SUB-BROKER (profit): show positive ⇒ abs(closing_balance)
-                          // - MAIN-BROKER (what we owe broker): show negative ⇒ -abs(closing_balance)
+                          // Display sign convention based on entity type:
                           let displayClosing = row.closing_balance;
-                          if (row.party_code === 'MAIN-BROKER') {
+                          let rowClass = "";
+                          
+                          if (row.entity_type === 'main_broker') {
+                            // Main broker: show as negative (what we owe them)
                             displayClosing = -Math.abs(row.closing_balance || 0);
-                          } else {
+                            rowClass = "bg-blue-50";
+                          } else if (row.entity_type === 'sub_broker') {
+                            // Sub broker: always positive (our earnings)
                             displayClosing = Math.abs(row.closing_balance || 0);
+                            rowClass = "bg-green-50";
+                          } else {
+                            // Regular parties: show absolute value
+                            displayClosing = Math.abs(row.closing_balance || 0);
+                            rowClass = "";
                           }
 
                           return (
                             <TableRow 
                               key={row.party_code}
-                              className="hover:bg-muted/30 transition-colors"
+                              className={`${rowClass} hover:bg-muted/30 transition-colors`}
                             >
-                              <TableCell className="font-medium">{row.party_code}</TableCell>
+                              <TableCell className="font-medium">
+                                {row.entity_type === 'main_broker' && (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mr-2">
+                                    Broker
+                                  </span>
+                                )}
+                                {row.entity_type === 'sub_broker' && (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 mr-2">
+                                    Profit
+                                  </span>
+                                )}
+                                {row.party_code}
+                              </TableCell>
                               <TableCell>{row.party_name}</TableCell>
                               <TableCell className="text-right text-emerald-600">
                                 {formatCurrency(row.total_debit)}
@@ -336,7 +370,7 @@ export default function EquitySummaryModulePage() {
                                 {formatCurrency(row.total_credit)}
                               </TableCell>
                               <TableCell className="text-right font-semibold">
-                                <ClosingBalanceDisplay value={displayClosing} />
+                                <ClosingBalanceDisplay value={displayClosing} partyCode={row.party_code} />
                               </TableCell>
                             </TableRow>
                           );

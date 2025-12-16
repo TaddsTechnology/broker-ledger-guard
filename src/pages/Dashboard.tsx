@@ -1,13 +1,19 @@
 import { useState, useEffect } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Users, Building2, TrendingUp, Receipt, DollarSign } from "lucide-react";
+import { Users, Building2, Receipt, DollarSign, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 const Dashboard = () => {
   const [subBrokerProfit, setSubBrokerProfit] = useState<any>(null);
   const [dashboardStats, setDashboardStats] = useState<any>(null);
   const [recentBills, setRecentBills] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [selectedClient, setSelectedClient] = useState<any>(null);
+  const [clientDetails, setClientDetails] = useState<any>(null);
+  const [clientBills, setClientBills] = useState<any[]>([]);
+  const [clientLedger, setClientLedger] = useState<any[]>([]);
+  const [clientLoading, setClientLoading] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -29,6 +35,47 @@ const Dashboard = () => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const fetchClientDetails = async (clientId: string, clientCode: string, clientName: string) => {
+    setClientLoading(true);
+    try {
+      // Fetch client summary
+      const summaryRes = await fetch(`http://localhost:3001/api/summary/parties?module=equity`);
+      const summaryData = await summaryRes.json();
+      
+      // Find the specific client
+      const client = summaryData.find((c: any) => c.party_code === clientCode);
+      
+      // Fetch client bills
+      const billsRes = await fetch(`http://localhost:3001/api/bills/outstanding/${clientId}`);
+      const billsData = await billsRes.json();
+      
+      // Fetch client ledger
+      const ledgerRes = await fetch(`http://localhost:3001/api/ledger/party/${clientId}`);
+      const ledgerData = await ledgerRes.json();
+      
+      setClientDetails(client);
+      // Ensure billsData is an array, if not set to empty array
+      setClientBills(Array.isArray(billsData) ? billsData : []);
+      // Ensure ledgerData is an array, if not set to empty array
+      setClientLedger(Array.isArray(ledgerData) ? ledgerData : []);
+      setSelectedClient({ id: clientId, code: clientCode, name: clientName });
+    } catch (error) {
+      console.error('Error fetching client details:', error);
+      // Set to empty arrays in case of error
+      setClientBills([]);
+      setClientLedger([]);
+    } finally {
+      setClientLoading(false);
+    }
+  };
+
+  const closeClientView = () => {
+    setSelectedClient(null);
+    setClientDetails(null);
+    setClientBills([]);
+    setClientLedger([]);
   };
 
   const stats = [
@@ -55,6 +102,146 @@ const Dashboard = () => {
     },
   ];
 
+  // Client detail view
+  if (selectedClient) {
+    return (
+      <div className="flex-1 overflow-auto">
+        <PageHeader
+          title={`${selectedClient.code} - ${selectedClient.name}`}
+          description="Client Details"
+          action={
+            <Button onClick={closeClientView} variant="outline">
+              Back to Dashboard
+            </Button>
+          }
+        />
+        
+        <div className="p-6 space-y-6">
+          {/* Client Summary */}
+          {clientLoading ? (
+            <div className="text-center py-4">Loading client details...</div>
+          ) : (
+            <>
+              {clientDetails && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Financial Summary</CardTitle>
+                  </CardHeader>
+                  <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="p-4 bg-blue-50 rounded-lg">
+                      <div className="text-sm text-blue-600">Total Debit</div>
+                      <div className="text-xl font-bold">₹{Number(clientDetails.total_debit || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+                    </div>
+                    <div className="p-4 bg-green-50 rounded-lg">
+                      <div className="text-sm text-green-600">Total Credit</div>
+                      <div className="text-xl font-bold">₹{Number(clientDetails.total_credit || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}</div>
+                    </div>
+                    <div className="p-4 bg-purple-50 rounded-lg">
+                      <div className="text-sm text-purple-600">Closing Balance</div>
+                      <div className="text-xl font-bold">
+                        ₹{Math.abs(Number(clientDetails.closing_balance || 0)).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                        <span className="text-sm ml-2">
+                          {Number(clientDetails.closing_balance) >= 0 ? 'DR' : 'CR'}
+                        </span>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Outstanding Bills */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Outstanding Bills</CardTitle>
+                  <CardDescription>Bills that are not fully paid</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {clientBills.length === 0 ? (
+                    <div className="text-center py-4 text-muted-foreground">No outstanding bills</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {clientBills.map((bill: any) => (
+                        <div key={bill.id} className="flex items-center justify-between p-3 border rounded-lg">
+                          <div>
+                            <div className="font-medium">{bill.bill_number}</div>
+                            <div className="text-sm text-muted-foreground">
+                              Status: {bill.status}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <div className="font-medium">
+                              ₹{(Number(bill.total_amount) - Number(bill.paid_amount)).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                            </div>
+                            <div className="text-sm text-muted-foreground">
+                              Total: ₹{Number(bill.total_amount).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Recent Ledger Entries */}
+              <Card>
+                <CardHeader>
+                  <CardTitle>Ledger Entries</CardTitle>
+                  <CardDescription>Recent financial transactions</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {clientLedger.length === 0 ? (
+                    <div className="text-center py-4 text-muted-foreground">No ledger entries</div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b">
+                            <th className="text-left py-2">Date</th>
+                            <th className="text-left py-2">Particulars</th>
+                            <th className="text-right py-2">Debit</th>
+                            <th className="text-right py-2">Credit</th>
+                            <th className="text-right py-2">Balance</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {clientLedger.slice(0, 10).map((entry: any) => (
+                            <tr key={entry.id} className="border-b">
+                              <td className="py-2">
+                                {new Date(entry.entry_date).toLocaleDateString('en-IN')}
+                              </td>
+                              <td className="py-2 max-w-xs truncate">{entry.particulars}</td>
+                              <td className="py-2 text-right">
+                                {Number(entry.debit_amount) > 0 
+                                  ? `₹${Number(entry.debit_amount).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` 
+                                  : '-'}
+                              </td>
+                              <td className="py-2 text-right">
+                                {Number(entry.credit_amount) > 0 
+                                  ? `₹${Number(entry.credit_amount).toLocaleString('en-IN', { maximumFractionDigits: 2 })}` 
+                                  : '-'}
+                              </td>
+                              <td className="py-2 text-right font-medium">
+                                ₹{Math.abs(Number(entry.balance)).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                                <span className="text-xs ml-1">
+                                  {Number(entry.balance) >= 0 ? 'DR' : 'CR'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
@@ -77,10 +264,10 @@ const Dashboard = () => {
             ) : (
               <>
                 <div className="text-4xl font-bold text-green-600">
-                  ₹{Number(subBrokerProfit?.current_balance || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                  ₹{Math.abs(Number(subBrokerProfit?.current_balance || 0)).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                 </div>
                 <p className="text-sm text-green-700 mt-2">
-                  Total Profit: ₹{Number(subBrokerProfit?.total_profit || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+                  Total Profit: ₹{Math.abs(Number(subBrokerProfit?.total_profit || 0)).toLocaleString('en-IN', { maximumFractionDigits: 2 })}
                 </p>
                 <p className="text-xs text-green-600 mt-1">
                   {subBrokerProfit?.transaction_count || 0} transactions
@@ -153,29 +340,25 @@ const Dashboard = () => {
             ) : (
               <div className="space-y-3">
                 {recentBills.map((bill) => (
-                  <div key={bill.id} className="flex items-center justify-between py-2 border-b border-border last:border-0">
+                  <div 
+                    key={bill.id} 
+                    className="flex items-center justify-between py-2 border-b border-border last:border-0 hover:bg-muted/50 cursor-pointer"
+                    onClick={() => fetchClientDetails(bill.party_id, bill.party_code, bill.party_name)}
+                  >
                     <div className="flex-1">
                       <div className="font-medium text-sm">{bill.bill_number}</div>
-                      <div className="text-xs text-muted-foreground">
+                      <div className="text-xs text-muted-foreground flex items-center">
                         {bill.party_code} - {bill.party_name}
+                        <ChevronRight className="h-3 w-3 ml-1" />
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="font-mono text-sm font-medium">
-                        ₹{Number(bill.total_amount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      <div className="font-medium">
+                        ₹{(Number(bill.total_amount) - Number(bill.paid_amount)).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {new Date(bill.bill_date).toLocaleDateString('en-IN')}
+                        Total: ₹{Number(bill.total_amount).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
                       </div>
-                    </div>
-                    <div className="ml-3">
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${
-                        bill.status === 'paid' ? 'bg-green-100 text-green-700' :
-                        bill.status === 'partial' ? 'bg-yellow-100 text-yellow-700' :
-                        'bg-red-100 text-red-700'
-                      }`}>
-                        {bill.status}
-                      </span>
                     </div>
                   </div>
                 ))}

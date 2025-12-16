@@ -79,6 +79,10 @@ const FOBills = () => {
   const formRef = useRef<HTMLFormElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // Date filter states
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
+
   const [formData, setFormData] = useState({
     bill_number: "",
     party_id: "",
@@ -93,28 +97,42 @@ const FOBills = () => {
     fetchParties();
   }, []);
 
-  // Fetch bills based on bill type from search params
+  // Fetch bills based on bill type from search params and date filters
   useEffect(() => {
     const fetchBillsByType = async () => {
       setIsLoading(true);
       try {
         const type = searchParams.get('type') as 'party' | 'broker' | null;
-        const response = await fetch(`http://localhost:3001/api/fo/bills${type ? `?type=${type}` : ""}`);
+        
+        // Build query parameters
+        const params = new URLSearchParams();
+        if (type) params.append('type', type);
+        if (fromDate) params.append('from_date', fromDate);
+        if (toDate) params.append('to_date', toDate);
+        
+        const queryString = params.toString();
+        const response = await fetch(`http://localhost:3001/api/fo/bills${queryString ? `?${queryString}` : ""}`);
+        
+        if (!response.ok) {
+          throw new Error(`Failed to fetch bills: ${response.statusText}`);
+        }
+        
         const result = await response.json();
         setBills(Array.isArray(result) ? result : []);
       } catch (error) {
         console.error('Error fetching bills:', error);
         toast({
           title: "Error",
-          description: "Failed to fetch bills",
+          description: error instanceof Error ? error.message : "Failed to fetch bills",
           variant: "destructive",
         });
+        setBills([]); // Set to empty array on error
       }
       setIsLoading(false);
     };
     
     fetchBillsByType();
-  }, [searchParams]);
+  }, [searchParams, fromDate, toDate]);
 
   // Filter bills based on search term
   useEffect(() => {
@@ -143,7 +161,15 @@ const FOBills = () => {
     setIsLoading(true);
     try {
       const type = searchParams.get('type') as 'party' | 'broker' | null;
-      const response = await fetch(`http://localhost:3001/api/fo/bills${type ? `?type=${type}` : ""}`);
+      
+      // Build query parameters
+      const params = new URLSearchParams();
+      if (type) params.append('type', type);
+      if (fromDate) params.append('from_date', fromDate);
+      if (toDate) params.append('to_date', toDate);
+      
+      const queryString = params.toString();
+      const response = await fetch(`http://localhost:3001/api/fo/bills${queryString ? `?${queryString}` : ""}`);
       
       if (!response.ok) {
         throw new Error(`Failed to fetch bills: ${response.statusText}`);
@@ -673,6 +699,67 @@ const FOBills = () => {
           </div>
         }
       />
+      {/* Date Filters Section */}
+      <div className="px-6 pb-4 mb-6 p-4 bg-secondary rounded-lg">
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="from-date" className="text-sm font-medium">
+              From Date
+            </Label>
+            <Input
+              id="from-date"
+              type="date"
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+              className="w-40 bg-background"
+            />
+          </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="to-date" className="text-sm font-medium">
+              To Date
+            </Label>
+            <Input
+              id="to-date"
+              type="date"
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+              className="w-40 bg-background"
+            />
+          </div>
+          
+          <div className="flex gap-2">
+            <Button 
+              onClick={fetchBills}
+              className="h-10"
+            >
+              Apply Filters
+            </Button>
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setFromDate("");
+                setToDate("");
+                setTimeout(() => fetchBills(), 0);
+              }}
+              className="h-10"
+            >
+              Reset
+            </Button>
+          </div>
+          
+          <div className="relative ml-auto">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              ref={searchInputRef}
+              placeholder="Search bills... (F3)"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10 w-64 bg-background"
+            />
+          </div>
+        </div>
+      </div>
 
       <div className="p-6">
         <div className="rounded-lg border border-border bg-card overflow-hidden">

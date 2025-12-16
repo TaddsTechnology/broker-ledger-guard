@@ -220,10 +220,6 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                   <td>Trading Amount</td>
                   <td>${billData.tradingAmount.toFixed(2)}</td>
                 </tr>
-                <tr>
-                  <td>Brokerage</td>
-                  <td>${((billData.deliveryBrokerageAmount || 0) + (billData.tradingBrokerageAmount || 0)).toFixed(2)}</td>
-                </tr>
                 `}
                 <tr>
                   <td><strong>${billData.billType === 'broker' ? 'Net Payable Amount' : 'Net Amount'}</strong></td>
@@ -318,7 +314,7 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
       billText += `Sell Amount: ₹${billData.sellAmount.toFixed(2)}\n`;
       billText += `Delivery Amount: ₹${billData.deliveryAmount.toFixed(2)}\n`;
       billText += `Trading Amount: ₹${billData.tradingAmount.toFixed(2)}\n`;
-      billText += `Brokerage: ₹${((billData.deliveryBrokerageAmount || 0) + (billData.tradingBrokerageAmount || 0)).toFixed(2)}\n`;
+      // Removed brokerage line as requested
     }
     billText += `${billData.billType === 'broker' ? 'Net Payable Amount' : 'Net Amount'}: ₹${(billData.netAmount || 0).toFixed(2)}\n\n`;
     
@@ -470,10 +466,6 @@ export function BillTemplate({ billData, open, onOpenChange }: BillTemplateProps
                       <tr className="border-b">
                         <td className="p-3">Trading Amount</td>
                         <td className="p-3 text-right">₹{billData.tradingAmount.toFixed(2)}</td>
-                      </tr>
-                      <tr className="border-b">
-                        <td className="p-3">Brokerage</td>
-                        <td className="p-3 text-right">₹{((billData.deliveryBrokerageAmount || 0) + (billData.tradingBrokerageAmount || 0)).toFixed(2)}</td>
                       </tr>
                     </>
                   )}

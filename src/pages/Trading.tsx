@@ -354,6 +354,7 @@ const Trading = () => {
       });
       
       // Call the stock-trades API endpoint with correct ledger logic
+      // NOTE: server.txt exposes this as /api/stock-trades/process (no /equity prefix)
       const response = await fetch('http://localhost:3001/api/stock-trades/process', {
         method: 'POST',
         headers: {
@@ -366,8 +367,17 @@ const Trading = () => {
       });
       
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to process trades');
+        // Try to read JSON error, but fall back to generic message if response isn't JSON
+        let message = 'Failed to process trades';
+        try {
+          const errorData = await response.json();
+          if (errorData && typeof errorData.error === 'string') {
+            message = errorData.error;
+          }
+        } catch (_) {
+          // Probably an HTML 404/500 page; keep default message
+        }
+        throw new Error(message);
       }
       
       const result = await response.json();

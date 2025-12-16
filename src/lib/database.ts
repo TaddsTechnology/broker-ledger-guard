@@ -343,4 +343,18 @@ export const contractQueries = {
 // Cash transaction operations
 export const cashTransactionQueries = {
   delete: (id: string) => apiCall(`/cash/${id}`, { method: 'DELETE' }),
+  
+  // Add missing methods
+  getBook: (date: string) => apiCall(`/cash/book?date=${date}`),
+  getRecent: () => apiCall(`/cash/recent`),
+  create: (data: {
+    date: string;
+    party_code: string;
+    amount: number;
+    type: "RECEIPT" | "PAYMENT";
+    narration?: string;
+  }) => apiCall(`/cash/create`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
 };

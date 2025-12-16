@@ -95,6 +95,11 @@ const menuItems: MenuItem[] = [
     icon: BarChart3,
     url: "/equity/summary",
   },
+  {
+    title: "Settings",
+    icon: Settings,
+    url: "/settings",
+  },
   // {
   //   title: "Reports & Analytics",
   //   icon: FileSpreadsheet,

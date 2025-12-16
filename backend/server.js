@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
 require('dotenv').config();
@@ -1427,13 +1427,23 @@ app.post('/api/stock-trades/process', async (req, res) => {
 
       const party = partyQuery.rows[0];
       let totalBrokerage = 0;
+      
+      // Get current balance by recalculating from ALL entries (not just last one)
+      // This ensures correct balance even when bills are created out of chronological order
       let currentClientBalance = 0;
-      const clientBalanceQuery = await client.query(
-        'SELECT balance FROM ledger_entries WHERE party_id = $1 AND reference_type = $2 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
-        [party.id, 'client_settlement']
+      const allEntriesQuery = await client.query(
+        `SELECT debit_amount, credit_amount 
+         FROM ledger_entries 
+         WHERE party_id = $1 
+         ORDER BY entry_date ASC, created_at ASC`,
+        [party.id]
       );
-      if (clientBalanceQuery.rows.length > 0) {
-        currentClientBalance = Number(clientBalanceQuery.rows[0].balance) || 0;
+      
+      // Recalculate running balance from all entries
+      for (const entry of allEntriesQuery.rows) {
+        const debit = Number(entry.debit_amount) || 0;
+        const credit = Number(entry.credit_amount) || 0;
+        currentClientBalance = currentClientBalance + debit - credit;
       }
 
       // Get current BROKERAGE balance (not trade settlement balance)
@@ -1583,7 +1593,13 @@ app.post('/api/stock-trades/process', async (req, res) => {
         }
 
         // Update the running balance
-        const newClientBalance = currentClientBalance + finalClientBalance;
+        // Correct accounting: 
+        // - Debit (party owes you) = INCREASE balance
+        // - Credit (you owe party) = DECREASE balance
+        // finalClientBalance > 0 means party owes you (debit), < 0 means you owe party (credit)
+        const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
+        const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
+        const newClientBalance = currentClientBalance + debitAmount - creditAmount;
 
         // Always create new bill for each CSV upload
         // Use billDateStr (selected by user) for bill number prefix
@@ -1600,8 +1616,6 @@ app.post('/api/stock-trades/process', async (req, res) => {
         const billId = billResult.rows[0].id;
 
         // Create single consolidated ledger entry
-        const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
-        const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
         
         const consolidatedLedgerResult = await client.query(
           'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
@@ -1864,27 +1878,36 @@ app.post('/api/stock-trades/process', async (req, res) => {
       }
 
       // Create ledger entry for Main Broker (Net Trade + Broker Brokerage)
+      // Recalculate broker balance from ALL entries for accuracy
       let brokerBalance = 0;
-      const brokerBalanceQuery = await client.query(
-        'SELECT balance FROM ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+      const allBrokerEntriesQuery = await client.query(
+        `SELECT debit_amount, credit_amount 
+         FROM ledger_entries 
+         WHERE party_id IS NULL AND reference_type = $1 
+         ORDER BY entry_date ASC, created_at ASC`,
         ['broker_brokerage']
       );
-      if (brokerBalanceQuery.rows.length > 0) {
-        brokerBalance = Number(brokerBalanceQuery.rows[0].balance) || 0;
+      
+      // Recalculate running balance from all broker entries
+      for (const entry of allBrokerEntriesQuery.rows) {
+        const debit = Number(entry.debit_amount) || 0;
+        const credit = Number(entry.credit_amount) || 0;
+        // Broker balance: Credit increases (we owe more), Debit decreases (we owe less)
+        brokerBalance = brokerBalance + credit - debit;
       }
-      // For main broker, the balance should be negative as per requirement
-      // Money owed to main broker should be shown as negative balance
+      
+      // Now add the NEW entry's amount to the balance
       let debitForBroker = 0;
       let creditForBroker = 0;
       
       if (netTradeAmount > 0) {
         // Net BUY → broker has to receive money from us → credit
         creditForBroker = mainBrokerBillTotal;
-        brokerBalance -= mainBrokerBillTotal;
+        brokerBalance = brokerBalance + mainBrokerBillTotal;  // We owe more to broker
       } else {
         // Net SELL or flat → broker payable reduces / we owe less → debit
         debitForBroker = mainBrokerBillTotal;
-        brokerBalance -= mainBrokerBillTotal;
+        brokerBalance = brokerBalance - mainBrokerBillTotal;  // We owe less to broker
       }
  
       const brokerLedgerResult = await client.query(
@@ -1903,17 +1926,26 @@ app.post('/api/stock-trades/process', async (req, res) => {
       results.brokerEntries.push(brokerLedgerResult.rows[0]);
       
       // Create Sub-Broker Profit ledger entry
+      // Recalculate sub-broker profit balance from ALL entries for accuracy
       let subBrokerProfitBalance = 0;
-      const profitBalanceQuery = await client.query(
-        'SELECT balance FROM ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+      const allProfitEntriesQuery = await client.query(
+        `SELECT debit_amount, credit_amount 
+         FROM ledger_entries 
+         WHERE party_id IS NULL AND reference_type = $1 
+         ORDER BY entry_date ASC, created_at ASC`,
         ['sub_broker_profit']
       );
-      if (profitBalanceQuery.rows.length > 0) {
-        subBrokerProfitBalance = Number(profitBalanceQuery.rows[0].balance) || 0;
+      
+      // Recalculate running balance from all profit entries
+      for (const entry of allProfitEntriesQuery.rows) {
+        const debit = Number(entry.debit_amount) || 0;
+        const credit = Number(entry.credit_amount) || 0;
+        // Sub-broker profit: Credit increases profit (always positive for profit)
+        subBrokerProfitBalance = subBrokerProfitBalance + credit - debit;
       }
-      // For sub-broker profit, the balance should be negative as per requirement
-      // Profit for sub-broker should be shown as negative balance
-      subBrokerProfitBalance -= subBrokerProfit;
+      
+      // Add the NEW profit entry
+      subBrokerProfitBalance = subBrokerProfitBalance + subBrokerProfit;
       
       const profitLedgerResult = await client.query(
         'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
@@ -2007,52 +2039,122 @@ app.get('/api/summary/parties', async (req, res) => {
 
     const table = isFO ? 'fo_ledger_entries' : 'ledger_entries';
 
-    const sql = `
-      SELECT
-        COALESCE(
-          p.party_code,
-          CASE 
-            WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
-            WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
-            ELSE NULL
-          END
-        ) AS party_code,
-        COALESCE(
-          p.name,
-          CASE 
-            WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
-            WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'Sub Broker Profit'
-            ELSE NULL
-          END
-        ) AS party_name,
-        COALESCE(SUM(l.debit_amount), 0)  AS total_debit,
-        COALESCE(SUM(l.credit_amount), 0) AS total_credit,
-        -- Closing = Debit - Credit so that client receivable (they owe us) shows as positive,
-        -- and payable (we owe them / main broker) shows as negative.
-        COALESCE(SUM(l.debit_amount - l.credit_amount), 0) AS closing_balance
-      FROM ${table} l
-      LEFT JOIN party_master p ON l.party_id = p.id
-      WHERE (l.party_id IS NOT NULL)
-         OR (l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment','sub_broker_profit'))
-      GROUP BY 
-        COALESCE(
-          p.party_code,
-          CASE 
-            WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
-            WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
-            ELSE NULL
-          END
-        ),
-        COALESCE(
-          p.name,
-          CASE 
-            WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
-            WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'Sub Broker Profit'
-            ELSE NULL
-          END
+    // For F&O module, get the latest balance for each party instead of summing all entries
+    // This ensures we show current balances like the equity module does
+    let sql;
+    if (isFO) {
+      // For F&O, show a "balanced" summary:
+      // - MAIN-BROKER shows under Debit (amount payable to main broker)
+      // - Parties + SUB-BROKER show under Credit (amount receivable + profit)
+      // And we emit signed closing balances so Net Closing becomes 0 when books balance.
+      sql = `
+        WITH latest_balances AS (
+          SELECT DISTINCT ON (
+            CASE 
+              WHEN party_id IS NULL AND reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+              WHEN party_id IS NULL AND reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
+              ELSE party_id::text
+            END
+          )
+            party_id,
+            reference_type,
+            balance,
+            entry_date,
+            created_at,
+            CASE 
+              WHEN party_id IS NULL AND reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+              WHEN party_id IS NULL AND reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
+              ELSE party_id::text
+            END AS group_key
+          FROM ${table}
+          WHERE (party_id IS NOT NULL)
+             OR (party_id IS NULL AND reference_type IN ('broker_brokerage','broker_payment','sub_broker_profit'))
+          ORDER BY 
+            CASE 
+              WHEN party_id IS NULL AND reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+              WHEN party_id IS NULL AND reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
+              ELSE party_id::text
+            END,
+            entry_date DESC,
+            created_at DESC
         )
-      ORDER BY party_code
-    `;
+        SELECT
+          CASE 
+            WHEN lb.group_key = 'MAIN-BROKER' THEN 'MAIN-BROKER'
+            WHEN lb.group_key = 'SUB-BROKER' THEN 'SUB-BROKER'
+            ELSE p.party_code
+          END AS party_code,
+          CASE 
+            WHEN lb.group_key = 'MAIN-BROKER' THEN 'Main Broker'
+            WHEN lb.group_key = 'SUB-BROKER' THEN 'Sub Broker Profit'
+            ELSE p.name
+          END AS party_name,
+          CASE 
+            WHEN lb.group_key = 'MAIN-BROKER' THEN ABS(COALESCE(lb.balance, 0))
+            ELSE 0
+          END AS total_debit,
+          CASE 
+            WHEN lb.group_key <> 'MAIN-BROKER' THEN ABS(COALESCE(lb.balance, 0))
+            ELSE 0
+          END AS total_credit,
+          CASE 
+            WHEN lb.group_key = 'MAIN-BROKER' THEN ABS(COALESCE(lb.balance, 0))
+            ELSE -ABS(COALESCE(lb.balance, 0))
+          END AS closing_balance
+        FROM latest_balances lb
+        LEFT JOIN party_master p ON lb.party_id = p.id
+        WHERE lb.balance IS NOT NULL
+        ORDER BY party_code
+      `;
+    } else {
+      // Original equity logic
+      sql = `
+        SELECT
+          COALESCE(
+            p.party_code,
+            CASE 
+              WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+              WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
+              ELSE NULL
+            END
+          ) AS party_code,
+          COALESCE(
+            p.name,
+            CASE 
+              WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
+              WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'Sub Broker Profit'
+              ELSE NULL
+            END
+          ) AS party_name,
+          COALESCE(SUM(l.debit_amount), 0)  AS total_debit,
+          COALESCE(SUM(l.credit_amount), 0) AS total_credit,
+          -- Closing = Debit - Credit so that client receivable (they owe us) shows as positive,
+          -- and payable (we owe them / main broker) shows as negative.
+          COALESCE(SUM(l.debit_amount - l.credit_amount), 0) AS closing_balance
+        FROM ${table} l
+        LEFT JOIN party_master p ON l.party_id = p.id
+        WHERE (l.party_id IS NOT NULL)
+           OR (l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment','sub_broker_profit'))
+        GROUP BY 
+          COALESCE(
+            p.party_code,
+            CASE 
+              WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+              WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
+              ELSE NULL
+            END
+          ),
+          COALESCE(
+            p.name,
+            CASE 
+              WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
+              WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'Sub Broker Profit'
+              ELSE NULL
+            END
+          )
+        ORDER BY party_code
+      `;
+    }
 
     const result = await pool.query(sql);
     return res.json(result.rows || []);
@@ -2067,9 +2169,9 @@ app.get('/api/dashboard/stats', async (req, res) => {
   try {
     const stats = await pool.query(`
       SELECT 
-        (SELECT COUNT(DISTINCT party_id) FROM contracts WHERE party_id IS NOT NULL) as active_clients,
-        (SELECT COALESCE(SUM(total_amount), 0) FROM bills WHERE bill_type = 'party') as total_billed,
-        (SELECT COALESCE(SUM(total_amount - paid_amount), 0) FROM bills WHERE bill_type = 'party' AND status != 'paid') as pending_receivables,
+        (SELECT COUNT(DISTINCT party_id) FROM bills WHERE bill_type = 'party' AND party_id IS NOT NULL) as active_clients,
+        (SELECT COALESCE(SUM(ABS(total_amount)), 0) FROM bills WHERE bill_type = 'party') as total_billed,
+        (SELECT COALESCE(SUM(total_amount - paid_amount), 0) FROM bills WHERE bill_type = 'party' AND status != 'paid' AND (total_amount - paid_amount) > 0) as pending_receivables,
         (SELECT COUNT(*) FROM bills WHERE bill_type = 'party' AND status = 'pending') as pending_bills_count,
         (SELECT COALESCE(SUM(credit_amount), 0) 
          FROM ledger_entries 
@@ -2093,6 +2195,8 @@ app.get('/api/dashboard/recent-bills', async (req, res) => {
         b.bill_number,
         b.bill_date,
         b.total_amount,
+        b.paid_amount,
+        (b.total_amount - b.paid_amount) as pending_amount,
         b.status,
         p.party_code,
         p.name as party_name
@@ -2533,7 +2637,10 @@ app.post('/api/bills/:billId/payment', async (req, res) => {
 
       // Convention: positive balance = client owes you.
       // A payment from client (for a bill) is a Pay-In ? reduces balance.
-      const newBalance = currentBalance - amountValue;
+      // If current balance is negative (you owe broker), a payment should make it less negative (closer to zero)
+            const newBalance = currentBalance >= 0 
+              ? currentBalance - amountValue 
+              : currentBalance + amountValue;
 
       await client.query(
         `INSERT INTO ledger_entries
@@ -2565,8 +2672,11 @@ app.post('/api/bills/:billId/payment', async (req, res) => {
       const currentBalance = balRes.rows.length > 0 ? Number(balRes.rows[0].balance) || 0 : 0;
 
       // Convention: positive balance = you owe main broker (credit from bills).
-      // A payment TO main broker reduces that balance.
-      const newBalance = currentBalance - amountValue;
+      // A payment FROM main broker (to you) reduces that balance.
+      // If current balance is negative (you owe broker), a payment should make it less negative (closer to zero)
+            const newBalance = currentBalance >= 0 
+              ? currentBalance - amountValue 
+              : currentBalance + amountValue;
 
       await client.query(
         `INSERT INTO ledger_entries
@@ -2576,8 +2686,8 @@ app.post('/api/bills/:billId/payment', async (req, res) => {
           null,
           payment_date || now.toISOString().slice(0, 10),
           `Main Broker Payment (bill ${bill.bill_number || billId})`,
-          amountValue,
-          0,
+          0,  // debit_amount (changed from amountValue)
+          amountValue,  // credit_amount (changed from 0)
           newBalance,
           'broker_payment',
           paymentInsert.rows[0].id,
@@ -2772,37 +2882,36 @@ app.post('/api/payments', async (req, res) => {
     let brokerParticulars = '';
     
     if (payType === 'payin') {
-      // Party pays you (Money IN from party).
-      // Convention: positive balance = client owes you.
-      // So receiving money should move that positive balance TOWARDS ZERO → subtract the amount.
-      creditAmount = amountValue;
-      debitAmount = 0;
-      newPartyBalance = currentPartyBalance - amountValue;
+      // Party pays you (Money IN from party = you TAKE from party)
+      // PARTY DEBIT: Party owes less, you receive money
+      // In ledger: Debit increases receivables
+      debitAmount = amountValue;
+      creditAmount = 0;
+      newPartyBalance = currentPartyBalance - amountValue;  // Balance decreases (they owe less)
       particulars = apply_to_bill_id 
         ? `Pay-In (${paymentMethod}) applied to bill ${bill?.bill_number || apply_to_bill_id}` 
         : `Pay-In received (${paymentMethod})`;
       referenceType = 'payment_received';
       
-      // For broker: When party pays sub-broker, broker should be debited
-      brokerDebitAmount = amountValue;
-      brokerCreditAmount = 0;
+      // For broker: When party pays you, broker CREDIT (you take from broker)
+      brokerDebitAmount = 0;
+      brokerCreditAmount = amountValue;
       brokerParticulars = `Broker adjustment for client pay-in: ${party.party_code} paid ${amountValue}`;
     } else {
-      // You pay party (Money OUT to party)
-      // Convention: positive balance = client owes you, negative = you owe client.
-      // A Pay-Out that settles a bill should move a POSITIVE balance back toward zero.
-      // So we post on DEBIT side and DECREASE the running balance.
-      debitAmount = amountValue;
-      creditAmount = 0;
-      newPartyBalance = currentPartyBalance - amountValue;
+      // You pay party (Money OUT to party = you GIVE to party)
+      // PARTY CREDIT: Party is owed more, you pay money
+      // In ledger: Credit decreases receivables / increases payables
+      debitAmount = 0;
+      creditAmount = amountValue;
+      newPartyBalance = currentPartyBalance - amountValue;  // Balance decreases (you owe less)
       particulars = apply_to_bill_id 
         ? `Pay-Out (${paymentMethod}) for bill ${bill?.bill_number || apply_to_bill_id}` 
         : `Pay-Out made (${paymentMethod})`;
       referenceType = 'payment_made';
       
-      // For broker: When sub-broker pays party, broker should be credited
-      brokerDebitAmount = 0;
-      brokerCreditAmount = amountValue;
+      // For broker: When you pay party, broker DEBIT (you give to broker)
+      brokerDebitAmount = amountValue;
+      brokerCreditAmount = 0;
       brokerParticulars = `Broker adjustment for client pay-out: ${party.party_code} received ${amountValue}`;
     }
     
@@ -3118,37 +3227,34 @@ app.post('/api/fo/payments', async (req, res) => {
     let brokerParticulars = '';
     
     if (payType === 'payin') {
-      // Party pays you (Money IN from party) → treat as CREDIT, reduce positive balance
-      debitAmount = 0;
-      creditAmount = amountValue;
-      newBalance = currentBalance - amountValue;
+      // Party pays you (Money IN from party = you TAKE from party)
+      // PARTY DEBIT: Party owes less, you receive money
+      debitAmount = amountValue;
+      creditAmount = 0;
+      newBalance = currentBalance - amountValue;  // Balance decreases (they owe less)
       particulars = bill 
         ? `F&O Pay-In (${paymentMethod}) applied to bill ${bill.bill_number}` 
         : `F&O Pay-In received (${paymentMethod})`;
       referenceType = 'payment_received';
       
-      // For broker: When party pays sub-broker, broker should be debited
-      brokerDebitAmount = amountValue;
-      brokerCreditAmount = 0;
+      // For broker: When party pays you, broker CREDIT (you take from broker)
+      brokerDebitAmount = 0;
+      brokerCreditAmount = amountValue;
       brokerParticulars = `Broker adjustment for client pay-in: ${party.party_code} paid ${amountValue}`;
     } else {
-      // You pay party (Money OUT to party) → treat as DEBIT, and move balance TOWARDS 0
-      // Example 1 (client owes you): balance = +20000, Pay-Out 20000 → newBalance = 0
-      // Example 2 (you owe client):  balance = -20000, Pay-Out 5000  → newBalance = -15000
-      debitAmount = amountValue;
-      creditAmount = 0;
-      // Move balance toward zero: if currentBalance is positive, subtract; if negative, add
-      newBalance = currentBalance >= 0
-        ? currentBalance - amountValue
-        : currentBalance + amountValue;
+      // You pay party (Money OUT to party = you GIVE to party)
+      // PARTY CREDIT: Party is owed more, you pay money
+      debitAmount = 0;
+      creditAmount = amountValue;
+      newBalance = currentBalance - amountValue;  // Balance decreases (you owe less)
       particulars = bill 
         ? `F&O Pay-Out (${paymentMethod}) for bill ${bill.bill_number}` 
         : `F&O Pay-Out made (${paymentMethod})`;
       referenceType = 'payment_made';
       
-      // For broker: When sub-broker pays party, broker should be credited
-      brokerDebitAmount = 0;
-      brokerCreditAmount = amountValue;
+      // For broker: When you pay party, broker DEBIT (you give to broker)
+      brokerDebitAmount = amountValue;
+      brokerCreditAmount = 0;
       brokerParticulars = `Broker adjustment for client pay-out: ${party.party_code} received ${amountValue}`;
     }
     
@@ -3334,7 +3440,10 @@ app.post('/api/fo/bills/:billId/payment', async (req, res) => {
 
       // Convention: positive balance = client owes you.
       // A payment from client (for a bill) is a Pay-In ? reduces balance.
-      const newBalance = currentBalance - amountValue;
+      // If current balance is negative (you owe broker), a payment should make it less negative (closer to zero)
+            const newBalance = currentBalance >= 0 
+              ? currentBalance - amountValue 
+              : currentBalance + amountValue;
 
       await client.query(
         `INSERT INTO fo_ledger_entries
@@ -3366,8 +3475,11 @@ app.post('/api/fo/bills/:billId/payment', async (req, res) => {
       const currentBalance = balRes.rows.length > 0 ? Number(balRes.rows[0].balance) || 0 : 0;
 
       // Convention: positive balance = you owe main broker (credit from bills).
-      // A payment TO main broker reduces that balance.
-      const newBalance = currentBalance - amountValue;
+      // A payment FROM main broker (to you) reduces that balance.
+      // If current balance is negative (you owe broker), a payment should make it less negative (closer to zero)
+            const newBalance = currentBalance >= 0 
+              ? currentBalance - amountValue 
+              : currentBalance + amountValue;
 
       await client.query(
         `INSERT INTO fo_ledger_entries
@@ -3377,8 +3489,8 @@ app.post('/api/fo/bills/:billId/payment', async (req, res) => {
           null,
           payment_date || now.toISOString().slice(0, 10),
           `Main Broker Payment (bill ${bill.bill_number || billId})`,
-          amountValue,
-          0,
+          0,  // debit_amount (changed from amountValue)
+          amountValue,  // credit_amount (changed from 0)
           newBalance,
           'broker_payment',
           paymentInsert.rows[0].id,
@@ -3589,7 +3701,7 @@ app.get('/api/cash/book', async (req, res) => {
        SELECT 
          l.entry_date as date,
          p.party_code,
-         l.credit_amount as amount,
+         l.debit_amount as amount,
          'PAYMENT' as type,
          l.particulars as narration,
          l.created_at,
@@ -3598,13 +3710,13 @@ app.get('/api/cash/book', async (req, res) => {
        JOIN party_master p ON l.party_id = p.id
        WHERE l.entry_date = $1 
          AND l.reference_type = 'payment_made'
-         AND l.credit_amount > 0
+         AND l.debit_amount > 0
        UNION ALL
        -- Main Broker payments (party_id NULL, reference_type='broker_payment')
        SELECT
          l.entry_date as date,
          'MAIN-BROKER' as party_code,
-         l.debit_amount as amount,
+         l.credit_amount as amount,
          'PAYMENT' as type,
          l.particulars as narration,
          l.created_at,
@@ -3613,7 +3725,7 @@ app.get('/api/cash/book', async (req, res) => {
        WHERE l.entry_date = $1
          AND l.party_id IS NULL
          AND l.reference_type = 'broker_payment'
-         AND l.debit_amount > 0
+         AND l.credit_amount > 0
        UNION ALL
        -- F&O Payment Entries
        SELECT 
@@ -3638,7 +3750,7 @@ app.get('/api/cash/book', async (req, res) => {
          l.particulars as narration,
          l.created_at,
          l.id::text
-       FROM fo_ledger_entries l
+       FROM ledger_entries l
        JOIN party_master p ON l.party_id = p.id
        WHERE l.entry_date = $1 
          AND l.reference_type = 'payment_made'
@@ -3648,7 +3760,7 @@ app.get('/api/cash/book', async (req, res) => {
        SELECT
          l.entry_date as date,
          'MAIN-BROKER' as party_code,
-         l.debit_amount as amount,
+         l.credit_amount as amount,
          'PAYMENT' as type,
          l.particulars as narration,
          l.created_at,
@@ -3657,7 +3769,7 @@ app.get('/api/cash/book', async (req, res) => {
        WHERE l.entry_date = $1
          AND l.party_id IS NULL
          AND l.reference_type = 'broker_payment'
-         AND l.debit_amount > 0
+         AND l.credit_amount > 0
        ORDER BY created_at ASC`,
       [date]
     );
@@ -4113,7 +4225,7 @@ app.post('/api/fo/trades/import', async (req, res) => {
           }
         }
         
-        const side = (trade.Side || trade.side || '').toString().toUpperCase();
+        const side = (trade.Side || trade.side || '').toString().trim().toUpperCase();
         
         // Get quantity (in lots)
         let lotQuantity = 0;
@@ -4235,29 +4347,18 @@ app.post('/api/fo/trades/import', async (req, res) => {
         // Check for broker ID in various formats
         const brokerIdRaw = trade.brokerid || trade.brokerId || trade.BrokerId || trade.BrokerID || '';
         if (brokerIdRaw) {
-          // Try to find broker by ID
+          // Try to find broker by broker_code (not UUID)
+          const brokerCodeRaw = brokerIdRaw.toString().toUpperCase();
           const brokerQuery = await client.query(
-            'SELECT id, broker_code FROM broker_master WHERE id = $1 OR UPPER(broker_code) = $2',
-            [brokerIdRaw, brokerIdRaw.toString().toUpperCase()]
+            'SELECT id, broker_code FROM broker_master WHERE UPPER(broker_code) = $1',
+            [brokerCodeRaw]
           );
           
           if (brokerQuery.rows.length > 0) {
             brokerId = brokerQuery.rows[0].id;
             brokerCode = brokerQuery.rows[0].broker_code;
           } else {
-            // If broker not found by ID, try to find by code
-            const brokerCodeRaw = brokerIdRaw.toString().toUpperCase();
-            const brokerByCodeQuery = await client.query(
-              'SELECT id, broker_code FROM broker_master WHERE UPPER(broker_code) = $1',
-              [brokerCodeRaw]
-            );
-            
-            if (brokerByCodeQuery.rows.length > 0) {
-              brokerId = brokerByCodeQuery.rows[0].id;
-              brokerCode = brokerByCodeQuery.rows[0].broker_code;
-            } else {
-              console.warn(`Broker not found: ${brokerIdRaw}`);
-            }
+            console.warn(`Broker not found: ${brokerIdRaw}`);
           }
         }
 
@@ -4268,8 +4369,8 @@ app.post('/api/fo/trades/import', async (req, res) => {
         const contractResult = await client.query(
           `INSERT INTO fo_contracts 
             (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date, 
-             trade_type, quantity, price, amount, brokerage_rate, brokerage_amount, status, notes)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) 
+             trade_type, side, quantity, price, amount, brokerage_rate, brokerage_amount, status, notes)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) 
            RETURNING *`,
           [
             contractNumber, 
@@ -4279,6 +4380,7 @@ app.post('/api/fo/trades/import', async (req, res) => {
             brokerCode,
             tradeDateValue,
             type,
+            side,
             actualQuantity,
             price,
             amount,
@@ -4288,6 +4390,60 @@ app.post('/api/fo/trades/import', async (req, res) => {
             'Imported from trading file'
           ]
         );
+
+        // Update FO positions immediately on import so "Current Positions" is not empty.
+        // We treat:
+        //  BUY  => +qty
+        //  SELL => -qty
+        const posRes = await client.query(
+          'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+          [party.id, instrument.id]
+        );
+
+        if (posRes.rows.length > 0) {
+          const position = posRes.rows[0];
+          const currentQty = Number(position.quantity) || 0;
+          const currentAvg = Number(position.avg_price) || 0;
+
+          let newQty = currentQty;
+          let newAvg = currentAvg;
+
+          if (side === 'BUY') {
+            // If we are short, BUY reduces the short; if it flips to long, reset avg to this price.
+            newQty = currentQty + actualQuantity;
+            if (currentQty >= 0) {
+              const totalCost = (currentQty * currentAvg) + (actualQuantity * price);
+              newAvg = newQty !== 0 ? (totalCost / newQty) : price;
+            } else if (newQty > 0) {
+              newAvg = price;
+            }
+          } else if (side === 'SELL') {
+            // If we are long, SELL reduces the long; if it flips to short, reset avg to this price.
+            newQty = currentQty - actualQuantity;
+            if (currentQty <= 0) {
+              const curAbs = Math.abs(currentQty);
+              const newAbs = Math.abs(newQty);
+              const totalShortValue = (curAbs * currentAvg) + (actualQuantity * price);
+              newAvg = newAbs !== 0 ? (totalShortValue / newAbs) : price;
+            } else if (newQty < 0) {
+              newAvg = price;
+            }
+          }
+
+          const status = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+
+          await client.query(
+            'UPDATE fo_positions SET quantity = $1, avg_price = $2, last_trade_date = $3, status = $4, last_updated = CURRENT_TIMESTAMP WHERE id = $5',
+            [newQty, newAvg, tradeDateValue, status, position.id]
+          );
+        } else {
+          const qty = side === 'SELL' ? -actualQuantity : actualQuantity;
+          const status = Math.abs(qty) < 0.01 ? 'closed' : 'open';
+          await client.query(
+            'INSERT INTO fo_positions (party_id, instrument_id, quantity, avg_price, last_trade_date, status) VALUES ($1, $2, $3, $4, $5, $6)',
+            [party.id, instrument.id, qty, price, tradeDateValue, status]
+          );
+        }
 
         imported.push({ 
           clientId, 
@@ -4569,10 +4725,12 @@ app.post('/api/fo/trades/process', async (req, res) => {
         // Track buy/sell amounts (only for non-CF trades)
         if (!isCarryForward) {
           totalBrokerage += brokerageAmount;
+          // For F&O: BUY means client owes us money (debit for client = credit for us)
+          // SELL means we owe client money (credit for client = debit for us)
           if (side === 'BUY') {
-            totalBuyAmount += amount;
+            totalBuyAmount += amount;  // Client owes us money
           } else if (side === 'SELL') {
-            totalSellAmount += amount;
+            totalSellAmount += amount; // We owe client money
           }
         }
 
@@ -4675,15 +4833,16 @@ app.post('/api/fo/trades/process', async (req, res) => {
             // Insert auto CF BUY contract
             await client.query(
               `INSERT INTO fo_contracts 
-                (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, quantity, price, amount, brokerage_amount, status, notes)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, side, quantity, price, amount, brokerage_amount, status, notes)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
               [
                 party.id,
                 instrument.id,
                 null, // No broker for CF
                 null,
                 nextDayStr,
-                'BUY',
+                'CF', // trade_type
+                'BUY', // side
                 actualQuantity,
                 price,
                 amount,
@@ -4716,7 +4875,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
             }
             
             // Create CF BUY bill and ledger entry
-            const cfBillNumber = `FO-PTY${nextDayStr.replace(/-/g, '')}-${Math.floor(Math.random() * 900) + 100}`;
+            const cfBillNumber = `PTY${nextDayStr.replace(/-/g, '')}-${Math.floor(Math.random() * 900) + 100}`;
             
             const cfBillResult = await client.query(
               'INSERT INTO fo_bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
@@ -4727,7 +4886,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
             
             // Insert CF BUY bill item
             await client.query(
-              'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+              'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type, side) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
               [
                 cfBillId,
                 `${instrument.display_name || symbol} - BUY (CF)`,
@@ -4738,7 +4897,8 @@ app.post('/api/fo/trades/process', async (req, res) => {
                 instrument.id,
                 0, // No brokerage for CF
                 0,
-                'CF'
+                'CF',
+            item.side || null
               ]
             );
             
@@ -4785,15 +4945,16 @@ app.post('/api/fo/trades/process', async (req, res) => {
             // Insert auto CF SELL contract
             await client.query(
               `INSERT INTO fo_contracts 
-                (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, quantity, price, amount, brokerage_amount, status, notes)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, side, quantity, price, amount, brokerage_amount, status, notes)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
               [
                 party.id,
                 instrument.id,
                 null,
                 null,
                 nextDayStr,
-                'SELL',
+                'CF', // trade_type
+                'SELL', // side
                 actualQuantity,
                 price,
                 amount,
@@ -4825,7 +4986,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
             }
 
             // Create CF SELL bill and ledger entry
-            const cfBillNumber = `FO-PTY${nextDayStr.replace(/-/g, '')}-${Math.floor(Math.random() * 900) + 100}`;
+            const cfBillNumber = `PTY${nextDayStr.replace(/-/g, '')}-${Math.floor(Math.random() * 900) + 100}`;
             const cfBillResult = await client.query(
               'INSERT INTO fo_bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
               [cfBillNumber, party.id, nextDayStr, amount, 'party', 'pending']
@@ -4833,7 +4994,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
             const cfBillId = cfBillResult.rows[0].id;
 
             await client.query(
-              'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+              'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type, side) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
               [
                 cfBillId,
                 `${instrument.display_name || symbol} - SELL (CF)`,
@@ -4844,7 +5005,8 @@ app.post('/api/fo/trades/process', async (req, res) => {
                 instrument.id,
                 0,
                 0,
-                'CF'
+                'CF',
+                item.side || null
               ]
             );
 
@@ -4898,6 +5060,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
           brokerage_amount: brokerageAmount,
           trade_type: type,
           broker_code: brokerCodeFromTrade || null,
+          side: side,
         });
       }
 
@@ -4938,6 +5101,8 @@ app.post('/api/fo/trades/process', async (req, res) => {
         }
       }
       
+      // For F&O: BUY = client owes us money (positive), SELL = we owe client money (negative)
+      // Net = Money client owes us - Money we owe client
       const netTradeAmount = (totalBuyAmount + totalCFBuyAmount) - (totalSellAmount + totalCFSellAmount);
       const finalClientBalance = netTradeAmount + totalBrokerage;
 
@@ -4963,7 +5128,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
       const m = String(now.getMonth() + 1).padStart(2, '0');
       const d = String(now.getDate()).padStart(2, '0');
       const suffix = String(Math.floor(Math.random() * 900) + 100);
-      const billNumber = `FO-PTY${y}${m}${d}-${suffix}`;
+      const billNumber = `PTY${y}${m}${d}-${suffix}`;
 
       const billResult = await client.query(
         'INSERT INTO fo_bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
@@ -4973,7 +5138,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
       const billId = billResult.rows[0].id;
 
       // Create ledger entry
-      // For party ledger: Debit = party owes you (buy/expenses), Credit = you owe party (sell/income)
+      // For party ledger: Debit = party owes you (positive balance), Credit = you owe party (negative balance)
       const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
       const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
       
@@ -5056,7 +5221,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
       // Insert F&O bill items
       for (const item of billItems) {
         await client.query(
-          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type, side) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
           [
             billId,
             item.description,
@@ -5068,6 +5233,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
             item.brokerage_rate_pct,
             item.brokerage_amount,
             item.trade_type,
+            item.side || null,
           ]
         );
       }
@@ -5097,7 +5263,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
         [brokerCode]
       );
       
-      let mainBrokerBillTotal = totalBrokerageAllClients; // Default to sub-broker total
+      let mainBrokerBillTotal = 0; // Net trade settlement minus broker brokerage
       let mainBrokerBrokerage = 0;
       let netTradeAmount = 0;
       let subBrokerProfit = 0;
@@ -5120,9 +5286,14 @@ app.post('/api/fo/trades/process', async (req, res) => {
       
       for (const item of allBrokerBillItems) {
         const itemAmount = Number(item.amount) || 0;
-        if (item.description && item.description.includes('BUY')) {
+        // Use side column if available, otherwise fall back to description parsing
+        const itemSide = (item.side || (item.description && item.description.toUpperCase().includes('BUY') ? 'BUY' : 'SELL'))
+          .toString()
+          .trim()
+          .toUpperCase();
+        if (itemSide === 'BUY') {
           totalBuyAcrossClients += itemAmount;
-        } else if (item.description && item.description.includes('SELL')) {
+        } else if (itemSide === 'SELL') {
           totalSellAcrossClients += itemAmount;
         }
         
@@ -5133,16 +5304,22 @@ app.post('/api/fo/trades/process', async (req, res) => {
         }
       }
       
+      // For F&O: BUY = client owes us money (positive), SELL = we owe client money (negative)
+      // Net = Money client owes us - Money we owe client
       netTradeAmount = totalBuyAcrossClients - totalSellAcrossClients;
       
-      const mainBrokerTradingBrokerage = (totalTradingAmount * brokerTradingSlab) / 100;
-      const mainBrokerDeliveryBrokerage = (totalDeliveryAmount * brokerDeliverySlab) / 100;
+    // Broker slab rates are stored as percentages (e.g., 2 for 2%), need to divide by 100
+      // Calculate main broker's brokerage share only (not including trade settlement)
+      const mainBrokerTradingBrokerage = totalTradingAmount * (brokerTradingSlab / 100);
+      const mainBrokerDeliveryBrokerage = totalDeliveryAmount * (brokerDeliverySlab / 100);
       mainBrokerBrokerage = mainBrokerTradingBrokerage + mainBrokerDeliveryBrokerage;
       
-      // Main broker bill = Net trade amount + Broker's brokerage
-      mainBrokerBillTotal = Math.abs(netTradeAmount) + mainBrokerBrokerage;
+      // Main broker bill: trade settlement (absolute) minus main broker brokerage.
+      // Example: Net Trade 200000, Brokerage 40 => bill total 199960.
+      const netTradeAbs = Math.abs(netTradeAmount);
+      mainBrokerBillTotal = netTradeAbs - mainBrokerBrokerage;
       
-      // Sub-broker profit = Total collected from clients - Main broker's share
+      // Sub-broker profit = Total brokerage collected from clients - Main broker's brokerage share
       subBrokerProfit = totalBrokerageAllClients - mainBrokerBrokerage;
       
       // If there is absolutely no brokerage and no trade value for this broker,
@@ -5158,9 +5335,9 @@ app.post('/api/fo/trades/process', async (req, res) => {
       const y = now.getFullYear();
       const m = String(now.getMonth() + 1).padStart(2, '0');
       const d = String(now.getDate()).padStart(2, '0');
-      const brokerBillNumber = `FO-BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
+      const brokerBillNumber = `BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
       
-      const brokerBillResult = await client.query(
+    const brokerBillResult = await client.query(
         'INSERT INTO fo_bills (bill_number, party_id, broker_id, broker_code, bill_date, total_amount, bill_type, status, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
         [
           brokerBillNumber,
@@ -5171,7 +5348,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
           mainBrokerBillTotal,
           'broker',
           'pending',
-          `Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Broker Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`
+          `Main Broker Bill - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`
         ]
       );
       const brokerBillId = brokerBillResult.rows[0].id;
@@ -5182,7 +5359,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
       // Insert broker bill items for THIS broker
       for (const item of allBrokerBillItems) {
         await client.query(
-          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type, side) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
           [
             brokerBillId,
             item.description,
@@ -5194,6 +5371,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
             item.brokerage_rate_pct,
             item.brokerage_amount,
             item.trade_type,
+            item.side || null
           ]
         );
       }
@@ -5203,35 +5381,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
       // If broker bill has normal trades, show full amount
       const hasNormalTrades = allBrokerBillItems.length > 0; // Non-CF items exist
       
-      // Create main broker ledger entry
-      let brokerBrokerageBalance = 0;
-      const brokerageBalanceQuery = await client.query(
-        'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
-        ['broker_brokerage']
-      );
-      if (brokerageBalanceQuery.rows.length > 0) {
-        brokerBrokerageBalance = Number(brokerageBalanceQuery.rows[0].balance) || 0;
-      }
-      // For main broker, the balance should be negative as per requirement
-      // Money owed to main broker should be shown as negative balance
-      brokerBrokerageBalance -= mainBrokerBrokerage;
-      
-      const brokerageEntryResult = await client.query(
-        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-        [
-          null,
-          billDateStr,
-          `Main Broker Bill ${brokerBillNumber} - Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
-          0,                    // No debit
-          mainBrokerBrokerage,  // Credit - money owed to main broker (shown as negative in UI)
-          brokerBrokerageBalance,
-          'broker_brokerage',
-          brokerBillId
-        ]
-      );
-      results.brokerEntries.push(brokerageEntryResult.rows[0]);
-      
-      // Create sub-broker profit ledger entry
+      // Create sub-broker profit ledger entry (show before main broker row)
       let subBrokerProfitBalance = 0;
       const profitBalanceQuery = await client.query(
         'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
@@ -5256,6 +5406,33 @@ app.post('/api/fo/trades/process', async (req, res) => {
         ]
       );
       results.brokerEntries.push(profitLedgerResult.rows[0]);
+
+      // Create main broker ledger entry
+      let brokerBrokerageBalance = 0;
+      const brokerageBalanceQuery = await client.query(
+        'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['broker_brokerage']
+      );
+      if (brokerageBalanceQuery.rows.length > 0) {
+        brokerBrokerageBalance = Number(brokerageBalanceQuery.rows[0].balance) || 0;
+      }
+      // For main broker, keep negative balance for amounts payable
+      brokerBrokerageBalance -= mainBrokerBillTotal;
+      
+      const brokerageEntryResult = await client.query(
+        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
+          mainBrokerBillTotal,     // Debit
+          0,                      // No credit
+          brokerBrokerageBalance,
+          'broker_brokerage',
+          brokerBillId
+        ]
+      );
+      results.brokerEntries.push(brokerageEntryResult.rows[0]);
     }
 
     await client.query('COMMIT');
@@ -5307,7 +5484,7 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
             const instrument = instrumentResult.rows[0];
             
             allBrokerBillItems.push({
-              description: `${instrument?.display_name || contract.instrument_id} - ${contract.trade_type || 'T'}`,
+              description: `${instrument?.display_name || contract.instrument_id} - ${(contract.side || '').toString().trim().toUpperCase() || contract.trade_type || 'T'}`,
               quantity: contract.quantity,
               rate: contract.price,
               amount: contract.amount,
@@ -5316,6 +5493,7 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
               brokerage_rate_pct: contract.brokerage_rate,
               brokerage_amount: contract.brokerage_amount,
               trade_type: contract.trade_type || 'T',
+              side: (contract.side || '').toString().trim().toUpperCase() || null,
             });
           } catch (error) {
             console.warn('Could not fetch instrument details for contract:', contract.id);
@@ -5323,8 +5501,9 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
         }
       }
       
-      // Skip if no brokerage
-      if (Math.abs(totalBrokerageAllClients) < 0.01) {
+      // Skip only if no meaningful brokerage AND no meaningful trade value
+      // (we still want broker bills for trade settlement even if brokerage is zero)
+      if (Math.abs(totalBrokerageAllClients) < 0.01 && allBrokerBillItems.length === 0) {
         continue;
       }
       
@@ -5336,15 +5515,40 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
       const broker = brokerResult.rows[0];
       const brokerCode = broker?.broker_code || 'BRK';
       
-      // Calculate main broker's share (80% example - you may want to make this configurable)
-      const mainBrokerSharePercent = 80; // This should come from broker settings
-      const mainBrokerBrokerage = (totalBrokerageAllClients * mainBrokerSharePercent) / 100;
-      const subBrokerProfit = totalBrokerageAllClients - mainBrokerBrokerage;
+      // Calculate main broker's share using broker's own slab rates (same as frontend)
+      // Broker slab rates are stored as percentages (e.g., 2 for 2%), need to divide by 100
+      const tradingRate = broker ? Number(broker.trading_slab || 0) : 0;
+      const deliveryRate = broker ? Number(broker.delivery_slab || 0) : 0;
       
+      // Calculate net trade and main broker brokerage share
+      let totalBuyAcrossClients = 0;
+      let totalSellAcrossClients = 0;
+      let mainBrokerBrokerage = 0;
+
+      for (const item of allBrokerBillItems) {
+        const amountAbs = Math.abs(Number(item.amount || 0));
+        const isTrading = (item.trade_type || "T").toUpperCase() === "T";
+        const rate = isTrading ? tradingRate : deliveryRate;
+        const brokerShare = (amountAbs * rate) / 100;
+        mainBrokerBrokerage += brokerShare;
+
+        const side = (item.side || '').toString().trim().toUpperCase();
+        if (side === 'BUY') {
+          totalBuyAcrossClients += amountAbs;
+        } else if (side === 'SELL') {
+          totalSellAcrossClients += amountAbs;
+        }
+      }
+
+      const netTradeAmount = totalBuyAcrossClients - totalSellAcrossClients;
+      const netTradeAbs = Math.abs(netTradeAmount);
+      const mainBrokerBillTotal = netTradeAbs - mainBrokerBrokerage;
+
+      const subBrokerProfit = totalBrokerageAllClients - mainBrokerBrokerage;
       // Skip if no meaningful amounts
       if (
-        Math.abs(mainBrokerBrokerage) < 0.01 && 
-        Math.abs(totalBrokerageAllClients) < 0.01
+        Math.abs(mainBrokerBillTotal) < 0.01 &&
+        Math.abs(subBrokerProfit) < 0.01
       ) {
         continue;
       }
@@ -5354,7 +5558,7 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
       const y = now.getFullYear();
       const m = String(now.getMonth() + 1).padStart(2, '0');
       const d = String(now.getDate()).padStart(2, '0');
-      const brokerBillNumber = `FO-BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
+      const brokerBillNumber = `BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
       
       // Create broker bill
       const brokerBillResult = await client.query(
@@ -5365,10 +5569,10 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
           brokerId,
           brokerCode,
           billDateStr,
-          mainBrokerBrokerage,
+          mainBrokerBillTotal,
           'broker',
           'pending',
-          `Sub-Broker Profit: ₹${subBrokerProfit.toFixed(2)}, Total Collected: ₹${totalBrokerageAllClients.toFixed(2)}`
+          `Main Broker Bill - Net Trade: ₹${netTradeAbs.toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`
         ]
       );
       const brokerBillId = brokerBillResult.rows[0].id;
@@ -5377,7 +5581,7 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
       // Insert broker bill items
       for (const item of allBrokerBillItems) {
         await client.query(
-          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type, side) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
           [
             brokerBillId,
             item.description,
@@ -5389,10 +5593,37 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
             item.brokerage_rate_pct,
             item.brokerage_amount,
             item.trade_type,
+            item.side || null
           ]
         );
       }
       
+      // Create sub-broker profit ledger entry (show before main broker row)
+      let subBrokerProfitBalance = 0;
+      const profitBalanceQuery = await client.query(
+        'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+        ['sub_broker_profit']
+      );
+      if (profitBalanceQuery.rows.length > 0) {
+        subBrokerProfitBalance = Number(profitBalanceQuery.rows[0].balance) || 0;
+      }
+      subBrokerProfitBalance += subBrokerProfit;
+      
+      const profitLedgerResult = await client.query(
+        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+        [
+          null,
+          billDateStr,
+          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${mainBrokerBrokerage.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
+          0,
+          subBrokerProfit,
+          subBrokerProfitBalance,
+          'sub_broker_profit',
+          brokerBillId
+        ]
+      );
+      results.brokerEntries.push(profitLedgerResult.rows[0]);
+
       // Create main broker ledger entry
       let brokerBrokerageBalance = 0;
       const brokerageBalanceQuery = await client.query(
@@ -5402,52 +5633,23 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
       if (brokerageBalanceQuery.rows.length > 0) {
         brokerBrokerageBalance = Number(brokerageBalanceQuery.rows[0].balance) || 0;
       }
-      // For main broker, the balance should be negative as per requirement
-      // Money owed to main broker should be shown as negative balance
-      brokerBrokerageBalance -= mainBrokerBrokerage;
+      // Negative balance for amounts payable to main broker
+      brokerBrokerageBalance -= mainBrokerBillTotal;
       
       const brokerageEntryResult = await client.query(
         'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
-          `Main Broker Bill ${brokerBillNumber} - Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
-          0,                    // No debit
-          mainBrokerBrokerage,  // Credit - money owed to main broker (shown as negative in UI)
+          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${netTradeAbs.toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
+          mainBrokerBillTotal,
+          0,
           brokerBrokerageBalance,
           'broker_brokerage',
           brokerBillId
         ]
       );
       results.brokerEntries.push(brokerageEntryResult.rows[0]);
-      
-      // Create sub-broker profit ledger entry
-      let subBrokerProfitBalance = 0;
-      const profitBalanceQuery = await client.query(
-        'SELECT balance FROM fo_ledger_entries WHERE party_id IS NULL AND reference_type = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
-        ['sub_broker_profit']
-      );
-      if (profitBalanceQuery.rows.length > 0) {
-        subBrokerProfitBalance = Number(profitBalanceQuery.rows[0].balance) || 0;
-      }
-      // For sub-broker profit, the balance should be negative as per requirement
-      // Profit for sub-broker should be shown as negative balance
-      subBrokerProfitBalance -= subBrokerProfit;
-      
-      const profitLedgerResult = await client.query(
-        'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-        [
-          null,
-          billDateStr,
-          `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${mainBrokerBrokerage.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
-          0,                    // No debit
-          subBrokerProfit,      // Credit - profit for sub-broker (shown as negative in UI)
-          subBrokerProfitBalance,
-          'sub_broker_profit',
-          brokerBillId
-        ]
-      );
-      results.brokerEntries.push(profitLedgerResult.rows[0]);
     }
     
     return results;
@@ -5583,14 +5785,14 @@ app.put('/api/fo/contracts/:id', async (req, res) => {
     const result = await pool.query(
       `UPDATE fo_contracts 
        SET contract_number = $1, party_id = $2, instrument_id = $3, broker_id = $4, 
-           broker_code = $5, trade_date = $6, trade_type = $7, quantity = $8, 
-           price = $9, amount = $10, brokerage_rate = $11, brokerage_amount = $12, 
-           status = $13, notes = $14, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $15 
+           broker_code = $5, trade_date = $6, trade_type = $7, side = $8, quantity = $9, 
+           price = $10, amount = $11, brokerage_rate = $12, brokerage_amount = $13, 
+           status = $14, notes = $15, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $16 
        RETURNING *`,
       [
         contract_number, party_id, instrument_id, broker_id, broker_code,
-        trade_date, trade_type, quantity, price, amount,
+        trade_date, trade_type, trade_type === 'CF' ? 'BUY' : 'SELL', quantity, price, amount,
         finalBrokerageRate, finalBrokerageAmount, status, notes, id
       ]
     );
@@ -5655,17 +5857,20 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
 
         // Create contracts and collect bill items
         for (const contract of partyContracts) {
+          // Determine side based on quantity sign
+          const side = contract.quantity > 0 ? 'BUY' : 'SELL';
+          
           // Create contract
           const contractResult = await client.query(
             `INSERT INTO fo_contracts 
               (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, 
-               quantity, price, amount, brokerage_rate, brokerage_amount, status)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
+               side, quantity, price, amount, brokerage_rate, brokerage_amount, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
              RETURNING *`,
             [
               contract.party_id, contract.instrument_id, contract.broker_id, 
               contract.broker_code, contract.trade_date, contract.trade_type,
-              contract.quantity, contract.price, contract.amount,
+              side, contract.quantity, contract.price, contract.amount,
               contract.brokerage_rate, contract.brokerage_amount, 'open'
             ]
           );
@@ -5681,19 +5886,22 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
           );
           const instrument = instrumentResult.rows[0];
 
+          // Use the side from the contract if available, otherwise determine based on quantity sign
+          const displaySide = contract.side || (contract.quantity > 0 ? 'BUY' : 'SELL');
+          
+          
           billItems.push({
             contract_id: contractResult.rows[0].id,
             instrument_id: contract.instrument_id,
-            description: `${instrument.display_name} - BUY`,
-            quantity: contract.quantity,
+            description: `${instrument.display_name} - ${displaySide}`,
+            quantity: contract.quantity, // Keep signed quantity to preserve BUY/SELL information
             rate: contract.price,
             amount: contract.amount,
             brokerage_rate_pct: contract.brokerage_rate,
             brokerage_amount: contract.brokerage_amount,
             trade_type: 'T',
-          });
-        }
-
+            side: displaySide,
+          });        }
         // Get party details
         const partyResult = await client.query(
           'SELECT * FROM party_master WHERE id = $1',
@@ -5706,7 +5914,7 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
         const m = String(now.getMonth() + 1).padStart(2, '0');
         const d = String(now.getDate()).padStart(2, '0');
         const suffix = String(Math.floor(Math.random() * 900) + 100);
-        const billNumber = `FO-PTY${y}${m}${d}-${suffix}`;
+        const billNumber = `PTY${y}${m}${d}-${suffix}`;
 
         const finalBillAmount = totalBuyAmount + totalBrokerage;
 
@@ -5726,12 +5934,13 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
           await client.query(
             `INSERT INTO fo_bill_items 
               (bill_id, contract_id, instrument_id, description, quantity, rate, amount, 
-               brokerage_rate_pct, brokerage_amount, trade_type) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+               brokerage_rate_pct, brokerage_amount, trade_type, side) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
             [
               billId, item.contract_id, item.instrument_id, item.description,
               item.quantity, item.rate, item.amount,
-              item.brokerage_rate_pct, item.brokerage_amount, item.trade_type
+              item.brokerage_rate_pct, item.brokerage_amount, item.trade_type,
+              item.side || null
             ]
           );
         }
@@ -5747,7 +5956,22 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
         const balance = currentBalance.rows.length > 0 
           ? parseFloat(currentBalance.rows[0].balance) 
           : 0;
-        const newBalance = balance + finalBillAmount;
+        // For ledger entry, determine if this is a debit or credit based on net amount
+        // Positive amount = debit (client owes money), negative amount = credit (client is owed money)
+        const netAmount = partyContracts.reduce((sum, contract) => {
+          const qty = Number(contract.quantity) || 0;
+          const amt = Number(contract.amount) || 0;
+          const brokerage = Number(contract.brokerage_amount) || 0;
+          
+          // For BUY trades: client pays (debit)
+          // For SELL trades: client receives (credit)
+          const isBuy = qty > 0;
+          const tradeAmount = isBuy ? amt : -amt;
+          
+          return sum + tradeAmount + brokerage; // Brokerage is always a cost (debit)
+        }, 0);
+        
+        const newBalance = balance + netAmount;
 
         await client.query(
           `INSERT INTO fo_ledger_entries 
@@ -5755,8 +5979,8 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [
             partyId, billDateStr,
-            `F&O Bill ${billNumber} - BUY trades`,
-            finalBillAmount, 0, newBalance, 'client_settlement', billId
+            `F&O Bill ${billNumber} - trades`,
+            Math.max(0, netAmount), Math.max(0, -netAmount), newBalance, 'client_settlement', billId
           ]
         );
       }
@@ -5771,7 +5995,7 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
         const y = now.getFullYear();
         const m = String(now.getMonth() + 1).padStart(2, '0');
         const d = String(now.getDate()).padStart(2, '0');
-        const brokerBillNumber = `FO-BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
+        const brokerBillNumber = `BRK${y}${m}${d}-${Math.floor(Math.random() * 900) + 100}`;
 
         const brokerBillResult = await client.query(
           `INSERT INTO fo_bills 
@@ -5810,16 +6034,19 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
     } else {
       // Just create contracts without bills
       for (const contract of contracts) {
+        // Determine side based on quantity sign
+        const side = contract.quantity > 0 ? 'BUY' : 'SELL';
+        
         const contractResult = await client.query(
           `INSERT INTO fo_contracts 
             (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, 
-             quantity, price, amount, brokerage_rate, brokerage_amount, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
+             side, quantity, price, amount, brokerage_rate, brokerage_amount, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
            RETURNING *`,
           [
             contract.party_id, contract.instrument_id, contract.broker_id, 
             contract.broker_code, contract.trade_date, contract.trade_type,
-            contract.quantity, contract.price, contract.amount,
+            side, contract.quantity, contract.price, contract.amount,
             contract.brokerage_rate, contract.brokerage_amount, 'open'
           ]
         );
@@ -5900,6 +6127,7 @@ app.post('/api/fo/billing/generate', async (req, res) => {
     }
 
     const createdBills = [];
+    const billedContractIds = [];
 
     for (const [partyIdKey, partyContracts] of partyGroups.entries()) {
       // Party IDs are UUIDs, not numbers, so we shouldn't convert them
@@ -5913,28 +6141,36 @@ app.post('/api/fo/billing/generate', async (req, res) => {
 
       for (const c of partyContracts) {
         const qty = Number(c.quantity) || 0;
-        const amt = Number(c.amount) || (qty * (Number(c.price) || 0));
-        const side = (c.trade_type || '').toString().toUpperCase();
+        const rate = Number(c.price) || 0;
+        const amt = Math.abs(Number(c.amount) || (Math.abs(qty) * rate));
 
-        // For now, treat positive quantity as BUY, negative as SELL if trade_type is not clear
-        if (side === 'BUY' || (side !== 'SELL' && qty > 0)) {
+        // IMPORTANT: use contract.side (BUY/SELL). c.trade_type is T/D/CF and should not be used as side.
+        const side = (c.side || '').toString().trim().toUpperCase();
+
+        // Store SELL as negative so that:
+        // finalClientBalance = BUY - SELL + BROKERAGE
+        if (side === 'BUY' || (!side && qty > 0)) {
           totalBuyAmount += amt;
-        } else if (side === 'SELL' || (side !== 'BUY' && qty < 0)) {
-          totalSellAmount += Math.abs(amt);
+        } else if (side === 'SELL' || (!side && qty < 0)) {
+          totalSellAmount -= amt; // negative = money we give to client
         }
 
-        totalBrokerage += Number(c.brokerage_amount || 0);
+        // Brokerage is always a charge collected from client (positive)
+        totalBrokerage += Math.abs(Number(c.brokerage_amount || 0));
       }
 
-      const finalClientBalance = (totalBuyAmount - totalSellAmount) + totalBrokerage;
+      // Net settlement for client:
+      //  +ve => client owes us
+      //  -ve => we owe client
+      const finalClientBalance = totalSellAmount + totalBuyAmount + totalBrokerage;
       if (Math.abs(finalClientBalance) < 0.01) {
         continue; // nothing to bill
       }
 
-      // Generate FO-PTY bill number using selected bill date
+      // Generate PTY bill number using selected bill date
       const [yy, mm, dd] = billDateStr.split('-');
       const suffix = String(Math.floor(Math.random() * 900) + 100);
-      const billNumber = `FO-PTY${yy}${mm}${dd}-${suffix}`;
+      const billNumber = `PTY${yy}${mm}${dd}-${suffix}`;
 
       const billInsert = await client.query(
         'INSERT INTO fo_bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
@@ -5949,7 +6185,7 @@ app.post('/api/fo/billing/generate', async (req, res) => {
         const amt = qty * rate;
 
         await client.query(
-          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
+          'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type, side) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
           [
             bill.id,
             c.contract_number || c.notes || 'FO Contract',
@@ -5961,6 +6197,7 @@ app.post('/api/fo/billing/generate', async (req, res) => {
             Number(c.brokerage_rate || 0),
             Number(c.brokerage_amount || 0),
             (c.trade_type || '').toString().toUpperCase(),
+            c.side || null
           ]
         );
       }
@@ -5984,7 +6221,7 @@ app.post('/api/fo/billing/generate', async (req, res) => {
         [
           partyId,
           billDateStr,
-          `F&O Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${totalSellAmount.toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${partyContracts.length} contracts)`,
+          `Bill ${billNumber} - Buy: ₹${totalBuyAmount.toFixed(2)}, Sell: ₹${Math.abs(totalSellAmount).toFixed(2)}, Brokerage: ₹${totalBrokerage.toFixed(2)} (${partyContracts.length} trades)`,
           debitAmount,
           creditAmount,
           newBalance,
@@ -6003,14 +6240,36 @@ app.post('/api/fo/billing/generate', async (req, res) => {
         netAmount: finalClientBalance,
         contracts: partyContracts.length,
       });
+
+      // Mark these contracts as billed so we can remove them after successful generation.
+      for (const c of partyContracts) {
+        if (c && c.id !== undefined && c.id !== null) {
+          billedContractIds.push(Number(c.id));
+        }
+      }
+    }
+
+    // Generate broker bills and sub-broker profit entries ONLY from billed contracts
+    const billedContracts = contracts.filter(c => billedContractIds.includes(Number(c.id)));
+    const brokerResults = await generateFOBrokerBills(client, billedContracts, billDateStr);
+
+    // Delete billed contracts so they don't appear again.
+    // If a party bill was not created, its contracts remain.
+    if (billedContractIds.length > 0) {
+      await client.query(
+        'DELETE FROM fo_contracts WHERE id = ANY($1::int[])',
+        [billedContractIds]
+      );
     }
 
     await client.query('COMMIT');
-    
-    // Now generate broker bills and sub-broker profit entries
-    const brokerResults = await generateFOBrokerBills(client, contracts, billDateStr);
-    
-    res.json({ success: true, bills: createdBills, brokerResults });
+
+    res.json({
+      success: true,
+      bills: createdBills,
+      brokerResults,
+      deletedContracts: billedContractIds.length,
+    });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error generating FO bills from contracts:', error);
@@ -6029,9 +6288,9 @@ app.get('/api/fo/dashboard', async (req, res) => {
   try {
     const stats = await pool.query(`
       SELECT 
-        (SELECT COUNT(DISTINCT party_id) FROM fo_contracts WHERE party_id IS NOT NULL) as active_clients,
-        (SELECT COALESCE(SUM(total_amount), 0) FROM fo_bills WHERE bill_type = 'party') as total_billed,
-        (SELECT COALESCE(SUM(total_amount - paid_amount), 0) FROM fo_bills WHERE bill_type = 'party' AND status != 'paid') as pending_receivables,
+        (SELECT COUNT(DISTINCT party_id) FROM fo_bills WHERE bill_type = 'party' AND party_id IS NOT NULL) as active_clients,
+        (SELECT COALESCE(SUM(ABS(total_amount)), 0) FROM fo_bills WHERE bill_type = 'party') as total_billed,
+        (SELECT COALESCE(SUM(total_amount - paid_amount), 0) FROM fo_bills WHERE bill_type = 'party' AND status != 'paid' AND (total_amount - paid_amount) > 0) as pending_receivables,
         (SELECT COUNT(*) FROM fo_bills WHERE bill_type = 'party' AND status = 'pending') as pending_bills_count,
         (SELECT COUNT(*) FROM fo_positions WHERE status = 'open') as open_positions,
         (SELECT COALESCE(SUM(credit_amount), 0) 
@@ -6058,6 +6317,8 @@ app.get('/api/fo/dashboard/recent-contracts', async (req, res) => {
         c.trade_type,
         c.quantity,
         c.amount,
+        c.brokerage_amount,
+        c.party_id,
         p.party_code,
         p.name as party_name,
         i.display_name as instrument_name,
@@ -6094,6 +6355,86 @@ app.get('/api/fo/ledger/sub-broker-profit', async (req, res) => {
   }
 });
 
+// Get F&O broker holdings summary (aggregated by broker across all clients)
+app.get('/api/fo/positions/broker', async (req, res) => {
+  try {
+    const { from_date, to_date } = req.query;
+
+    // Build query with proper parameterization to prevent SQL injection
+    let query = `
+      WITH broker_data AS (
+        SELECT 
+          b.broker_code,
+          bi.instrument_id,
+          bi.quantity,
+          bi.rate,
+          bi.amount,
+          pm.id AS client_id,
+          b.bill_date AS last_trade_date
+        FROM fo_bill_items bi
+        INNER JOIN fo_bills b ON bi.bill_id = b.id
+        INNER JOIN party_master pm ON UPPER(pm.party_code) = UPPER(bi.client_code)
+        WHERE b.bill_type = 'broker' AND b.broker_code IS NOT NULL
+    `;
+    
+    const params = [];
+    let paramIndex = 1;
+    
+    if (from_date) {
+      query += ` AND b.bill_date >= $${paramIndex}`;
+      params.push(from_date);
+      paramIndex++;
+    }
+    
+    if (to_date) {
+      query += ` AND b.bill_date <= $${paramIndex}`;
+      params.push(to_date);
+      paramIndex++;
+    }
+    
+    query += `
+      ),
+      broker_summary AS (
+        SELECT 
+          broker_code,
+          instrument_id,
+          SUM(quantity) AS total_quantity,
+          AVG(rate) AS avg_price,
+          SUM(amount) AS total_invested,
+          COUNT(DISTINCT client_id) AS client_count,
+          MAX(last_trade_date) AS last_trade_date
+        FROM broker_data
+        GROUP BY broker_code, instrument_id
+      )
+      SELECT 
+        bs.broker_code,
+        bm.name as broker_name,
+        bs.instrument_id,
+        im.symbol,
+        im.display_name,
+        im.instrument_type,
+        im.expiry_date,
+        im.strike_price,
+        bs.total_quantity,
+        bs.avg_price,
+        bs.total_invested,
+        bs.client_count,
+        bs.last_trade_date
+      FROM broker_summary bs
+      LEFT JOIN broker_master bm ON bs.broker_code = bm.broker_code
+      LEFT JOIN fo_instrument_master im ON bs.instrument_id = im.id
+      WHERE ABS(bs.total_quantity) > 0.01
+      ORDER BY bs.total_quantity DESC, bs.broker_code, im.symbol
+    `;
+
+    const result = await pool.query(query, params);
+    res.json(result.rows || []);
+  } catch (error) {
+    console.error('Error fetching F&O broker holdings:', error);
+    res.status(500).json({ error: 'Failed to fetch F&O broker holdings' });
+  }
+});
+
 // Get F&O positions (holdings)
 app.get('/api/fo/positions', async (req, res) => {
   try {
@@ -6111,6 +6452,9 @@ app.get('/api/fo/positions', async (req, res) => {
             CASE 
               WHEN UPPER(bi.description) LIKE '%BUY%' THEN COALESCE(bi.quantity,0)
               WHEN UPPER(bi.description) LIKE '%SELL%' THEN -COALESCE(bi.quantity,0)
+              -- Fallback: use quantity sign if description doesn't contain BUY/SELL
+              WHEN COALESCE(bi.quantity,0) > 0 THEN COALESCE(bi.quantity,0)
+              WHEN COALESCE(bi.quantity,0) < 0 THEN -COALESCE(bi.quantity,0)
               ELSE 0
             END
           ) AS broker_net_qty
@@ -6147,7 +6491,7 @@ app.get('/api/fo/positions', async (req, res) => {
       LEFT JOIN fo_instrument_master i ON i.id = p.instrument_id
       LEFT JOIN party_master pm ON pm.id = p.party_id
       LEFT JOIN tx ON tx.party_id = p.party_id AND tx.instrument_id = p.instrument_id
-      WHERE p.status = 'open'
+      WHERE (p.status = 'open' OR ABS(p.quantity) > 0.01)
     `;
     const params = [];
     
@@ -6185,6 +6529,7 @@ app.get('/api/fo/positions/transactions', async (req, res) => {
         i.display_name,
         i.instrument_type,
         bi.description,
+        bi.side,
         bi.quantity,
         bi.rate,
         bi.amount,
@@ -6229,7 +6574,7 @@ app.get('/api/fo/positions/transactions', async (req, res) => {
     
     const result = await pool.query(query, params);
     
-    // Calculate running balance per instrument per party
+    // Calculate running balance per instrument per party (quantity-based)
     const transactions = [];
     const balances = {}; // Key: "party_id:instrument_id"
     
@@ -6239,16 +6584,56 @@ app.get('/api/fo/positions/transactions', async (req, res) => {
         balances[key] = 0;
       }
       
-      // Determine if BUY or SELL from description
-      const isBuy = row.description && row.description.toUpperCase().includes('BUY');
-      const isSell = row.description && row.description.toUpperCase().includes('SELL');
-      
       const quantity = Number(row.quantity) || 0;
       
+      // Determine if BUY or SELL (prefer explicit side column, then description, then quantity sign)
+      let isBuy = false;
+      let isSell = false;
+
+      const rowSide = (row.side || '').toString().trim().toUpperCase();
+      if (rowSide === 'BUY') {
+        isBuy = true;
+      } else if (rowSide === 'SELL') {
+        isSell = true;
+      }
+
+      if (!isBuy && !isSell && row.description) {
+        const descUpper = row.description.toUpperCase();
+        if (descUpper.includes(' - BUY')) {
+          isBuy = true;
+        } else if (descUpper.includes(' - SELL')) {
+          isSell = true;
+        }
+      }
+
+      // Fallback: determine from quantity sign if neither side nor description indicates BUY/SELL
+      if (!isBuy && !isSell) {
+        if (quantity > 0) {
+          isBuy = true;
+        } else if (quantity < 0) {
+          isSell = true;
+        }
+      }
+      
+      // Update running balance: BUY increases quantity, SELL decreases quantity
       if (isBuy) {
         balances[key] += quantity;
       } else if (isSell) {
         balances[key] -= quantity;
+      }
+
+      // Determine display type based on detected buy/sell or trade_type
+      let displayType = 'UNKNOWN';
+      if (isBuy) {
+        displayType = 'BUY';
+      } else if (isSell) {
+        displayType = 'SELL';
+      } else if (row.trade_type === 'T') {
+        displayType = 'TRADING';
+      } else if (row.trade_type === 'D') {
+        displayType = 'DELIVERY';
+      } else if (row.trade_type === 'CF') {
+        displayType = 'CARRY FORWARD';
       }
       
       transactions.push({
@@ -6264,13 +6649,13 @@ app.get('/api/fo/positions/transactions', async (req, res) => {
         display_name: row.display_name,
         instrument_type: row.instrument_type,
         description: row.description,
-        type: isBuy ? 'BUY' : isSell ? 'SELL' : 'UNKNOWN',
+        type: displayType,
         quantity: quantity,
         rate: Number(row.rate) || 0,
         amount: Number(row.amount) || 0,
         brokerage_amount: Number(row.brokerage_amount) || 0,
         trade_type: row.trade_type,
-        balance: balances[key],
+        balance: balances[key], // Use quantity-based running balance
         created_at: row.created_at
       });
     }
@@ -6816,11 +7201,11 @@ app.get('/api/fo/ledger', async (req, res) => {
       SELECT 
         l.*,
         CASE 
-          WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+          WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN NULL
           ELSE p.party_code
         END AS party_code,
         CASE 
-          WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
+          WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN NULL
           ELSE p.name
         END AS party_name
       FROM fo_ledger_entries l
@@ -6933,31 +7318,6 @@ app.delete('/api/fo/ledger/:id', async (req, res) => {
   }
 });
 
-// Cash Transaction API routes
-app.delete('/api/cash/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    // First, get the transaction to check if it exists and get its details
-    const transactionResult = await pool.query(
-      'SELECT * FROM cash_transactions WHERE id = $1',
-      [id]
-    );
-    
-    if (transactionResult.rows.length === 0) {
-      return res.status(404).json({ error: 'Cash transaction not found' });
-    }
-    
-    // Delete the cash transaction
-    await pool.query('DELETE FROM cash_transactions WHERE id = $1', [id]);
-    
-    res.json({ message: 'Cash transaction deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting cash transaction:', error);
-    res.status(500).json({ error: 'Failed to delete cash transaction' });
-  }
-});
-
 // Health check endpoint
 app.get('/api/health', async (req, res) => {
   try {
@@ -6986,4 +7346,215 @@ function normalizeRow(raw) {
     type: (raw.Type || raw.type || '').toString().trim().toUpperCase(),
   };
 }
+
+// =========================
+// BALANCE RECALCULATION API
+// =========================
+
+// Recalculate all balances for equity ledger
+app.post('/api/ledger/recalculate-balances', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Get all parties
+    const partiesResult = await client.query('SELECT id, party_code FROM party_master ORDER BY party_code');
+    const parties = partiesResult.rows;
+
+    let totalUpdated = 0;
+
+    // Process each party
+    for (const party of parties) {
+      // Get all ledger entries for this party, ordered by date
+      const entriesResult = await client.query(
+        `SELECT id, debit_amount, credit_amount, entry_date
+         FROM ledger_entries
+         WHERE party_id = $1
+         ORDER BY entry_date ASC, created_at ASC`,
+        [party.id]
+      );
+
+      let runningBalance = 0;
+      const entries = entriesResult.rows;
+
+      // Recalculate balance for each entry
+      for (const entry of entries) {
+        const debit = Number(entry.debit_amount) || 0;
+        const credit = Number(entry.credit_amount) || 0;
+        
+        // Correct accounting: Debit increases balance, Credit decreases balance
+        runningBalance = runningBalance + debit - credit;
+
+        // Update the entry with correct balance
+        await client.query(
+          'UPDATE ledger_entries SET balance = $1 WHERE id = $2',
+          [runningBalance, entry.id]
+        );
+        totalUpdated++;
+      }
+
+      console.log(`Recalculated ${entries.length} entries for party ${party.party_code}, final balance: ${runningBalance}`);
+    }
+
+    // Process broker entries (party_id IS NULL)
+    const brokerEntriesResult = await client.query(
+      `SELECT id, debit_amount, credit_amount, entry_date, reference_type
+       FROM ledger_entries
+       WHERE party_id IS NULL
+       ORDER BY entry_date ASC, created_at ASC`
+    );
+
+    // Group broker entries by reference_type
+    const brokerGroups = {};
+    for (const entry of brokerEntriesResult.rows) {
+      const refType = entry.reference_type || 'unknown';
+      if (!brokerGroups[refType]) {
+        brokerGroups[refType] = [];
+      }
+      brokerGroups[refType].push(entry);
+    }
+
+    // Recalculate each broker group separately
+    for (const [refType, entries] of Object.entries(brokerGroups)) {
+      let runningBalance = 0;
+
+      for (const entry of entries) {
+        const debit = Number(entry.debit_amount) || 0;
+        const credit = Number(entry.credit_amount) || 0;
+        
+        // Correct accounting: Credit increases what you owe to broker (positive)
+        // Debit decreases what you owe (negative means broker owes you)
+        runningBalance = runningBalance + credit - debit;
+
+        await client.query(
+          'UPDATE ledger_entries SET balance = $1 WHERE id = $2',
+          [runningBalance, entry.id]
+        );
+        totalUpdated++;
+      }
+
+      console.log(`Recalculated ${entries.length} entries for broker type ${refType}, final balance: ${runningBalance}`);
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      message: 'All balances recalculated successfully',
+      totalUpdated
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error recalculating balances:', error);
+    res.status(500).json({
+      error: 'Failed to recalculate balances',
+      details: error.message
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// Recalculate all balances for F&O ledger
+app.post('/api/fo/ledger/recalculate-balances', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Get all parties
+    const partiesResult = await client.query('SELECT id, party_code FROM party_master ORDER BY party_code');
+    const parties = partiesResult.rows;
+
+    let totalUpdated = 0;
+
+    // Process each party
+    for (const party of parties) {
+      // Get all F&O ledger entries for this party, ordered by date
+      const entriesResult = await client.query(
+        `SELECT id, debit_amount, credit_amount, entry_date
+         FROM fo_ledger_entries
+         WHERE party_id = $1
+         ORDER BY entry_date ASC, created_at ASC`,
+        [party.id]
+      );
+
+      let runningBalance = 0;
+      const entries = entriesResult.rows;
+
+      // Recalculate balance for each entry
+      for (const entry of entries) {
+        const debit = Number(entry.debit_amount) || 0;
+        const credit = Number(entry.credit_amount) || 0;
+        
+        // Correct accounting: Debit increases balance, Credit decreases balance
+        runningBalance = runningBalance + debit - credit;
+
+        // Update the entry with correct balance
+        await client.query(
+          'UPDATE fo_ledger_entries SET balance = $1 WHERE id = $2',
+          [runningBalance, entry.id]
+        );
+        totalUpdated++;
+      }
+
+      console.log(`Recalculated ${entries.length} F&O entries for party ${party.party_code}, final balance: ${runningBalance}`);
+    }
+
+    // Process broker entries (party_id IS NULL)
+    const brokerEntriesResult = await client.query(
+      `SELECT id, debit_amount, credit_amount, entry_date, reference_type
+       FROM fo_ledger_entries
+       WHERE party_id IS NULL
+       ORDER BY entry_date ASC, created_at ASC`
+    );
+
+    // Group broker entries by reference_type
+    const brokerGroups = {};
+    for (const entry of brokerEntriesResult.rows) {
+      const refType = entry.reference_type || 'unknown';
+      if (!brokerGroups[refType]) {
+        brokerGroups[refType] = [];
+      }
+      brokerGroups[refType].push(entry);
+    }
+
+    // Recalculate each broker group separately
+    for (const [refType, entries] of Object.entries(brokerGroups)) {
+      let runningBalance = 0;
+
+      for (const entry of entries) {
+        const debit = Number(entry.debit_amount) || 0;
+        const credit = Number(entry.credit_amount) || 0;
+        
+        // Correct accounting: Credit increases what you owe to broker
+        runningBalance = runningBalance + credit - debit;
+
+        await client.query(
+          'UPDATE fo_ledger_entries SET balance = $1 WHERE id = $2',
+          [runningBalance, entry.id]
+        );
+        totalUpdated++;
+      }
+
+      console.log(`Recalculated ${entries.length} F&O entries for broker type ${refType}, final balance: ${runningBalance}`);
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      message: 'All F&O balances recalculated successfully',
+      totalUpdated
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error recalculating F&O balances:', error);
+    res.status(500).json({
+      error: 'Failed to recalculate F&O balances',
+      details: error.message
+    });
+  } finally {
+    client.release();
+  }
+});
 

@@ -17,7 +17,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { RefreshCw, Plus, Wallet } from "lucide-react";
+import { RefreshCw, Plus, Wallet, Trash2 } from "lucide-react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/hooks/use-toast";
 
 interface CashTransaction {
   id: string;
@@ -73,6 +75,7 @@ const formatCurrency = (value: number) => {
 export default function FOCashModulePage() {
   // View state
   const [currentView, setCurrentView] = useState<'form' | 'list'>('form');
+  const { toast } = useToast();
   
   // Add Cash form state
   const [cashDate, setCashDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
@@ -97,6 +100,8 @@ export default function FOCashModulePage() {
   // Recent transactions state
   const [recentTransactions, setRecentTransactions] = useState<CashTransaction[]>([]);
   const [loadingRecent, setLoadingRecent] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [transactionToDelete, setTransactionToDelete] = useState<CashTransaction | null>(null);
 
   const handleCreateCash = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -182,6 +187,47 @@ export default function FOCashModulePage() {
       console.error("Failed to load recent transactions", err);
     } finally {
       setLoadingRecent(false);
+    }
+  };
+
+  const handleDeleteTransaction = async (transaction: CashTransaction) => {
+    setTransactionToDelete(transaction);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteTransaction = async () => {
+    if (!transactionToDelete) return;
+    
+    try {
+      const res = await fetch(`http://localhost:3001/api/cash/delete/${transactionToDelete.id}`, {
+        method: "DELETE",
+      });
+      
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to delete cash transaction");
+      }
+      
+      // Refresh the recent transactions list
+      fetchRecentTransactions();
+      // Also refresh the cash book
+      fetchCashBook(bookDate);
+      
+      toast({
+        title: "Success",
+        description: "Cash transaction deleted successfully",
+        variant: "default",
+      });
+    } catch (error) {
+      console.error("Failed to delete cash transaction", error);
+      toast({
+        title: "Error",
+        description: "Failed to delete cash transaction",
+        variant: "destructive",
+      });
+    } finally {
+      setDeleteDialogOpen(false);
+      setTransactionToDelete(null);
     }
   };
 
@@ -409,6 +455,7 @@ export default function FOCashModulePage() {
                       <TableHead>Type</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
                       <TableHead>Narration</TableHead>
+                      <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -440,6 +487,16 @@ export default function FOCashModulePage() {
                           </TableCell>
                           <TableCell className="text-muted-foreground">
                             {t.narration || "-"}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeleteTransaction(t)}
+                              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
                           </TableCell>
                         </TableRow>
                       ))
@@ -518,6 +575,7 @@ export default function FOCashModulePage() {
                         <TableHead>Party</TableHead>
                         <TableHead className="text-right">Credit</TableHead>
                         <TableHead className="text-right">Debit</TableHead>
+                        <TableHead className="w-[100px] text-right">Actions</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -547,10 +605,20 @@ export default function FOCashModulePage() {
                               <TableCell className="text-right text-rose-600">
                                 {t.type === "PAYMENT" ? formatCurrency(t.amount) : "-"}
                               </TableCell>
+                              <TableCell className="text-right">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => handleDeleteTransaction(t)}
+                                  className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </TableCell>
                             </TableRow>
                           ))}
                           <TableRow className="bg-muted font-semibold">
-                            <TableCell colSpan={2}>
+                            <TableCell colSpan={3}>
                               Total: {cashBook.transactions.length} transactions
                             </TableCell>
                             <TableCell className="text-right text-emerald-600">
@@ -585,6 +653,16 @@ export default function FOCashModulePage() {
   return (
     <>
       {currentView === 'form' ? renderFormView() : renderListView()}
+      <ConfirmDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        title="Delete Cash Transaction"
+        description="Are you sure you want to delete this cash transaction? This action cannot be undone."
+        onConfirm={confirmDeleteTransaction}
+        confirmText="Delete"
+        cancelText="Cancel"
+        variant="destructive"
+      />
     </>
   );
 }

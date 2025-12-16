@@ -22,7 +22,7 @@ const formatCurrency = (value: number) => {
 };
 
 // New function to format closing balance with CR/DR symbols
-const formatClosingBalance = (value: number) => {
+const formatClosingBalance = (value: number, partyCode: string = '') => {
   if (isNaN(value)) return "₹0.00";
   const absValue = Math.abs(value);
   const formattedValue = `₹${absValue.toLocaleString("en-IN", {
@@ -30,10 +30,17 @@ const formatClosingBalance = (value: number) => {
     maximumFractionDigits: 2,
   })}`;
   
-  // Show DR for negative (debit) and CR for positive (credit)
-  if (value < 0) {
+  // Special case: Sub-Broker Profit is always CR (your earnings)
+  if (partyCode === 'SUB-BROKER') {
+    return `${formattedValue} CR`;
+  }
+  
+  // Accounting convention for regular parties:
+  // Positive balance (Debit > Credit) = DR (party owes you money)
+  // Negative balance (Credit > Debit) = CR (you owe party money)
+  if (value > 0) {
     return `${formattedValue} DR`;
-  } else if (value > 0) {
+  } else if (value < 0) {
     return `${formattedValue} CR`;
   } else {
     return formattedValue;
@@ -118,7 +125,7 @@ export default function SummaryModulePage() {
                     <td className="px-2 py-1 align-top text-muted-foreground">{r.party_name}</td>
                     <td className="px-2 py-1 text-right align-top">{formatCurrency(r.total_debit)}</td>
                     <td className="px-2 py-1 text-right align-top">{formatCurrency(r.total_credit)}</td>
-                    <td className="px-2 py-1 text-right align-top font-semibold">{formatClosingBalance(r.closing_balance)}</td>
+                    <td className="px-2 py-1 text-right align-top font-semibold">{formatClosingBalance(r.closing_balance, r.party_code)}</td>
                   </tr>
                 ))}
                 {rows.length === 0 && (

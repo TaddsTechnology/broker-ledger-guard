@@ -416,6 +416,19 @@ export function PaymentDialog({
                   </SelectItem>
                 </SelectContent>
               </Select>
+              {/* Recommendation based on balance */}
+              <div className="mt-2 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-md border border-blue-200 dark:border-blue-800">
+                <p className="text-sm text-blue-800 dark:text-blue-200">
+                  <span className="font-semibold">Recommendation:</span> 
+                  {currentBalance > 0 ? (
+                    <span>You should do a <span className="font-bold text-green-600">Pay-In</span> since party owes you ₹{Math.abs(currentBalance).toFixed(2)}</span>
+                  ) : currentBalance < 0 ? (
+                    <span>You should do a <span className="font-bold text-red-600">Pay-Out</span> since you owe party ₹{Math.abs(currentBalance).toFixed(2)}</span>
+                  ) : (
+                    <span>No payment needed - balance is zero</span>
+                  )}
+                </p>
+              </div>
             </div>
           </div>
 
@@ -434,9 +447,9 @@ export function PaymentDialog({
                   ? (paymentType === 'payin' 
                       ? `Enter amount (Pay-In clears balance: ₹${Math.abs(currentBalance).toFixed(2)})` 
                       : "Enter payout amount")
-                  : (paymentType === 'payout' 
-                      ? `Enter amount (Pay-Out clears balance: ₹${Math.abs(currentBalance).toFixed(2)})` 
-                      : "Enter pay-in amount")
+                  : (paymentType === 'payin'
+                      ? `Enter pay-in amount${currentBalance > 0 ? ` (Clears balance: ₹${Math.abs(currentBalance).toFixed(2)})` : ''}`
+                      : `Enter pay-out amount${currentBalance < 0 ? ` (Clears balance: ₹${Math.abs(currentBalance).toFixed(2)})` : ''}`)
               }
               className={errors.amount ? "border-destructive" : ""}
             />

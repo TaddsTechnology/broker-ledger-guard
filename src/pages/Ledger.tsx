@@ -713,10 +713,10 @@ const Ledger = () => {
                   // const billNumbers = [...new Set(group.entries.map(e => e.bill_number).filter(Boolean))];
                   
                   return (
-                    <>
+                    <React.Fragment key={groupKey}>
                       {/* Group Summary Row */}
                       <TableRow 
-                        key={groupKey}
+                        key={`${groupKey}-summary`}
                         className="bg-blue-50 hover:bg-blue-100 cursor-pointer font-medium border-b-2"
                         onClick={() => toggleGroup(groupKey)}
                       >
@@ -891,7 +891,7 @@ const Ledger = () => {
                           </TableCell>
                         </TableRow>
                       ))}
-                    </>
+                    </React.Fragment>
                   );
                 })
               ) : (

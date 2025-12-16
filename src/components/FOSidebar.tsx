@@ -106,6 +106,11 @@ const menuItems: MenuItem[] = [
     icon: BarChart3,
     url: "/fo/summary",
   },
+  {
+    title: "Settings",
+    icon: Settings,
+    url: "/settings",
+  },
 ];
 
 export function FOSidebar({ onLogout }: { onLogout: () => void }) {

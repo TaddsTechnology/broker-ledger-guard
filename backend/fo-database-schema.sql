@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS fo_contracts (
   broker_code VARCHAR(50),
   broker_bill_id INTEGER REFERENCES fo_bills(id) ON DELETE SET NULL,  -- Link to broker bill
   trade_date DATE NOT NULL,                       -- Trade date
-  trade_type VARCHAR(10) NOT NULL,                -- 'BUY', 'SELL', or 'CF' (Carry Forward)
+  trade_type VARCHAR(10) NOT NULL,                -- 'T' (Trading) or 'D' (Delivery)
+  side VARCHAR(10),                               -- 'BUY' or 'SELL' (actual trade direction)
   quantity INTEGER NOT NULL,                      -- Actual quantity
   price DECIMAL(10, 2) NOT NULL,                  -- Price per unit
   amount DECIMAL(15, 2) NOT NULL,                 -- quantity * price
@@ -59,6 +60,10 @@ CREATE INDEX IF NOT EXISTS idx_fo_contracts_date ON fo_contracts(trade_date);
 CREATE INDEX IF NOT EXISTS idx_fo_contracts_status ON fo_contracts(status);
 CREATE INDEX IF NOT EXISTS idx_fo_contracts_instrument ON fo_contracts(instrument_id);
 CREATE INDEX IF NOT EXISTS idx_fo_contracts_broker_bill ON fo_contracts(broker_bill_id);
+
+-- Add constraint and index for the side column
+ALTER TABLE fo_contracts ADD CONSTRAINT chk_side CHECK (side IN ('BUY', 'SELL'));
+CREATE INDEX IF NOT EXISTS idx_fo_contracts_side ON fo_contracts(side);
 
 -- ============================================================================
 -- F&O POSITIONS
@@ -153,12 +158,17 @@ CREATE TABLE IF NOT EXISTS fo_bill_items (
   brokerage_rate_pct DECIMAL(5, 2),
   brokerage_amount DECIMAL(10, 2),
   trade_type VARCHAR(10),                         -- 'T' (Trading) or 'D' (Delivery)
+  side VARCHAR(10),                               -- 'BUY' or 'SELL' (actual trade direction)
   mtm_amount DECIMAL(15, 2),                     -- MTM component if any
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_fo_bill_items_bill ON fo_bill_items(bill_id);
 CREATE INDEX IF NOT EXISTS idx_fo_bill_items_contract ON fo_bill_items(contract_id);
+
+-- Add constraint and index for the side column
+ALTER TABLE fo_bill_items ADD CONSTRAINT chk_bill_item_side CHECK (side IN ('BUY', 'SELL'));
+CREATE INDEX IF NOT EXISTS idx_fo_bill_items_side ON fo_bill_items(side);
 
 -- ============================================================================
 -- F&O LEDGER ENTRIES

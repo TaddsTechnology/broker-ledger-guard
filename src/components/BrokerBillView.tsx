@@ -71,21 +71,22 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
   let totalBrokerShare = 0;
   let totalSubBrokerProfit = 0;
 
-  const tradingRate = brokerMaster ? Number(brokerMaster.trading_slab || 0) / 100 : 0;
-  const deliveryRate = brokerMaster ? Number(brokerMaster.delivery_slab || 0) / 100 : 0;
+  // Broker slab rates are stored as percentages (e.g., 2 for 2%), need to divide by 100
+  const tradingRate = brokerMaster ? Number(brokerMaster.trading_slab || 0) : 0;
+  const deliveryRate = brokerMaster ? Number(brokerMaster.delivery_slab || 0) : 0;
 
   items.forEach((item) => {
     const clientB = Number(item.brokerage_amount || 0);
     const amount = Number(item.amount || 0);
     const isTrading = (item.trade_type || "T").toUpperCase() === "T";
     const rate = isTrading ? tradingRate : deliveryRate;
-    const brokerShare = amount * rate;
+    const brokerShare = (amount * rate) / 100; // FIXED: Use trade amount and divide by 100
 
     totalClientBrokerage += clientB;
     totalBrokerShare += brokerShare;
   });
 
-  totalSubBrokerProfit = totalClientBrokerage - totalBrokerShare;
+   totalSubBrokerProfit = bill.bill_number.includes('FO') ? totalBrokerShare - totalClientBrokerage : totalClientBrokerage - totalBrokerShare;
 
   const handlePrint = () => {
     window.print();
@@ -147,27 +148,29 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
             <div className="space-y-4">
               <h3 className="font-semibold">Sub-Broker Bill Items by Client</h3>
               {Object.entries(clientGroups).map(([client, clientItems]) => {
+                // Type assertion for clientItems
+                const items = clientItems as any[];
                 let clientBrokerage = 0;
                 let clientBrokerShare = 0;
 
-                clientItems.forEach((item: any) => {
+                items.forEach((item: any) => {
                   const b = Number(item.brokerage_amount || 0);
                   const amt = Number(item.amount || 0);
                   const isTrading = (item.trade_type || "T").toUpperCase() === "T";
                   const rate = isTrading ? tradingRate : deliveryRate;
-                  const share = amt * rate;
+                  const share = (amt * rate) / 100; // FIXED: Use trade amount and divide by 100
                   clientBrokerage += b;
                   clientBrokerShare += share;
                 });
 
-                const clientProfit = clientBrokerage - clientBrokerShare;
+                 const clientProfit = bill.bill_number.includes('FO') ? clientBrokerShare - clientBrokerage : clientBrokerage - clientBrokerShare;
 
                 return (
                   <div key={client} className="border rounded-lg p-4">
                     <div className="flex justify-between items-center mb-3">
                       <h4 className="font-semibold text-primary">{client}</h4>
                       <div className="text-xs">
-                        <span className="text-muted-foreground mr-2">Client Profit:</span>
+                         <span className="text-muted-foreground mr-2">Sub-Broker Profit:</span>
                         <span className="font-mono font-semibold text-emerald-700">
                           ₹{clientProfit.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
                         </span>
@@ -187,13 +190,13 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
                           </tr>
                         </thead>
                         <tbody>
-                          {clientItems.map((item: any, idx: number) => {
+                          {items.map((item: any, idx: number) => {
                             const amt = Number(item.amount || 0);
                             const b = Number(item.brokerage_amount || 0);
                             const isTrading = (item.trade_type || "T").toUpperCase() === "T";
                             const rate = isTrading ? tradingRate : deliveryRate;
-                            const share = amt * rate;
-                            const profit = b - share;
+                            const share = (amt * rate) / 100; // FIXED: Use trade amount and divide by 100
+                             const profit = bill.bill_number.includes('FO') ? share - b : b - share;
 
                             return (
                               <tr key={idx} className="border-b">
@@ -207,7 +210,7 @@ export function BrokerBillView({ bill, open, onOpenChange }: BrokerBillViewProps
                                 <td className="p-2 text-right">₹{amt.toFixed(2)}</td>
                                 <td className="p-2 text-right">₹{b.toFixed(2)}</td>
                                 <td className="p-2 text-right">₹{share.toFixed(2)}</td>
-                                <td className="p-2 text-right font-mono font-semibold {profit >= 0 ? 'text-emerald-700' : 'text-red-600'}">
+                                <td className={`p-2 text-right font-mono font-semibold ${profit >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
                                   ₹{profit.toFixed(2)}
                                 </td>
                               </tr>

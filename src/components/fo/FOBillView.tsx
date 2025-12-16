@@ -168,14 +168,36 @@ export function FOBillView({ bill: propBill, billId, open, onOpenChange }: { bil
     
     // Convert to transaction format
     securityMap.forEach((securityItems, security) => {
-      const trades = securityItems.map(item => ({
-        side: item.description?.toUpperCase().includes('BUY') ? 'BUY' : 'SELL',
-        quantity: Number(item.quantity) || 0,
-        price: Number(item.rate) || 0,
-        amount: Number(item.amount) || 0,
-        deliveryTrading: item.trade_type || undefined, // Use trade_type from database (T or D)
-        brokerageAmount: Number(item.brokerage_amount) || undefined
-      }));
+      const trades = securityItems.map(item => {
+        // Determine side using multiple methods for accuracy
+        let side = 'SELL'; // Default to SELL
+        
+        // Method 1: Check description for BUY/SELL keywords
+        const desc = item.description?.toUpperCase() || '';
+        if (desc.includes('BUY')) {
+          side = 'BUY';
+        } else if (desc.includes('SELL')) {
+          side = 'SELL';
+        }
+        // Method 2: Check if there's a side field in the item
+        else if (item.side) {
+          side = item.side.toUpperCase();
+        }
+        // Method 3: For F&O trades, check quantity sign (negative for SELL, positive for BUY)
+        else if (item.quantity !== undefined) {
+          const qty = Number(item.quantity);
+          side = qty < 0 ? 'SELL' : 'BUY';
+        }
+        
+        return {
+          side,
+          quantity: Number(item.quantity) || 0,
+          price: Number(item.rate) || 0,
+          amount: Number(item.amount) || 0,
+          deliveryTrading: item.trade_type || undefined, // Use trade_type from database (T or D)
+          brokerageAmount: Number(item.brokerage_amount) || undefined
+        };
+      });
       
       console.log('Processing security:', security, 'trades:', trades);
       
@@ -268,6 +290,43 @@ export function FOBillView({ bill: propBill, billId, open, onOpenChange }: { bil
     const totalBrokerage = deliveryBrokerageAmount + tradingBrokerageAmount;
     const brokerageRate = totalTransactionValue > 0 ? totalBrokerage / totalTransactionValue : 0;
     
+    // Calculate buy and sell amounts using multiple methods to ensure accuracy
+    let buyAmount = 0;
+    let sellAmount = 0;
+    
+    items.forEach(item => {
+      const amount = Number(item.amount) || 0;
+      
+      // Method 1: Check description for BUY/SELL keywords
+      const desc = item.description?.toUpperCase() || '';
+      if (desc.includes('BUY')) {
+        buyAmount += amount;
+      } else if (desc.includes('SELL')) {
+        sellAmount += amount;
+      } 
+      // Method 2: Check if there's a side field in the item
+      else if (item.side) {
+        if (item.side.toUpperCase() === 'BUY') {
+          buyAmount += amount;
+        } else if (item.side.toUpperCase() === 'SELL') {
+          sellAmount += amount;
+        }
+      }
+      // Method 3: For F&O trades, check quantity sign (negative for SELL, positive for BUY)
+      else if (item.quantity !== undefined) {
+        const qty = Number(item.quantity);
+        if (qty < 0) {
+          sellAmount += amount;
+        } else {
+          buyAmount += amount;
+        }
+      }
+      // Method 4: Default to SELL if no other information is available
+      else {
+        sellAmount += amount;
+      }
+    });
+    
     const billData: BillData = {
       billNumber: bill.bill_number,
       partyCode: partyCode,
@@ -275,9 +334,10 @@ export function FOBillView({ bill: propBill, billId, open, onOpenChange }: { bil
       billDate: bill.bill_date ? new Date(bill.bill_date).toLocaleDateString() : new Date().toLocaleDateString(),
       fileName: 'Generated from database items',
       totalTransactions: items.length,
-      buyAmount: items.filter(item => item.description?.toUpperCase().includes('BUY')).reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
-      sellAmount: items.filter(item => item.description?.toUpperCase().includes('SELL')).reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
-      netAmount: bill.total_amount ? Number(bill.total_amount) : 0,
+      buyAmount,
+      sellAmount,
+      // For FO party bills: BUY should be +, SELL should be - (as shown in the bill summary)
+      netAmount: Number(bill.total_amount) || 0,
       deliveryAmount,
       tradingAmount,
       billType: bill.bill_type || 'party',
@@ -319,7 +379,7 @@ export function FOBillView({ bill: propBill, billId, open, onOpenChange }: { bil
         totalTransactions: 0,
         buyAmount: 0,
         sellAmount: 0,
-        netAmount: bill.total_amount ? Number(bill.total_amount) : 0,
+        netAmount: Number(bill.total_amount) || 0,
         deliveryAmount: 0,
         tradingAmount: 0,
         billType: bill.bill_type || 'party',
@@ -552,41 +612,30 @@ export function FOBillView({ bill: propBill, billId, open, onOpenChange }: { bil
   // If we don't have a bill, don't render anything
   if (!open || !bill) return null;
 
+  // Create fallback bill data if billData is null or undefined
+  const fallbackBillData: BillData = billData || {
+    billNumber: bill.bill_number || 'Unknown',
+    partyCode: bill.party_code || bill.broker_code || 'Unknown',
+    partyName: bill.party_name || bill.broker_name || 'Unknown Party',
+    billDate: bill.bill_date ? new Date(bill.bill_date).toLocaleDateString() : new Date().toLocaleDateString(),
+    fileName: 'Unknown',
+    totalTransactions: 0,
+    buyAmount: 0,
+    sellAmount: 0,
+    netAmount: bill.total_amount ? Number(bill.total_amount) : 0,
+    deliveryAmount: 0,
+    tradingAmount: 0,
+    billType: bill.bill_type || 'party',
+    deliveryBrokerageAmount: 0,
+    tradingBrokerageAmount: 0,
+    deliverySlab: 0,
+    tradingSlab: 0,
+    transactions: []
+  };
+
   return (
     <BillTemplate 
-      billData={billData || (() => {
-        const isBrokerBill = bill.bill_type === 'broker';
-        let partyCode = 'Unknown';
-        let partyName = 'Unknown';
-        
-        if (isBrokerBill) {
-          partyCode = bill.broker_code || 'Unknown';
-          partyName = bill.broker_name || 'Unknown Broker';
-        } else {
-          partyCode = bill.party_code || 'Unknown';
-          partyName = bill.party_name || 'Unknown Party';
-        }
-        
-        return {
-          billNumber: bill.bill_number || 'Unknown',
-          partyCode,
-          partyName,
-          billDate: bill.bill_date ? new Date(bill.bill_date).toLocaleDateString() : new Date().toLocaleDateString(),
-          fileName: 'Unknown',
-          totalTransactions: 0,
-          buyAmount: 0,
-          sellAmount: 0,
-          netAmount: bill.total_amount ? Number(bill.total_amount) : 0,
-          deliveryAmount: 0,
-          tradingAmount: 0,
-          billType: bill.bill_type || 'party',
-          deliveryBrokerageAmount: 0,
-          tradingBrokerageAmount: 0,
-          deliverySlab: 0,
-          tradingSlab: 0,
-          transactions: []
-        };
-      })()} 
+      billData={fallbackBillData} 
       open={open} 
       onOpenChange={onOpenChange} 
     />

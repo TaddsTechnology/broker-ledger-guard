@@ -58,8 +58,9 @@ export function FOBrokerBillView({ bill, open, onOpenChange }: BrokerBillViewPro
 
   if (!bill) return null;
 
-  // Group items by client
-  const clientGroups = items.reduce((acc, item) => {
+  // Group items by client, but handle case where items might be undefined
+  const itemsToUse = items || [];
+  const clientGroups = itemsToUse.reduce((acc, item) => {
     const client = item.client_code || "Unknown";
     if (!acc[client]) acc[client] = [];
     acc[client].push(item);
@@ -71,15 +72,16 @@ export function FOBrokerBillView({ bill, open, onOpenChange }: BrokerBillViewPro
   let totalBrokerShare = 0;
   let totalSubBrokerProfit = 0;
 
-  const tradingRate = brokerMaster ? Number(brokerMaster.trading_slab || 0) / 100 : 0;
-  const deliveryRate = brokerMaster ? Number(brokerMaster.delivery_slab || 0) / 100 : 0;
+  // Broker slab rates are stored as percentages (e.g., 2 for 2%), need to divide by 100
+  const tradingRate = brokerMaster ? Number(brokerMaster.trading_slab || 0) : 0;
+  const deliveryRate = brokerMaster ? Number(brokerMaster.delivery_slab || 0) : 0;
 
-  items.forEach((item) => {
+  itemsToUse.forEach((item) => {
     const clientB = Number(item.brokerage_amount || 0);
     const amount = Number(item.amount || 0);
     const isTrading = (item.trade_type || "T").toUpperCase() === "T";
     const rate = isTrading ? tradingRate : deliveryRate;
-    const brokerShare = amount * rate;
+    const brokerShare = (amount * rate) / 100; // FIXED: Divide by 100 for percentage rates
 
     totalClientBrokerage += clientB;
     totalBrokerShare += brokerShare;
@@ -147,15 +149,16 @@ export function FOBrokerBillView({ bill, open, onOpenChange }: BrokerBillViewPro
             <div className="space-y-4">
               <h3 className="font-semibold text-[#9333ea]">F&O Sub-Broker Bill Items by Client</h3>
               {Object.entries(clientGroups).map(([client, clientItems]) => {
+                const items = clientItems as any[];
                 let clientBrokerage = 0;
                 let clientBrokerShare = 0;
 
-                clientItems.forEach((item: any) => {
+                items.forEach((item: any) => {
                   const b = Number(item.brokerage_amount || 0);
                   const amt = Number(item.amount || 0);
                   const isTrading = (item.trade_type || "T").toUpperCase() === "T";
                   const rate = isTrading ? tradingRate : deliveryRate;
-                  const share = amt * rate;
+                  const share = (amt * rate) / 100; // FIXED: Divide by 100 for percentage rates
                   clientBrokerage += b;
                   clientBrokerShare += share;
                 });
@@ -187,12 +190,12 @@ export function FOBrokerBillView({ bill, open, onOpenChange }: BrokerBillViewPro
                           </tr>
                         </thead>
                         <tbody>
-                          {clientItems.map((item: any, idx: number) => {
+                          {items.map((item: any, idx: number) => {
                             const amt = Number(item.amount || 0);
                             const b = Number(item.brokerage_amount || 0);
                             const isTrading = (item.trade_type || "T").toUpperCase() === "T";
                             const rate = isTrading ? tradingRate : deliveryRate;
-                            const share = amt * rate;
+                            const share = (amt * rate) / 100; // FIXED: Divide by 100 for percentage rates
                             const profit = b - share;
 
                             return (
