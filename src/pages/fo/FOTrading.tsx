@@ -101,18 +101,18 @@ const FOTrading = () => {
   // Handle file upload
   const handleFileUpload = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-
+  
     setIsProcessing(true);
     const newFiles: ProcessedFile[] = [];
-
+  
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      
+        
       // Check if file is TXT, CSV, or XLSX
       const isTxt = file.name.toLowerCase().endsWith('.txt');
       const isCsv = file.name.toLowerCase().endsWith('.csv');
       const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
-      
+        
       if (!isTxt && !isCsv && !isXlsx) {
         newFiles.push({
           name: file.name,
@@ -125,21 +125,21 @@ const FOTrading = () => {
         });
         continue;
       }
-
+  
       try {
         let headers: string[] = [];
         let dataRows: string[][] = [];
-        
+          
         if (isXlsx) {
           // Handle XLSX file
           const arrayBuffer = await file.arrayBuffer();
           const workbook = XLSX.read(arrayBuffer, { type: 'array' });
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
-          
+            
           // Convert to JSON
           const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as string[][];
-          
+            
           if (jsonData.length === 0) {
             newFiles.push({
               name: file.name,
@@ -152,7 +152,7 @@ const FOTrading = () => {
             });
             continue;
           }
-          
+            
           // Assume first row is headers
           headers = jsonData[0] || [];
           dataRows = jsonData.slice(1);
@@ -160,7 +160,7 @@ const FOTrading = () => {
           // Handle TXT/CSV files
           const text = await file.text();
           const lines = text.split('\n').filter(line => line.trim());
-          
+            
           if (lines.length === 0) {
             newFiles.push({
               name: file.name,
@@ -173,24 +173,24 @@ const FOTrading = () => {
             });
             continue;
           }
-
+  
           // Try to detect delimiter (comma, tab, pipe, semicolon)
           const firstLine = lines[0];
           let delimiter = ',';
           if (firstLine.includes('\t')) delimiter = '\t';
           else if (firstLine.includes('|')) delimiter = '|';
           else if (firstLine.includes(';')) delimiter = ';';
-
+  
           // Parse content
           const content = lines.map(line => 
             line.split(delimiter).map(cell => cell.trim().replace(/^"|"$/g, ''))
           );
-          
+            
           // Assume first row is headers
           headers = content[0] || [];
           dataRows = content.slice(1);
         }
-
+  
         newFiles.push({
           name: file.name,
           size: file.size,
@@ -211,9 +211,14 @@ const FOTrading = () => {
         });
       }
     }
-
+  
     setUploadedFiles(prev => [...prev, ...newFiles]);
     setIsProcessing(false);
+      
+    // Reset the file input to allow selecting the same file again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   }, []);
 
   // Handle drag and drop
@@ -307,7 +312,7 @@ const FOTrading = () => {
   }, []);
 
   // Import F&O trades and update positions (no direct bills)
-  const importTrades = useCallback(async (file: ProcessedFile) => {
+  const importTrades = useCallback(async (file: ProcessedFile, fileIndex: number) => {
     try {
       if (!(file.editableContent || file.content).length) {
         toast({
@@ -362,8 +367,8 @@ const FOTrading = () => {
         description: `Imported ${result.importedCount ?? 0} trades and updated positions. Bills can be generated later from contracts.`
       });
       
-      // Clear the uploaded files after successful bill generation
-      setUploadedFiles([]);
+      // Remove only the imported file from the list
+      setUploadedFiles(prev => prev.filter((_, i) => i !== fileIndex));
     } catch (error) {
       console.error('Error importing F&O trades:', error);
       toast({
@@ -650,7 +655,7 @@ const FOTrading = () => {
                           <span className="text-xs">+ Add Column</span>
                         </Button>
                         <Button
-                          onClick={() => importTrades(file)}
+                          onClick={() => importTrades(file, index)}
                           className="flex-1 bg-purple-600 hover:bg-purple-700"
                           tabIndex={6 + index * 4}
                         >

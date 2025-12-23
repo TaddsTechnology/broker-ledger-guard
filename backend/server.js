@@ -1075,6 +1075,19 @@ function extractCompanyFromSecurityName(securityName = "") {
   };
 }
 
+// Utility: next trading day (skips Sat/Sun)
+function getNextTradingDayStr(dateStr) {
+  const d = new Date(dateStr);
+  if (Number.isNaN(d.getTime())) {
+    throw new Error(`Invalid date: ${dateStr}`);
+  }
+  d.setDate(d.getDate() + 1);
+  // 6 = Saturday, 0 = Sunday
+  if (d.getDay() === 6) d.setDate(d.getDate() + 2);
+  if (d.getDay() === 0) d.setDate(d.getDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
 // Fetch trading and delivery slabs for a list of client (party) ids
 async function getPartySlabs(clientIds = []) {
   if (!Array.isArray(clientIds) || clientIds.length === 0) return {};
@@ -1508,20 +1521,133 @@ app.post('/api/stock-trades/process', async (req, res) => {
           continue;
         }
 
-        // Calculate brokerage
+        // Handle CF trades according to business requirements
+        if (isCarryForward) {
+          // CF = CLOSE + FUTURE OPEN - NOT a real trade
+          // 1. Find existing OPEN position for that party + symbol
+          // 2. CLOSE the position at CF price
+          // 3. Calculate and store P&L
+          // 4. Store CF_OPEN record for next trading day
+          
+          console.log(`Processing CF trade for ${party.party_code}: ${securityName} ${side} ${quantity}@${price}`);
+          
+          // Find existing open position for this party and symbol
+          const companyInfo = extractCompanyFromSecurityName(securityName);
+          let companyId = null;
+          
+          if (companyInfo.company_code) {
+            const companyQuery = await client.query(
+              'SELECT id FROM company_master WHERE UPPER(company_code) = $1',
+              [companyInfo.company_code.toUpperCase()]
+            );
+            
+            if (companyQuery.rows.length > 0) {
+              companyId = companyQuery.rows[0].id;
+            } else {
+              // Create company if not exists
+              const newCompanyResult = await client.query(
+                'INSERT INTO company_master (company_code, name, nse_code) VALUES ($1, $2, $3) RETURNING id',
+                [companyInfo.company_code.toUpperCase(), companyInfo.company_code.toUpperCase(), companyInfo.company_code.toUpperCase()]
+              );
+              companyId = newCompanyResult.rows[0].id;
+            }
+          }
+          
+          if (companyId) {
+            // Find existing OPEN position for this party and symbol
+            const positionQuery = await client.query(
+              `SELECT id, quantity, avg_buy_price 
+               FROM stock_holdings 
+               WHERE party_id = $1 AND company_id = $2 AND quantity != 0`,
+              [party.id, companyId]
+            );
+            
+            if (positionQuery.rows.length > 0) {
+              const position = positionQuery.rows[0];
+              const currentPositionQty = Number(position.quantity);
+              const currentPositionAvgPrice = Number(position.avg_buy_price);
+              
+              // Calculate P&L: (Current Avg Price - CF Price) * Quantity
+              // For SELL position being closed with CF BUY: (Sell Price - CF Price) * Qty
+              // For BUY position being closed with CF SELL: (CF Price - Buy Price) * Qty
+              let pnl = 0;
+              if (currentPositionQty > 0 && side === 'BUY') {
+                // Closing a BUY position with CF BUY (shouldn't normally happen)
+                pnl = (currentPositionAvgPrice - price) * currentPositionQty;
+              } else if (currentPositionQty < 0 && side === 'SELL') {
+                // Closing a SELL position with CF SELL (shouldn't normally happen)
+                pnl = (price - currentPositionAvgPrice) * Math.abs(currentPositionQty);
+              } else if (currentPositionQty > 0 && side === 'SELL') {
+                // Closing a BUY position with CF SELL - normal case
+                pnl = (price - currentPositionAvgPrice) * currentPositionQty;
+              } else if (currentPositionQty < 0 && side === 'BUY') {
+                // Closing a SELL position with CF BUY - normal case
+                pnl = (currentPositionAvgPrice - price) * Math.abs(currentPositionQty);
+              }
+              
+              console.log(`CF P&L calculated: ${pnl.toFixed(2)} for position ${currentPositionQty}@${currentPositionAvgPrice}`);
+              
+              // Update the existing position to close it (set quantity to 0)
+              await client.query(
+                'UPDATE stock_holdings SET quantity = 0, last_trade_date = $1 WHERE id = $2',
+                [tradeDateValue, position.id]
+              );
+              
+              // Store CF_OPEN record for next trading day
+              const nextTradingDay = getNextTradingDayStr(tradeDateValue);
+              console.log(`Storing CF_OPEN record for ${nextTradingDay}`);
+              
+              // Store CF_OPEN record for next trading day
+              // Reopen the same position on the next trading day at the CF price
+              await client.query(
+                'INSERT INTO stock_holdings (party_id, company_id, quantity, avg_buy_price, total_invested, last_trade_date) VALUES ($1, $2, $3, $4, $5, $6)',
+                [party.id, companyId, currentPositionQty, price, 0, nextTradingDay]
+              );
+              
+              // Insert ONLY P&L ledger entry (no full amount)
+              // CF must NOT affect buy/sell totals, create bills, create broker bills, charge brokerage, or change ledger with full amounts
+              let currentClientBalance = 0;
+              const clientBalanceQuery = await client.query(
+                'SELECT balance FROM ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
+                [party.id]
+              );
+              if (clientBalanceQuery.rows.length > 0) {
+                currentClientBalance = Number(clientBalanceQuery.rows[0].balance) || 0;
+              }
+              
+              // Only add P&L adjustment to ledger, not the full trade amount
+              const pnlLedgerResult = await client.query(
+                'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+                [
+                  party.id,
+                  tradeDateValue,
+                  `CF P&L Adjustment - ${securityName}: ${pnl.toFixed(2)}`,
+                  pnl > 0 ? pnl : 0,  // Debit if positive P&L (we owe client)
+                  pnl < 0 ? Math.abs(pnl) : 0,  // Credit if negative P&L (client owes us)
+                  currentClientBalance + (pnl > 0 ? pnl : -Math.abs(pnl)),
+                  'cf_pnl'
+                ]
+              );
+              results.ledgerEntries.push(pnlLedgerResult.rows[0]);
+            }
+            
+            // DO NOT add CF to ledger as a normal trade
+            // DO NOT add CF to billItems
+            // CF must NEVER behave like a normal trade
+            // Skip to next trade without adding to billItems or affecting totals
+            continue;
+          }
+        }        // Normal (non-CF) trades continue here
+        // Calculate brokerage for normal trades
         const brokerageRate = type === 'T' ? Number(party.trading_slab) : Number(party.delivery_slab);
-        const brokerageAmount = isCarryForward ? 0 : (amount * brokerageRate) / 100;
-        if (!isCarryForward) {
-          totalBrokerage += brokerageAmount;
-        }
+        const brokerageAmount = (amount * brokerageRate) / 100;
+        totalBrokerage += brokerageAmount;
 
         // Track buy/sell amounts for trade settlement ledger (non-CF only)
-        if (!isCarryForward) {
-          if (side === 'BUY') {
-            totalBuyAmount += amount;
-          } else if (side === 'SELL') {
-            totalSellAmount += amount;
-          }
+        if (side === 'BUY') {
+          totalBuyAmount += amount;
+        } else if (side === 'SELL') {
+          totalSellAmount += amount;
         }
 
         // Capture broker code per trade (so one client can trade via multiple brokers)
@@ -1540,31 +1666,8 @@ app.post('/api/stock-trades/process', async (req, res) => {
           broker_code: brokerCodeFromTrade || null,
         };
 
-        if (isCarryForward) {
-          carryForwardItems.push(tradeItem);
-
-          const debitAmountCF = side === 'BUY' ? amount : 0;
-          const creditAmountCF = side === 'SELL' ? amount : 0;
-          currentClientBalance = currentClientBalance + debitAmountCF - creditAmountCF;
-          const cfLedgerResult = await client.query(
-            'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-            [
-              party.id,
-              tradeDateValue,
-              `Carry Forward ${side} - ${securityName} (${quantity} @ ?${price.toFixed(2)})`,
-              debitAmountCF,
-              creditAmountCF,
-              currentClientBalance,
-              'carry_forward',
-              null
-            ]
-          );
-          results.ledgerEntries.push(cfLedgerResult.rows[0]);
-        } else {
-          billItems.push(tradeItem);
-        }
+        billItems.push(tradeItem);
       }
-
       // Calculate net trade settlement
       const netTradeAmount = totalBuyAmount - totalSellAmount;
       
@@ -1573,7 +1676,7 @@ app.post('/api/stock-trades/process', async (req, res) => {
       const shouldGenerateBill = Math.abs(finalClientBalance) >= 0.01;
 
       if (!shouldGenerateBill) {
-        console.log(`Skipping client bill for ${party.party_code} due to zero total (likely carry forward)`);
+        console.log(`Skipping client bill for ${party.party_code} due to zero total (likely all CF trades)`);
       } else {
         // Before creating a new bill, check if an identical bill already exists for this
         // party, date and amount (idempotency guard for repeated uploads of same file).
@@ -1687,6 +1790,9 @@ app.post('/api/stock-trades/process', async (req, res) => {
           );
         }
 
+        // Count only non-CF items for the items count
+        const nonCfItemCount = billItems.filter(item => item.trade_type !== 'CF').length;
+        
         results.clientBills.push({
           billId,
           billNumber,
@@ -1696,12 +1802,15 @@ app.post('/api/stock-trades/process', async (req, res) => {
           totalSellAmount,
           totalBrokerage,
           netAmount: finalClientBalance,
-          items: billItems.length,
+          items: nonCfItemCount,
         });
       }
 
-      const holdingsItems = [...billItems, ...carryForwardItems];
-      for (const item of holdingsItems) {
+      // Update stock holdings for normal trades only (exclude CF trades)
+      // Filter out CF trades from billItems before processing holdings
+      const nonCfBillItems = billItems.filter(item => item.trade_type !== 'CF');
+      
+      for (const item of nonCfBillItems) {
         let company_id = null;
         if (item.company_code) {
           const companyQuery = await client.query(
@@ -1764,7 +1873,17 @@ app.post('/api/stock-trades/process', async (req, res) => {
           }
         }
       }
-
+      
+      // Handle CF trades separately - they should not affect holdings in the normal way
+      // But we may need to store CF_OPEN records for next trading day
+      for (const item of carryForwardItems) {
+        // CF trades don't update normal holdings
+        // They represent position rollovers that don't change the actual investment
+        
+        // If needed, we could store CF_OPEN records in a separate table
+        // For now, we'll just log that we're skipping CF trades for holdings
+        console.log(`Skipping CF trade for holdings update: ${item.description}`);
+      }
     }
 
     // Always create new broker bill(s) per broker for this CSV upload
@@ -4225,18 +4344,35 @@ app.post('/api/fo/trades/import', async (req, res) => {
           }
         }
         
-        const side = (trade.Side || trade.side || '').toString().trim().toUpperCase();
-        
+        // Side can be absent in some broker exports; infer from BuyQty/SellQty when missing.
+        let side = (trade.Side || trade.side || '').toString().trim().toUpperCase();
+
+        const buyLots = Number(trade.BuyQty || trade.buyQty || 0);
+        const sellLots = Number(trade.SellQty || trade.sellQty || 0);
+
         // Get quantity (in lots)
         let lotQuantity = 0;
         if (side === 'BUY') {
-          lotQuantity = Number(trade.BuyQty || trade.Quantity || trade.quantity || 0);
+          lotQuantity = Number(buyLots || trade.Quantity || trade.quantity || 0);
         } else if (side === 'SELL') {
-          lotQuantity = Number(trade.SellQty || trade.Quantity || trade.quantity || 0);
+          lotQuantity = Number(sellLots || trade.Quantity || trade.quantity || 0);
         } else {
-          lotQuantity = Number(trade.BuyQty || trade.SellQty || trade.Quantity || trade.quantity || 0);
+          lotQuantity = Number(buyLots || sellLots || trade.Quantity || trade.quantity || 0);
         }
-        
+
+        // If side is missing, infer it from which column has qty.
+        if (!side) {
+          if (buyLots > 0 && sellLots <= 0) {
+            side = 'BUY';
+          } else if (sellLots > 0 && buyLots <= 0) {
+            side = 'SELL';
+          } else if (sellLots > buyLots) {
+            side = 'SELL';
+          } else if (buyLots >= sellLots && buyLots > 0) {
+            side = 'BUY';
+          }
+        }
+
         // Get price
         let price = 0;
         if (side === 'BUY') {
@@ -4249,10 +4385,16 @@ app.post('/api/fo/trades/import', async (req, res) => {
         
         const type = (trade.Type || trade.type || 'T').toString().toUpperCase();
         const isCarryForward = type === 'CF';
-        
+
         // Skip if quantity or price is 0
         if (lotQuantity === 0 || price === 0) {
           console.warn(`Skipping F&O trade with zero quantity or price: ${symbol}`);
+          continue;
+        }
+
+        // If side is still missing, we can't reliably post this trade.
+        if (!side && !isCarryForward) {
+          console.warn(`Skipping F&O trade with missing side: ${symbol}`);
           continue;
         }
 
@@ -4312,6 +4454,11 @@ app.post('/api/fo/trades/import', async (req, res) => {
             displayName += instrumentType;
           }
           
+          // Truncate display_name to fit within VARCHAR(100) limit
+          if (displayName.length > 100) {
+            displayName = displayName.substring(0, 100);
+          }
+          
           const newInstrumentResult = await client.query(
             `INSERT INTO fo_instrument_master 
               (symbol, instrument_type, expiry_date, strike_price, lot_size, segment, underlying_asset, display_name, is_active) 
@@ -4362,21 +4509,183 @@ app.post('/api/fo/trades/import', async (req, res) => {
           }
         }
 
-        // Create contract with broker information
         const tradeDateValue = trade.TradeDate || trade.tradeDate || trade.Date || billDateStr;
-        const contractNumber = `FO-${party.party_code}-${instrument.symbol}-${new Date(tradeDateValue).getTime()}-${Math.floor(Math.random() * 1000)}`;
-        
-        const contractResult = await client.query(
+
+        // CF = Carry Forward (rollover):
+        // 1) close the existing net position on tradeDate
+        // 2) reopen the SAME net position on the next trading day
+        //
+        // IMPORTANT: Your DB currently contains many duplicate fo_instrument_master rows for the same
+        // display_name/expiry. So we treat ALL matching instrument IDs as the same instrument, and
+        // operate on the net quantity across those IDs.
+        if (isCarryForward) {
+          const cfAbsQty = Math.abs(actualQuantity);
+          const nextDayStr = getNextTradingDayStr(tradeDateValue);
+
+          // Collect ALL instrument IDs that match the canonical instrument key.
+          // (symbol, instrument_type, expiry_date, strike_price)
+          const instrIdsRes = await client.query(
+            `SELECT MIN(id)::int AS canonical_id,
+                    ARRAY_AGG(id::int ORDER BY id ASC) AS all_ids
+             FROM fo_instrument_master
+             WHERE UPPER(symbol) = UPPER($1)
+               AND instrument_type = $2
+               AND expiry_date = $3
+               AND ((strike_price IS NULL AND $4::numeric IS NULL) OR strike_price = $4::numeric)`,
+            [instrument.symbol, instrumentType, instrument.expiry_date, instrument.strike_price]
+          );
+
+          const canonicalInstrumentId = Number(instrIdsRes.rows?.[0]?.canonical_id || instrument.id);
+          const allInstrumentIds = (instrIdsRes.rows?.[0]?.all_ids || [instrument.id]).map((x) => Number(x));
+
+          // Net position BEFORE CF (across duplicates)
+          const netRes = await client.query(
+            'SELECT COALESCE(SUM(quantity), 0) AS net_qty FROM fo_positions WHERE party_id = $1 AND instrument_id = ANY($2::int[])',
+            [party.id, allInstrumentIds]
+          );
+          const netQtyBefore = Number(netRes.rows?.[0]?.net_qty || 0);
+
+          // Figure out what position should be carried to next day.
+          // If we had a position already, keep its direction.
+          // If not, infer from CF side: BUY usually closes a short => carry SHORT; SELL closes long => carry LONG.
+          let carriedSignedQty;
+          if (Math.abs(netQtyBefore) > 0.01) {
+            carriedSignedQty = netQtyBefore > 0 ? cfAbsQty : -cfAbsQty;
+          } else {
+            carriedSignedQty = (side === 'BUY') ? -cfAbsQty : cfAbsQty;
+          }
+
+          const reopenSide = carriedSignedQty > 0 ? 'BUY' : 'SELL';
+
+          // Mark older open contracts for this instrument as closed (so only one open leg remains)
+          await client.query(
+            `UPDATE fo_contracts
+             SET status = 'closed', updated_at = CURRENT_TIMESTAMP
+             WHERE party_id = $1
+               AND instrument_id = ANY($2::int[])
+               AND status = 'open'
+               AND trade_date <= $3`,
+            [party.id, allInstrumentIds, tradeDateValue]
+          );
+
+          // Insert CF close contract (from the uploaded row)
+          let closeContractNumber = `FO-${party.party_code}-${instrument.symbol}-${new Date(tradeDateValue).getTime()}-${Math.floor(Math.random() * 1000)}`;
+          // Truncate to fit within VARCHAR(50) limit
+          if (closeContractNumber.length > 50) {
+            closeContractNumber = closeContractNumber.substring(0, 50);
+          }
+          await client.query(
+            `INSERT INTO fo_contracts
+              (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date,
+               trade_type, side, quantity, price, amount, brokerage_rate, brokerage_amount, status, notes)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+            [
+              closeContractNumber,
+              party.id,
+              canonicalInstrumentId,
+              brokerId,
+              brokerCode,
+              tradeDateValue,
+              'CF',
+              side,
+              cfAbsQty,
+              price,
+              cfAbsQty * price,
+              0,
+              0,
+              'closed',
+              `Imported CF close leg from trading file; reopen on ${nextDayStr}`,
+            ]
+          );
+
+          // Close ALL position rows for this instrument key
+          await client.query(
+            `UPDATE fo_positions
+             SET quantity = 0, status = 'closed', last_trade_date = $3, last_updated = CURRENT_TIMESTAMP
+             WHERE party_id = $1 AND instrument_id = ANY($2::int[])`,
+            [party.id, allInstrumentIds, tradeDateValue]
+          );
+
+          // Upsert the canonical position row to the carried position for next trading day
+          const canonicalPosRes = await client.query(
+            'SELECT id FROM fo_positions WHERE party_id = $1 AND instrument_id = $2 ORDER BY last_updated DESC, id DESC LIMIT 1',
+            [party.id, canonicalInstrumentId]
+          );
+
+          if (canonicalPosRes.rows.length > 0) {
+            await client.query(
+              'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_trade_date = $4, last_updated = CURRENT_TIMESTAMP WHERE id = $5',
+              [carriedSignedQty, price, 'open', nextDayStr, canonicalPosRes.rows[0].id]
+            );
+          } else {
+            await client.query(
+              'INSERT INTO fo_positions (party_id, instrument_id, quantity, avg_price, last_trade_date, status) VALUES ($1,$2,$3,$4,$5,$6)',
+              [party.id, canonicalInstrumentId, carriedSignedQty, price, nextDayStr, 'open']
+            );
+          }
+
+          // Insert reopen contract
+          let reopenContractNumber = `CF-REOPEN-${party.id}-${canonicalInstrumentId}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+          // Truncate to fit within VARCHAR(50) limit
+          if (reopenContractNumber.length > 50) {
+            reopenContractNumber = reopenContractNumber.substring(0, 50);
+          }
+          await client.query(
+            `INSERT INTO fo_contracts
+              (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date,
+               trade_type, side, quantity, price, amount, brokerage_rate, brokerage_amount, status, notes)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+            [
+              reopenContractNumber,
+              party.id,
+              canonicalInstrumentId,
+              null,
+              null,
+              nextDayStr,
+              'CF',
+              reopenSide,
+              cfAbsQty,
+              price,
+              cfAbsQty * price,
+              0,
+              0,
+              'open',
+              `Auto-generated CF reopen (${reopenSide}) after CF ${side} on ${tradeDateValue}`,
+            ]
+          );
+
+          imported.push({
+            clientId,
+            instrumentId: canonicalInstrumentId,
+            qty: cfAbsQty,
+            price,
+            brokerId,
+            brokerCode,
+            cf: true,
+            closeDate: tradeDateValue,
+            reopenDate: nextDayStr,
+            carriedQty: carriedSignedQty,
+          });
+          continue;
+        }
+
+        // Normal (T/D) trade import
+        let contractNumber = `FO-${party.party_code}-${instrument.symbol}-${new Date(tradeDateValue).getTime()}-${Math.floor(Math.random() * 1000)}`;
+        // Truncate to fit within VARCHAR(50) limit
+        if (contractNumber.length > 50) {
+          contractNumber = contractNumber.substring(0, 50);
+        }
+
+        await client.query(
           `INSERT INTO fo_contracts 
             (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date, 
              trade_type, side, quantity, price, amount, brokerage_rate, brokerage_amount, status, notes)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) 
-           RETURNING *`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
           [
-            contractNumber, 
-            party.id, 
-            instrument.id, 
-            brokerId, 
+            contractNumber,
+            party.id,
+            instrument.id,
+            brokerId,
             brokerCode,
             tradeDateValue,
             type,
@@ -4387,7 +4696,7 @@ app.post('/api/fo/trades/import', async (req, res) => {
             brokerageRate,
             brokerageAmount,
             'open',
-            'Imported from trading file'
+            'Imported from trading file',
           ]
         );
 
@@ -4396,7 +4705,7 @@ app.post('/api/fo/trades/import', async (req, res) => {
         //  BUY  => +qty
         //  SELL => -qty
         const posRes = await client.query(
-          'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+          'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2 ORDER BY last_updated DESC, id DESC LIMIT 1',
           [party.id, instrument.id]
         );
 
@@ -4741,22 +5050,23 @@ app.post('/api/fo/trades/process', async (req, res) => {
         // Update F&O position (CF and non-CF trades both update positions)
         // CF SELL: closes position and calculates P&L
         // CF BUY: reopens position at new price
+        // For CF trades, we need to check all positions, not just open ones
         const positionQuery = await client.query(
-          'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2 AND status = $3',
-          [party.id, instrument.id, 'open']
+          'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+          [party.id, instrument.id]
         );
-
-        let realizedPnL = 0;
         
+        let realizedPnL = 0;
+                
         if (positionQuery.rows.length > 0) {
           // Update existing position
           const position = positionQuery.rows[0];
           const currentQty = Number(position.quantity);
           const currentAvgPrice = Number(position.avg_price);
           const currentTotalInvested = currentQty * currentAvgPrice;
-          
+                  
           let newQty, newAvgPrice;
-          
+                  
           if (side === 'BUY') {
             if (isCarryForward) {
               // CF BUY:
@@ -4770,7 +5080,8 @@ app.post('/api/fo/trades/process', async (req, res) => {
                 // Realized P&L for closing short = (avg_short_price - buy_price) * qty
                 realizedPnL = (currentAvgPrice - price) * actualQuantity;
               } else {
-                // No existing short: reopen long at new price
+                // No existing short: For CF BUY, we should not create a new long position
+                // This is likely a reopening trade, so we create a new long position
                 newQty = actualQuantity;
                 newAvgPrice = price;
               }
@@ -4782,275 +5093,154 @@ app.post('/api/fo/trades/process', async (req, res) => {
             }
           } else {
             // SELL (CF or normal)
-            newQty = currentQty - actualQuantity;
-            newAvgPrice = currentAvgPrice; // Keep same avg price when selling
-            
-            // Calculate P&L for CF SELL (long rollover)
             if (isCarryForward) {
-              realizedPnL = (price - currentAvgPrice) * actualQuantity;
+              // For CF SELL, we need to check if we have a long position to close
+              if (currentQty > 0) {
+                // LONG rollover: SELL to square off existing long
+                newQty = currentQty - actualQuantity;
+                newAvgPrice = currentAvgPrice;
+                // Realized P&L for closing long = (sell_price - avg_long_price) * qty
+                realizedPnL = (price - currentAvgPrice) * actualQuantity;
+              } else {
+                // No existing long: For CF SELL, we should not create a new short position
+                // This is likely a reopening trade, so we create a new short position
+                newQty = -actualQuantity; // negative for short
+                newAvgPrice = price;
+              }
+            } else {
+              // Normal SELL: Reduce position
+              newQty = currentQty - actualQuantity;
+              newAvgPrice = currentAvgPrice; // Keep same avg price when selling
             }
           }
-          
+                  
           // Check if position is closed
           const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
-          
+                  
           await client.query(
             'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
             [newQty, newAvgPrice, positionStatus, position.id]
           );
         } else {
           // Create new position
+          // For CF trades, we always create a position regardless of side
           const positionQty = side === 'BUY' ? actualQuantity : -actualQuantity;
-          
+                  
           await client.query(
             `INSERT INTO fo_positions 
               (party_id, instrument_id, quantity, avg_price, status) 
-             VALUES ($1, $2, $3, $4, $5)`,
+             VALUES ($1, $2, $3, $4, $5)`
+          ,
             [party.id, instrument.id, positionQty, price, 'open']
           );
         }
 
-        // CF trades: Include in party bill (with 0 brokerage)
-        // P&L will be reflected in the party bill automatically (no separate ledger entry needed)
+        // Handle CF trades according to business requirements
+        // CF = CLOSE + FUTURE OPEN - NOT a real trade
+        // 1. Find existing OPEN position for that party + symbol
+        // 2. CLOSE the position at CF price
+        // 3. Calculate and store P&L
+        // 4. Store CF_OPEN record for next trading day
+        // CF must NOT:
+        // - Affect buy/sell totals
+        // - Create bills
+        // - Create broker bills
+        // - Charge brokerage
+        // - Change ledger with full BUY/SELL amounts
         if (isCarryForward) {
           const tradeDateValue = trade.TradeDate || trade.tradeDate || trade.Date || billDateStr;
-          
-          if (side === 'SELL' && realizedPnL !== 0) {
-            // CF SELL: Long rollover – close long, realize P&L, then auto BUY next day
-            console.log(`CF P&L calculated (LONG ROLLOVER): ${instrument.display_name || symbol} - ${side} ${actualQuantity}, P&L: ₹${realizedPnL.toFixed(2)}`);
-            
-            // AUTO-GENERATE CF BUY for next day (reopen LONG)
-            // Calculate next working day (add 1 day, skip weekends if needed)
-            const nextDay = new Date(tradeDateValue);
-            nextDay.setDate(nextDay.getDate() + 1);
-            
-            // Skip Saturday (6) and Sunday (0)
-            if (nextDay.getDay() === 6) nextDay.setDate(nextDay.getDate() + 2); // Saturday -> Monday
-            if (nextDay.getDay() === 0) nextDay.setDate(nextDay.getDate() + 1); // Sunday -> Monday
-            
-            const nextDayStr = nextDay.toISOString().slice(0, 10);
-            
-            // Insert auto CF BUY contract
-            await client.query(
-              `INSERT INTO fo_contracts 
-                (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, side, quantity, price, amount, brokerage_amount, status, notes)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-              [
-                party.id,
-                instrument.id,
-                null, // No broker for CF
-                null,
-                nextDayStr,
-                'CF', // trade_type
-                'BUY', // side
-                actualQuantity,
-                price,
-                amount,
-                0, // No brokerage for CF
-                'open',
-                `Auto-generated CF BUY after CF SELL on ${tradeDateValue}`
-              ]
-            );
-            
-            // Immediately process CF BUY: Update position (reopen at new price)
-            const cfBuyPositionQuery = await client.query(
-              'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
-              [party.id, instrument.id]
-            );
-            
-            if (cfBuyPositionQuery.rows.length > 0) {
-              // Reopen closed position
-              await client.query(
-                'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
-                [actualQuantity, price, 'open', cfBuyPositionQuery.rows[0].id]
-              );
-            } else {
-              // Create new position
-              await client.query(
-                `INSERT INTO fo_positions 
-                  (party_id, instrument_id, quantity, avg_price, status) 
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [party.id, instrument.id, actualQuantity, price, 'open']
-              );
+                  
+          // Find existing open position for this party and instrument
+          const positionQuery = await client.query(
+            'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2 AND status = $3',
+            [party.id, instrument.id, 'open']
+          );
+                  
+          if (positionQuery.rows.length > 0) {
+            const position = positionQuery.rows[0];
+            const currentPositionQty = Number(position.quantity);
+            const currentPositionAvgPrice = Number(position.avg_price);
+                    
+            // Calculate P&L: (Current Avg Price - CF Price) * Quantity
+            // For SELL position being closed with CF BUY: (Sell Price - CF Price) * Qty
+            // For BUY position being closed with CF SELL: (CF Price - Buy Price) * Qty
+            let pnl = 0;
+            if (currentPositionQty > 0 && side === 'BUY') {
+              // Closing a BUY position with CF BUY (shouldn't normally happen)
+              pnl = (currentPositionAvgPrice - price) * currentPositionQty;
+            } else if (currentPositionQty < 0 && side === 'SELL') {
+              // Closing a SELL position with CF SELL (shouldn't normally happen)
+              pnl = (price - currentPositionAvgPrice) * Math.abs(currentPositionQty);
+            } else if (currentPositionQty > 0 && side === 'SELL') {
+              // Closing a BUY position with CF SELL - normal case
+              pnl = (price - currentPositionAvgPrice) * currentPositionQty;
+            } else if (currentPositionQty < 0 && side === 'BUY') {
+              // Closing a SELL position with CF BUY - normal case
+              pnl = (currentPositionAvgPrice - price) * Math.abs(currentPositionQty);
             }
-            
-            // Create CF BUY bill and ledger entry
-            const cfBillNumber = `PTY${nextDayStr.replace(/-/g, '')}-${Math.floor(Math.random() * 900) + 100}`;
-            
-            const cfBillResult = await client.query(
-              'INSERT INTO fo_bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-              [cfBillNumber, party.id, nextDayStr, amount, 'party', 'pending']
-            );
-            
-            const cfBillId = cfBillResult.rows[0].id;
-            
-            // Insert CF BUY bill item
+                    
+            console.log(`CF P&L calculated: ${pnl.toFixed(2)} for position ${currentPositionQty}@${currentPositionAvgPrice}`);
+                    
+            // Update the existing position to close it (set quantity to 0)
             await client.query(
-              'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type, side) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
-              [
-                cfBillId,
-                `${instrument.display_name || symbol} - BUY (CF)`,
-                actualQuantity,
-                price,
-                amount,
-                clientId,
-                instrument.id,
-                0, // No brokerage for CF
-                0,
-                'CF',
-            item.side || null
-              ]
+              'UPDATE fo_positions SET quantity = 0, status = $1, last_trade_date = $2, last_updated = CURRENT_TIMESTAMP WHERE id = $3',
+              ['closed', tradeDateValue, position.id]
             );
+                    
+            // Store CF_OPEN record for next trading day
+            const nextTradingDay = getNextTradingDayStr(tradeDateValue);
+            console.log(`Storing CF_OPEN record for ${nextTradingDay}`);
             
-            // Get current balance for CF BUY ledger
-            let cfCurrentBalance = 0;
-            const cfBalanceQuery = await client.query(
+            // Create new position for next trading day (reopen same position)
+            const reopenQty = currentPositionQty; // Same quantity and direction
+            await client.query(
+              'INSERT INTO fo_positions (party_id, instrument_id, quantity, avg_price, last_trade_date, status) VALUES ($1, $2, $3, $4, $5, $6)',
+              [party.id, instrument.id, reopenQty, price, nextTradingDay, 'open']
+            );
+                    
+            // Insert ONLY P&L ledger entry (no full amount)
+            // CF must NOT affect buy/sell totals, create bills, create broker bills, charge brokerage, or change ledger with full amounts
+            let currentClientBalance = 0;
+            const clientBalanceQuery = await client.query(
               'SELECT balance FROM fo_ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
               [party.id]
             );
-            if (cfBalanceQuery.rows.length > 0) {
-              cfCurrentBalance = Number(cfBalanceQuery.rows[0].balance) || 0;
+            if (clientBalanceQuery.rows.length > 0) {
+              currentClientBalance = Number(clientBalanceQuery.rows[0].balance) || 0;
             }
             
-            // CF BUY is a debit - party owes you, so balance becomes more negative
-            const cfNewBalance = cfCurrentBalance - amount;
-            
-            // Create ledger entry for CF BUY with carry_forward_adjustment reference type
-            await client.query(
-              'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+            // Only add P&L adjustment to ledger, not the full trade amount
+            // For F&O: BUY = client owes us money (positive), SELL = we owe client money (negative)
+            // So for P&L: Positive P&L means client profit (we owe client) -> Credit
+            //              Negative P&L means client loss (client owes us) -> Debit
+            const pnlLedgerResult = await client.query(
+              'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
               [
                 party.id,
-                nextDayStr,
-                `F&O Bill ${cfBillNumber} - CF BUY Adjustment: ${instrument.display_name || symbol} (${actualQuantity} @ ?${price.toFixed(2)}) [Position Carry]`,
-                amount,
-                0,
-                cfNewBalance,
-                'carry_forward_adjustment',
-                cfBillId
+                tradeDateValue,
+                `CF P&L Adjustment - ${instrument.display_name || symbol}: ${pnl.toFixed(2)}`,
+                pnl < 0 ? Math.abs(pnl) : 0,  // Debit if negative P&L (client owes us)
+                pnl > 0 ? pnl : 0,  // Credit if positive P&L (we owe client)
+                currentClientBalance + (pnl < 0 ? Math.abs(pnl) : -pnl),
+                'cf_pnl'
               ]
             );
-            
-            console.log(`Auto CF BUY processed for ${nextDayStr}: ${instrument.display_name || symbol} - BUY ${actualQuantity} @ ₹${price.toFixed(2)}, Bill: ${cfBillNumber}`);
-          } else if (side === 'BUY' && realizedPnL !== 0) {
-            // CF BUY: SHORT rollover – close short, realize P&L, then auto SELL next day
-            console.log(`CF P&L calculated (SHORT ROLLOVER): ${instrument.display_name || symbol} - ${side} ${actualQuantity}, P&L: ₹${realizedPnL.toFixed(2)}`);
-
-            // AUTO-GENERATE CF SELL for next day (reopen SHORT)
-            const nextDay = new Date(tradeDateValue);
-            nextDay.setDate(nextDay.getDate() + 1);
-            if (nextDay.getDay() === 6) nextDay.setDate(nextDay.getDate() + 2);
-            if (nextDay.getDay() === 0) nextDay.setDate(nextDay.getDate() + 1);
-            const nextDayStr = nextDay.toISOString().slice(0, 10);
-
-            // Insert auto CF SELL contract
-            await client.query(
-              `INSERT INTO fo_contracts 
-                (party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, side, quantity, price, amount, brokerage_amount, status, notes)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-              [
-                party.id,
-                instrument.id,
-                null,
-                null,
-                nextDayStr,
-                'CF', // trade_type
-                'SELL', // side
-                actualQuantity,
-                price,
-                amount,
-                0,
-                'open',
-                `Auto-generated CF SELL after CF BUY on ${tradeDateValue}`
-              ]
-            );
-
-            // Immediately process CF SELL: update position (reopen SHORT at new price)
-            const cfSellPositionQuery = await client.query(
-              'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
-              [party.id, instrument.id]
-            );
-
-            const shortQty = -actualQuantity; // negative quantity = short
-            if (cfSellPositionQuery.rows.length > 0) {
-              await client.query(
-                'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
-                [shortQty, price, 'open', cfSellPositionQuery.rows[0].id]
-              );
-            } else {
-              await client.query(
-                `INSERT INTO fo_positions 
-                  (party_id, instrument_id, quantity, avg_price, status) 
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [party.id, instrument.id, shortQty, price, 'open']
-              );
-            }
-
-            // Create CF SELL bill and ledger entry
-            const cfBillNumber = `PTY${nextDayStr.replace(/-/g, '')}-${Math.floor(Math.random() * 900) + 100}`;
-            const cfBillResult = await client.query(
-              'INSERT INTO fo_bills (bill_number, party_id, bill_date, total_amount, bill_type, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-              [cfBillNumber, party.id, nextDayStr, amount, 'party', 'pending']
-            );
-            const cfBillId = cfBillResult.rows[0].id;
-
-            await client.query(
-              'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type, side) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
-              [
-                cfBillId,
-                `${instrument.display_name || symbol} - SELL (CF)`,
-                actualQuantity,
-                price,
-                amount,
-                clientId,
-                instrument.id,
-                0,
-                0,
-                'CF',
-                item.side || null
-              ]
-            );
-
-            // Ledger for CF SELL
-            let cfCurrentBalance = 0;
-            const cfBalanceQuery = await client.query(
-              'SELECT balance FROM fo_ledger_entries WHERE party_id = $1 ORDER BY entry_date DESC, created_at DESC LIMIT 1',
-              [party.id]
-            );
-            if (cfBalanceQuery.rows.length > 0) {
-              cfCurrentBalance = Number(cfBalanceQuery.rows[0].balance) || 0;
-            }
-            // CF SELL reduces what client owes (credit)
-            const cfNewBalance = cfCurrentBalance + amount;
-
-            await client.query(
-              'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
-              [
-                party.id,
-                nextDayStr,
-                `F&O Bill ${cfBillNumber} - CF SELL Adjustment: ${instrument.display_name || symbol} (${actualQuantity} @ ₹${price.toFixed(2)}) [Position Carry]`,
-                0,
-                amount,
-                cfNewBalance,
-                'carry_forward_adjustment',
-                cfBillId
-              ]
-            );
-
-            console.log(`Auto CF SELL processed for ${nextDayStr}: ${instrument.display_name || symbol} - SELL ${actualQuantity} @ ₹${price.toFixed(2)}, Bill: ${cfBillNumber}`);
+            results.ledgerEntries.push(pnlLedgerResult.rows[0]);
           }
-          
-          // Log CF trade (for tracking purposes)
-          console.log(`CF trade processed: ${instrument.display_name || symbol} - ${side} ${actualQuantity} @ ₹${price.toFixed(2)}`);
-        }
-        
-        // Add all trades to bill items (CF with 0 brokerage, normal with brokerage)
+                  
+          // DO NOT add CF to ledger as a normal trade
+          // DO NOT add CF to billItems
+          // CF must NEVER behave like a normal trade
+          // Skip to next trade without adding to billItems or affecting totals
+          continue;
+        }        // Add normal (non-CF) trades to bill items
         const brokerCodeFromTrade = (trade.brokerid || trade.brokerId || trade.BrokerId || trade.BrokerID || '')
           .toString()
           .trim()
           .toUpperCase();
 
         billItems.push({
-          description: `${instrument.display_name || symbol} - ${side}${isCarryForward ? ' (CF)' : ''}`,
+          description: `${instrument.display_name || symbol} - ${side}`,
           quantity: actualQuantity,
           rate: price,
           amount,
@@ -5061,52 +5251,14 @@ app.post('/api/fo/trades/process', async (req, res) => {
           trade_type: type,
           broker_code: brokerCodeFromTrade || null,
           side: side,
-        });
-      }
+        });      }
 
-      // Calculate net trade settlement (including CF trades in buy/sell amounts)
-      // CF trades contribute to buy/sell amounts but not to brokerage
-      let totalCFBuyAmount = 0;
-      let totalCFSellAmount = 0;
-      
-      // Process CF trades separately to track amounts
-      for (const trade of clientTrades) {
-        const side = (trade.Side || trade.side || '').toString().toUpperCase();
-        const type = (trade.Type || trade.type || 'T').toString().toUpperCase();
-        const isCarryForward = type === 'CF';
-        
-        if (isCarryForward) {
-          let lotQuantity = 0;
-          if (side === 'BUY') {
-            lotQuantity = Number(trade.BuyQty || trade.Quantity || trade.quantity || 0);
-          } else if (side === 'SELL') {
-            lotQuantity = Number(trade.SellQty || trade.Quantity || trade.quantity || 0);
-          }
-          
-          let price = 0;
-          if (side === 'BUY') {
-            price = Number(trade.BuyAvg || trade.Price || trade.price || 0);
-          } else if (side === 'SELL') {
-            price = Number(trade.SellAvg || trade.Price || trade.price || 0);
-          }
-          
-          // Use lot size 1 as default for CF amount calculation
-          const cfAmount = lotQuantity * price;
-          
-          if (side === 'BUY') {
-            totalCFBuyAmount += cfAmount;
-          } else if (side === 'SELL') {
-            totalCFSellAmount += cfAmount;
-          }
-        }
-      }
-      
+      // Calculate net trade settlement (excluding CF trades as they should not affect totals)
       // For F&O: BUY = client owes us money (positive), SELL = we owe client money (negative)
       // Net = Money client owes us - Money we owe client
-      const netTradeAmount = (totalBuyAmount + totalCFBuyAmount) - (totalSellAmount + totalCFSellAmount);
-      const finalClientBalance = netTradeAmount + totalBrokerage;
-
-      if (Math.abs(finalClientBalance) < 0.01 && billItems.length === 0) {
+      // CF trades must NOT affect buy/sell totals
+      const netTradeAmount = totalBuyAmount - totalSellAmount;
+      const finalClientBalance = netTradeAmount + totalBrokerage;      if (Math.abs(finalClientBalance) < 0.01 && billItems.length === 0) {
         console.log(`Skipping F&O client bill for ${party.party_code} due to zero total and no items`);
         continue;
       }
@@ -5142,30 +5294,11 @@ app.post('/api/fo/trades/process', async (req, res) => {
       const debitAmount = finalClientBalance > 0 ? finalClientBalance : 0;
       const creditAmount = finalClientBalance < 0 ? Math.abs(finalClientBalance) : 0;
       
-      // Build particulars with CF label if applicable
-      let particularsText = `F&O Bill ${billNumber}`;
-      let referenceType = 'client_settlement';
-      
-      // Check if this bill contains any CF trades
-      const hasCFTrades = totalCFBuyAmount > 0 || totalCFSellAmount > 0;
-      
-        if (hasCFTrades && totalBuyAmount === 0 && totalSellAmount === 0) {
-        // Only CF trades in this bill - mark as carry_forward_adjustment
-        referenceType = 'carry_forward_adjustment';
-        if (totalCFSellAmount > 0) {
-          particularsText += ` - CF SELL Adjustment: ?${totalCFSellAmount.toFixed(2)} (Position Carry)`;
-        } else if (totalCFBuyAmount > 0) {
-          particularsText += ` - CF BUY Adjustment: ?${totalCFBuyAmount.toFixed(2)} (Position Carry)`;
-        }
-      } else {
-        // Mixed or normal trades
-        particularsText += ` - Buy: ?${(totalBuyAmount + totalCFBuyAmount).toFixed(2)}, Sell: ?${(totalSellAmount + totalCFSellAmount).toFixed(2)}, Brokerage: ?${totalBrokerage.toFixed(2)}`;
-        if (hasCFTrades) {
-          particularsText += ` (includes CF)`;
-        }
-      }
-      particularsText += ` (${clientTrades.length} trades)`;
-      
+      // Build particulars 
+      // Count only non-CF trades for the trade count
+      const nonCfTradesCount = clientTrades.filter(trade => (trade.Type || trade.type || '').toString().toUpperCase() !== 'CF').length;
+      let particularsText = `F&O Bill ${billNumber} - Buy: ?${totalBuyAmount.toFixed(2)}, Sell: ?${totalSellAmount.toFixed(2)}, Brokerage: ?${totalBrokerage.toFixed(2)} (${nonCfTradesCount} trades)`;
+      let referenceType = 'client_settlement';      
       const consolidatedLedgerResult = await client.query(
         'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
@@ -5218,8 +5351,9 @@ app.post('/api/fo/trades/process', async (req, res) => {
         foBrokerGroups[key].totalBrokerageAllClients += (item.brokerage_amount || 0);
       }
 
-      // Insert F&O bill items
-      for (const item of billItems) {
+      // Insert F&O bill items (only non-CF items)
+      const nonCFBillItems = billItems.filter(item => item.trade_type !== 'CF');
+      for (const item of nonCFBillItems) {
         await client.query(
           'INSERT INTO fo_bill_items (bill_id, description, quantity, rate, amount, client_code, instrument_id, brokerage_rate_pct, brokerage_amount, trade_type, side) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)',
           [
@@ -5236,8 +5370,9 @@ app.post('/api/fo/trades/process', async (req, res) => {
             item.side || null,
           ]
         );
-      }
-
+      }      // Count only non-CF items for the items count
+      const nonCfItemCount = billItems.filter(item => item.trade_type !== 'CF').length;
+      
       results.clientBills.push({
         billId,
         billNumber,
@@ -5247,7 +5382,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
         totalSellAmount,
         totalBrokerage,
         netAmount: finalClientBalance,
-        items: billItems.length,
+        items: nonCfItemCount,
       });
     }
 
@@ -5737,34 +5872,156 @@ app.get('/api/fo/contracts/:id', async (req, res) => {
 
 // Create F&O contract
 app.post('/api/fo/contracts', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { 
       contract_number, party_id, instrument_id, broker_id, broker_code,
-      trade_date, trade_type, quantity, price, amount,
+      trade_date, trade_type, side, quantity, price, amount,
       brokerage_rate, brokerage_amount, status, notes 
     } = req.body;
+    
+    await client.query('BEGIN');
     
     // For CF (Carry Forward) trades, brokerage should be 0
     const finalBrokerageRate = trade_type === 'CF' ? 0 : brokerage_rate;
     const finalBrokerageAmount = trade_type === 'CF' ? 0 : brokerage_amount;
+
+    // CF close legs should never remain "open".
+    const finalStatus = trade_type === 'CF' ? 'closed' : (status || 'open');
     
-    const result = await pool.query(
+    // For CF trades, if side is not provided, determine it based on the logic
+    let finalSide = side;
+    if (trade_type === 'CF' && !side) {
+      // For CF trades, we expect the side to be provided explicitly
+      // If not provided, we can't determine the correct side
+      return res.status(400).json({ error: 'side is required for CF trades' });
+    }
+
+    // If we are doing CF, roll up (close) any older open legs for same instrument.
+    // The new open position will be represented by the auto-generated back-forward leg.
+    if (trade_type === 'CF') {
+      await client.query(
+        `UPDATE fo_contracts
+         SET status = 'closed', updated_at = CURRENT_TIMESTAMP
+         WHERE party_id = $1 AND instrument_id = $2
+           AND status = 'open'
+           AND trade_date < $3`,
+        [party_id, instrument_id, trade_date]
+      );
+    }
+    
+    const result = await client.query(
       `INSERT INTO fo_contracts 
         (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date, 
-         trade_type, quantity, price, amount, brokerage_rate, brokerage_amount, status, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) 
+         trade_type, side, quantity, price, amount, brokerage_rate, brokerage_amount, status, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) 
        RETURNING *`,
       [
         contract_number, party_id, instrument_id, broker_id, broker_code,
-        trade_date, trade_type, quantity, price, amount,
-        finalBrokerageRate, finalBrokerageAmount, status || 'open', notes
+        trade_date, trade_type, finalSide, quantity, price, amount,
+        finalBrokerageRate, finalBrokerageAmount, finalStatus, notes
       ]
     );
     
-    res.json(result.rows[0]);
+    const createdContract = result.rows[0];
+    
+    // For CF trades, automatically update positions and generate back-forward leg
+    if (trade_type === 'CF') {
+      const absQuantity = Math.abs(quantity);
+      
+      // Update F&O position for CF trades
+      const positionQuery = await client.query(
+        'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+        [party_id, instrument_id]
+      );
+      
+      // Store current position (pre-CF) to know whether we are rolling a long/short
+      const currentPosition = positionQuery.rows.length > 0 ? positionQuery.rows[0] : null;
+
+      // Apply CF close leg into today's position (typically brings it to 0)
+      if (positionQuery.rows.length > 0) {
+        const position = positionQuery.rows[0];
+        const currentQty = Number(position.quantity);
+        let newQty;
+
+        if (finalSide === 'BUY') {
+          newQty = currentQty + absQuantity;
+        } else {
+          newQty = currentQty - absQuantity;
+        }
+
+        const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+
+        await client.query(
+          'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_trade_date = $4, last_updated = CURRENT_TIMESTAMP WHERE id = $5',
+          [newQty, price, positionStatus, trade_date, position.id]
+        );
+      } else {
+        const positionQty = finalSide === 'BUY' ? absQuantity : -absQuantity;
+        await client.query(
+          `INSERT INTO fo_positions 
+            (party_id, instrument_id, quantity, avg_price, last_trade_date, status) 
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [party_id, instrument_id, positionQty, price, trade_date, 'open']
+        );
+      }
+
+      // Auto-generate the back-forward leg whenever CF is closing an existing open position,
+      // even if realized P&L is 0 (same price).
+      if (currentPosition) {
+        const currentQty = Number(currentPosition.quantity);
+        const closesLong = finalSide === 'SELL' && currentQty > 0;
+        const closesShort = finalSide === 'BUY' && currentQty < 0;
+
+        if (closesLong || closesShort) {
+          const nextDayStr = getNextTradingDayStr(trade_date);
+          const reopenSide = closesLong ? 'BUY' : 'SELL';
+
+          const reopenContractNumber = `CF-AUTO-${party_id}-${instrument_id}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+          const reopenAmount = absQuantity * price;
+
+          await client.query(
+            `INSERT INTO fo_contracts 
+              (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, side, quantity, price, amount, brokerage_amount, status, notes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+            [
+              reopenContractNumber,
+              party_id,
+              instrument_id,
+              null,
+              null,
+              nextDayStr,
+              'CF',
+              reopenSide,
+              absQuantity,
+              price,
+              reopenAmount,
+              0,
+              'open',
+              `Auto-generated CF ${reopenSide} (back-forward) after CF ${finalSide} on ${trade_date}`,
+            ]
+          );
+
+          // Update current positions to reflect the carried position (as-of next trading day).
+          const reopenQtySigned = closesLong ? absQuantity : -absQuantity;
+          await client.query(
+            `UPDATE fo_positions
+             SET quantity = $1, avg_price = $2, status = 'open', last_trade_date = $3, last_updated = CURRENT_TIMESTAMP
+             WHERE party_id = $4 AND instrument_id = $5`,
+            [reopenQtySigned, price, nextDayStr, party_id, instrument_id]
+          );
+        }
+      }
+    }
+    
+    await client.query('COMMIT');
+    res.json(createdContract);
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Error creating F&O contract:', error);
-    res.status(500).json({ error: 'Failed to create F&O contract' });
+    res.status(500).json({ error: 'Failed to create F&O contract', details: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -5817,6 +6074,219 @@ app.delete('/api/fo/contracts/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting F&O contract:', error);
     res.status(500).json({ error: 'Failed to delete F&O contract' });
+  }
+});
+
+// Sync F&O positions from existing contracts
+app.post('/api/fo/positions/sync', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    // Get all CF contracts
+    const contractsResult = await client.query(
+      `SELECT * FROM fo_contracts WHERE trade_type = 'CF' ORDER BY trade_date`
+    );
+    
+    // Clear existing positions
+    await client.query('DELETE FROM fo_positions');
+    
+    // Process each CF contract to rebuild positions
+    for (const contract of contractsResult.rows) {
+      const { party_id, instrument_id, quantity, price } = contract;
+      
+      // Determine side based on quantity sign
+      const side = quantity > 0 ? 'BUY' : 'SELL';
+      const absQuantity = Math.abs(quantity);
+      
+      // Update F&O position
+      const positionQuery = await client.query(
+        'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+        [party_id, instrument_id]
+      );
+      
+      if (positionQuery.rows.length > 0) {
+        // Update existing position
+        const position = positionQuery.rows[0];
+        const currentQty = Number(position.quantity);
+        let newQty;
+        
+        if (side === 'BUY') {
+          newQty = currentQty + absQuantity;
+        } else {
+          newQty = currentQty - absQuantity;
+        }
+        
+        // Check if position is closed
+        const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+        
+        await client.query(
+          'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
+          [newQty, price, positionStatus, position.id]
+        );
+      } else {
+        // Create new position
+        const positionQty = side === 'BUY' ? absQuantity : -absQuantity;
+        
+        await client.query(
+          `INSERT INTO fo_positions 
+            (party_id, instrument_id, quantity, avg_price, status) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          [party_id, instrument_id, positionQty, price, 'open']
+        );
+      }
+    }
+    
+    await client.query('COMMIT');
+    res.json({ message: `Successfully synced ${contractsResult.rows.length} CF contracts to positions` });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error syncing F&O positions:', error);
+    res.status(500).json({ error: 'Failed to sync F&O positions' });
+  } finally {
+    client.release();
+  }
+});
+
+// Perform CF (Carry Forward) operation - closes current positions and reopens them next day
+app.post('/api/fo/positions/carry-forward', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { party_id, trade_date } = req.body;
+    
+    if (!party_id || !trade_date) {
+      return res.status(400).json({ error: 'party_id and trade_date are required' });
+    }
+    
+    await client.query('BEGIN');
+    
+    // Get all open positions for the party
+    const positionsResult = await client.query(
+      `SELECT p.*, i.symbol, i.display_name, i.lot_size 
+       FROM fo_positions p 
+       LEFT JOIN fo_instrument_master i ON p.instrument_id = i.id 
+       WHERE p.party_id = $1 AND p.status = 'open' AND ABS(p.quantity) > 0.01`,
+      [party_id]
+    );
+    
+    const createdContracts = [];
+    
+    // For each open position, create a CF contract to close it
+    for (const position of positionsResult.rows) {
+      const { instrument_id, quantity, avg_price } = position;
+      
+      // Determine if it's a long or short position
+      const isLong = quantity > 0;
+      const absQuantity = Math.abs(quantity);
+      
+      // Create CF contract to close the position
+      // For long position, we create a SELL contract
+      // For short position, we create a BUY contract
+      const closeSide = isLong ? 'SELL' : 'BUY';
+      
+      // The quantity should be positive for the contract
+      const contractQuantity = absQuantity;
+      const amount = contractQuantity * avg_price;
+      
+      // Create contract number
+      const contractNumber = `CF-CLOSE-${party_id}-${instrument_id}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      
+      // Insert CF contract to close position
+      const closeContractResult = await client.query(
+        `INSERT INTO fo_contracts 
+          (contract_number, party_id, instrument_id, trade_date, trade_type, side, quantity, price, amount, brokerage_amount, status, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
+         RETURNING *`,
+        [
+          contractNumber, 
+          party_id, 
+          instrument_id, 
+          trade_date, 
+          'CF', 
+          closeSide, 
+          contractQuantity, 
+          avg_price, 
+          amount, 
+          0, // No brokerage for CF
+          'closed', // Mark as closed since this is a closing contract
+          `CF closing contract for ${isLong ? 'long' : 'short'} position of ${absQuantity}`
+        ]
+      );
+      
+      createdContracts.push(closeContractResult.rows[0]);
+      
+      // Update the position to reflect it's been closed.
+      // IMPORTANT: set quantity to 0 so it won't keep showing up in "Current Positions".
+      await client.query(
+        'UPDATE fo_positions SET quantity = 0, status = $1, last_trade_date = $2, last_updated = CURRENT_TIMESTAMP WHERE id = $3',
+        ['closed', trade_date, position.id]
+      );
+      
+      // Calculate next working day (add 1 day, skip weekends if needed)
+      const nextDay = new Date(trade_date);
+      nextDay.setDate(nextDay.getDate() + 1);
+      
+      // Skip Saturday (6) and Sunday (0)
+      if (nextDay.getDay() === 6) nextDay.setDate(nextDay.getDate() + 2); // Saturday -> Monday
+      if (nextDay.getDay() === 0) nextDay.setDate(nextDay.getDate() + 1); // Sunday -> Monday
+      
+      const nextDayStr = nextDay.toISOString().slice(0, 10);
+      
+      // Create reopening contract for next day
+      // For long position that was closed with SELL, we reopen with BUY
+      // For short position that was closed with BUY, we reopen with SELL
+      const reopenSide = isLong ? 'BUY' : 'SELL';
+      const reopenContractNumber = `CF-REOPEN-${party_id}-${instrument_id}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      
+      // Insert CF contract to reopen position
+      const reopenContractResult = await client.query(
+        `INSERT INTO fo_contracts 
+          (contract_number, party_id, instrument_id, trade_date, trade_type, side, quantity, price, amount, brokerage_amount, status, notes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
+         RETURNING *`,
+        [
+          reopenContractNumber, 
+          party_id, 
+          instrument_id, 
+          nextDayStr, 
+          'CF', 
+          reopenSide, 
+          contractQuantity, 
+          avg_price, 
+          amount, 
+          0, // No brokerage for CF
+          'open', // Mark as open since this is a reopening contract
+          `CF reopening contract for ${isLong ? 'long' : 'short'} position of ${absQuantity}`
+        ]
+      );
+      
+      createdContracts.push(reopenContractResult.rows[0]);
+      
+      // Re-open the SAME position row (fo_positions is meant to be net/current position).
+      // This avoids duplicate rows (and respects UNIQUE(party_id, instrument_id) if present).
+      await client.query(
+        'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_trade_date = $4, last_updated = CURRENT_TIMESTAMP WHERE id = $5',
+        [
+          isLong ? contractQuantity : -contractQuantity,
+          avg_price,
+          'open',
+          nextDayStr,
+          position.id,
+        ]
+      );
+    }
+    
+    await client.query('COMMIT');
+    res.json({ 
+      message: `Successfully carried forward ${positionsResult.rows.length} positions`, 
+      contracts: createdContracts 
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error performing CF operation:', error);
+    res.status(500).json({ error: 'Failed to perform CF operation', details: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -6474,8 +6944,22 @@ app.get('/api/fo/positions', async (req, res) => {
         FROM raw
         GROUP BY party_id, instrument_id
       )
-      SELECT 
-        p.*,
+      SELECT
+        -- Use one stable row id per grouped instrument key
+        MIN(p.id) as id,
+        p.party_id,
+        MIN(p.instrument_id) as instrument_id,
+        SUM(p.quantity) as quantity,
+        -- Weighted average price by absolute quantity
+        CASE WHEN SUM(ABS(p.quantity)) > 0
+          THEN SUM(ABS(p.quantity) * COALESCE(p.avg_price, 0)) / SUM(ABS(p.quantity))
+          ELSE AVG(COALESCE(p.avg_price, 0))
+        END as avg_price,
+        COALESCE(SUM(COALESCE(p.realized_pnl, 0)), 0) as realized_pnl,
+        COALESCE(SUM(COALESCE(p.unrealized_pnl, 0)), 0) as unrealized_pnl,
+        MAX(p.last_trade_date) as last_trade_date,
+        'open' as status,
+        MAX(p.last_updated) as last_updated,
         i.symbol,
         i.instrument_type,
         i.expiry_date,
@@ -6484,14 +6968,22 @@ app.get('/api/fo/positions', async (req, res) => {
         i.lot_size,
         pm.party_code,
         pm.name as party_name,
-        tx.last_trade_date,
-        tx.broker_codes,
-        tx.broker_qty_breakdown
+        NULL::text as broker_codes,
+        NULL::text as broker_qty_breakdown
       FROM fo_positions p
       LEFT JOIN fo_instrument_master i ON i.id = p.instrument_id
       LEFT JOIN party_master pm ON pm.id = p.party_id
-      LEFT JOIN tx ON tx.party_id = p.party_id AND tx.instrument_id = p.instrument_id
-      WHERE (p.status = 'open' OR ABS(p.quantity) > 0.01)
+      WHERE ABS(p.quantity) > 0.01
+      GROUP BY
+        p.party_id,
+        i.symbol,
+        i.instrument_type,
+        i.expiry_date,
+        i.strike_price,
+        i.display_name,
+        i.lot_size,
+        pm.party_code,
+        pm.name
     `;
     const params = [];
     
@@ -6500,7 +6992,7 @@ app.get('/api/fo/positions', async (req, res) => {
       query += ` AND p.party_id = $${params.length}`;
     }
     
-    query += ` ORDER BY p.last_updated DESC`;
+    query += ` ORDER BY MAX(p.last_updated) DESC`;
     
     const result = await pool.query(query, params);
     res.json(result.rows || []);
