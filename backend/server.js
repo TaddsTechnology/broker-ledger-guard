@@ -1942,13 +1942,11 @@ app.post('/api/stock-trades/process', async (req, res) => {
       brokerBrokerageAmount = (totalTradingAmount * brokerTradingSlab / 100) + 
                               (totalDeliveryAmount * brokerDeliverySlab / 100);
       
-      // Main broker bill total logic:
-      // - For net BUY (we buy from market via broker): broker bill = Trade + Broker's Brokerage
-      // - For net SELL (we sell via broker): broker bill = Trade - Broker's Brokerage (broker keeps brokerage from proceeds)
-      const grossTrade = Math.abs(netTradeAmount);
-      const mainBrokerBillTotal = netTradeAmount >= 0
-        ? grossTrade + brokerBrokerageAmount   // net BUY
-        : grossTrade - brokerBrokerageAmount;  // net SELL
+      // Main broker bill: net trade amount (positive for BUY, negative for SELL) plus main broker brokerage.
+      // For BUY: client owes us money, we owe broker => netTradeAmount is positive
+      // For SELL: we owe client money, we owe broker => netTradeAmount is negative
+      // Brokerage is always a cost to us (positive)
+      const mainBrokerBillTotal = netTradeAmount + brokerBrokerageAmount;
       
       // Sub-broker profit = Total CLIENT brokerage (what client paid to us)
       //                     minus Main Broker's brokerage (their share)
@@ -2015,26 +2013,20 @@ app.post('/api/stock-trades/process', async (req, res) => {
         brokerBalance = brokerBalance + credit - debit;
       }
       
-      // Now add the NEW entry's amount to the balance
-      let debitForBroker = 0;
-      let creditForBroker = 0;
-      
-      if (netTradeAmount > 0) {
-        // Net BUY → broker has to receive money from us → credit
-        creditForBroker = mainBrokerBillTotal;
-        brokerBalance = brokerBalance + mainBrokerBillTotal;  // We owe more to broker
-      } else {
-        // Net SELL or flat → broker payable reduces / we owe less → debit
-        debitForBroker = mainBrokerBillTotal;
-        brokerBalance = brokerBalance - mainBrokerBillTotal;  // We owe less to broker
-      }
- 
+      // Calculate debit/credit based on the sign of mainBrokerBillTotal
+      // If positive, we owe broker (credit), if negative, broker owes us (debit)
+      const debitForBroker = mainBrokerBillTotal < 0 ? Math.abs(mainBrokerBillTotal) : 0;
+      const creditForBroker = mainBrokerBillTotal >= 0 ? mainBrokerBillTotal : 0;
+            
+      // Update balance: debit decreases balance, credit increases balance
+      brokerBalance = brokerBalance + creditForBroker - debitForBroker;
+            
       const brokerLedgerResult = await client.query(
         'INSERT INTO ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
-          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${brokerBrokerageAmount.toFixed(2)}`,
+          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${netTradeAmount.toFixed(2)} + Brokerage: ₹${brokerBrokerageAmount.toFixed(2)} = ₹${mainBrokerBillTotal.toFixed(2)}`,
           debitForBroker,
           creditForBroker,
           brokerBalance,
@@ -5233,7 +5225,9 @@ app.post('/api/fo/trades/process', async (req, res) => {
           // CF must NEVER behave like a normal trade
           // Skip to next trade without adding to billItems or affecting totals
           continue;
-        }        // Add normal (non-CF) trades to bill items
+        }
+        
+        // Add normal (non-CF) trades to bill items
         const brokerCodeFromTrade = (trade.brokerid || trade.brokerId || trade.BrokerId || trade.BrokerID || '')
           .toString()
           .trim()
@@ -5449,10 +5443,10 @@ app.post('/api/fo/trades/process', async (req, res) => {
       const mainBrokerDeliveryBrokerage = totalDeliveryAmount * (brokerDeliverySlab / 100);
       mainBrokerBrokerage = mainBrokerTradingBrokerage + mainBrokerDeliveryBrokerage;
       
-      // Main broker bill: trade settlement (absolute) minus main broker brokerage.
-      // Example: Net Trade 200000, Brokerage 40 => bill total 199960.
-      const netTradeAbs = Math.abs(netTradeAmount);
-      mainBrokerBillTotal = netTradeAbs - mainBrokerBrokerage;
+      // Main broker bill: net trade amount (positive for BUY, negative for SELL) minus main broker brokerage.
+      // For BUY: client owes us money, we owe broker => netTradeAmount is positive
+      // For SELL: we owe client money, we owe broker => netTradeAmount is negative
+      mainBrokerBillTotal = netTradeAmount - mainBrokerBrokerage;
       
       // Sub-broker profit = Total brokerage collected from clients - Main broker's brokerage share
       subBrokerProfit = totalBrokerageAllClients - mainBrokerBrokerage;
@@ -5483,7 +5477,7 @@ app.post('/api/fo/trades/process', async (req, res) => {
           mainBrokerBillTotal,
           'broker',
           'pending',
-          `Main Broker Bill - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`
+          `Main Broker Bill - Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`
         ]
       );
       const brokerBillId = brokerBillResult.rows[0].id;
@@ -5551,17 +5545,22 @@ app.post('/api/fo/trades/process', async (req, res) => {
       if (brokerageBalanceQuery.rows.length > 0) {
         brokerBrokerageBalance = Number(brokerageBalanceQuery.rows[0].balance) || 0;
       }
-      // For main broker, keep negative balance for amounts payable
-      brokerBrokerageBalance -= mainBrokerBillTotal;
+      // For main broker, we always owe the broker (brokerage amount is money we owe)
+      // So it should always be recorded as a debit (money we owe)
+      const debitAmount = Math.abs(mainBrokerBillTotal);
+      const creditAmount = 0;
+      
+      // Update balance: debit increases payable balance (we owe more), credit decreases it
+      brokerBrokerageBalance = brokerBrokerageBalance + debitAmount - creditAmount;
       
       const brokerageEntryResult = await client.query(
         'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
-          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${Math.abs(netTradeAmount).toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
-          mainBrokerBillTotal,     // Debit
-          0,                      // No credit
+          `Main Broker Bill ${brokerBillNumber} - Brokerage: ₹${mainBrokerBrokerage.toFixed(2)} = ₹${mainBrokerBillTotal.toFixed(2)}`,
+          debitAmount,     // Debit amount
+          creditAmount,    // Credit amount
           brokerBrokerageBalance,
           'broker_brokerage',
           brokerBillId
@@ -5593,6 +5592,8 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
     const brokerGroups = new Map();
     for (const contract of contracts) {
       if (!contract.broker_id) continue;
+      // Skip CF-REOPEN contracts - they should not generate broker bills
+      if ((contract.contract_number || '').toString().toUpperCase().includes('-REOPEN-')) continue;
       const brokerId = String(contract.broker_id);
       if (!brokerGroups.has(brokerId)) {
         brokerGroups.set(brokerId, []);
@@ -5607,7 +5608,10 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
       const allBrokerBillItems = [];
       
       for (const contract of brokerContracts) {
-        totalBrokerageAllClients += Number(contract.brokerage_amount || 0);
+        // Only add brokerage for non-CF trades
+        if ((contract.trade_type || '').toString().toUpperCase() !== 'CF') {
+          totalBrokerageAllClients += Number(contract.brokerage_amount || 0);
+        }
         
         // Get instrument details for bill items
         if (contract.instrument_id) {
@@ -5618,18 +5622,21 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
             );
             const instrument = instrumentResult.rows[0];
             
-            allBrokerBillItems.push({
-              description: `${instrument?.display_name || contract.instrument_id} - ${(contract.side || '').toString().trim().toUpperCase() || contract.trade_type || 'T'}`,
-              quantity: contract.quantity,
-              rate: contract.price,
-              amount: contract.amount,
-              client_code: contract.party_code,
-              instrument_id: contract.instrument_id,
-              brokerage_rate_pct: contract.brokerage_rate,
-              brokerage_amount: contract.brokerage_amount,
-              trade_type: contract.trade_type || 'T',
-              side: (contract.side || '').toString().trim().toUpperCase() || null,
-            });
+            // Only add non-CF trades to broker bill items
+            if ((contract.trade_type || '').toString().toUpperCase() !== 'CF') {
+              allBrokerBillItems.push({
+                description: `${instrument?.display_name || contract.instrument_id} - ${(contract.side || '').toString().trim().toUpperCase() || contract.trade_type || 'T'}`,
+                quantity: contract.quantity,
+                rate: contract.price,
+                amount: contract.amount,
+                client_code: contract.party_code,
+                instrument_id: contract.instrument_id,
+                brokerage_rate_pct: contract.brokerage_rate,
+                brokerage_amount: contract.brokerage_amount,
+                trade_type: contract.trade_type || 'T',
+                side: (contract.side || '').toString().trim().toUpperCase() || null,
+              });
+            }
           } catch (error) {
             console.warn('Could not fetch instrument details for contract:', contract.id);
           }
@@ -5661,6 +5668,11 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
       let mainBrokerBrokerage = 0;
 
       for (const item of allBrokerBillItems) {
+        // Skip CF trades in main broker calculation
+        if ((item.trade_type || '').toString().toUpperCase() === 'CF') {
+          continue;
+        }
+        
         const amountAbs = Math.abs(Number(item.amount || 0));
         const isTrading = (item.trade_type || "T").toUpperCase() === "T";
         const rate = isTrading ? tradingRate : deliveryRate;
@@ -5676,13 +5688,14 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
       }
 
       const netTradeAmount = totalBuyAcrossClients - totalSellAcrossClients;
-      const netTradeAbs = Math.abs(netTradeAmount);
-      const mainBrokerBillTotal = netTradeAbs - mainBrokerBrokerage;
+      // Main broker bill: main broker's brokerage share only (what we owe main broker)
+      // This is the amount we pay to the main broker
+      const mainBrokerBillTotal = mainBrokerBrokerage;
 
       const subBrokerProfit = totalBrokerageAllClients - mainBrokerBrokerage;
       // Skip if no meaningful amounts
       if (
-        Math.abs(mainBrokerBillTotal) < 0.01 &&
+        Math.abs(mainBrokerBrokerage) < 0.01 &&
         Math.abs(subBrokerProfit) < 0.01
       ) {
         continue;
@@ -5707,7 +5720,7 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
           mainBrokerBillTotal,
           'broker',
           'pending',
-          `Main Broker Bill - Net Trade: ₹${netTradeAbs.toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`
+          `Main Broker Bill - Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`
         ]
       );
       const brokerBillId = brokerBillResult.rows[0].id;
@@ -5742,7 +5755,14 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
       if (profitBalanceQuery.rows.length > 0) {
         subBrokerProfitBalance = Number(profitBalanceQuery.rows[0].balance) || 0;
       }
-      subBrokerProfitBalance += subBrokerProfit;
+      
+      // Calculate debit/credit based on the sign of subBrokerProfit
+      // If positive, profit (credit), if negative, loss (debit)
+      const subBrokerDebitAmount = subBrokerProfit < 0 ? Math.abs(subBrokerProfit) : 0;
+      const subBrokerCreditAmount = subBrokerProfit >= 0 ? subBrokerProfit : 0;
+      
+      // Update balance: debit decreases balance, credit increases balance
+      subBrokerProfitBalance = subBrokerProfitBalance + subBrokerCreditAmount - subBrokerDebitAmount;
       
       const profitLedgerResult = await client.query(
         'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
@@ -5750,8 +5770,8 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
           null,
           billDateStr,
           `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${mainBrokerBrokerage.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
-          0,
-          subBrokerProfit,
+          subBrokerDebitAmount,
+          subBrokerCreditAmount,
           subBrokerProfitBalance,
           'sub_broker_profit',
           brokerBillId
@@ -5768,17 +5788,22 @@ async function generateFOBrokerBills(client, contracts, billDateStr) {
       if (brokerageBalanceQuery.rows.length > 0) {
         brokerBrokerageBalance = Number(brokerageBalanceQuery.rows[0].balance) || 0;
       }
-      // Negative balance for amounts payable to main broker
-      brokerBrokerageBalance -= mainBrokerBillTotal;
+      // For main broker, we always owe the broker (brokerage amount is money we owe)
+      // So it should always be recorded as a debit (money we owe)
+      const debitAmount = Math.abs(mainBrokerBillTotal);
+      const creditAmount = 0;
+      
+      // Update balance: debit increases payable balance (we owe more), credit decreases it
+      brokerBrokerageBalance = brokerBrokerageBalance + debitAmount - creditAmount;
       
       const brokerageEntryResult = await client.query(
         'INSERT INTO fo_ledger_entries (party_id, entry_date, particulars, debit_amount, credit_amount, balance, reference_type, reference_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
         [
           null,
           billDateStr,
-          `Main Broker Bill ${brokerBillNumber} - Net Trade: ₹${netTradeAbs.toFixed(2)} + Brokerage: ₹${mainBrokerBrokerage.toFixed(2)}`,
-          mainBrokerBillTotal,
-          0,
+          `Main Broker Bill ${brokerBillNumber} - Brokerage: ₹${mainBrokerBrokerage.toFixed(2)} = ₹${mainBrokerBillTotal.toFixed(2)}`,
+          debitAmount,     // Debit amount
+          creditAmount,    // Credit amount
           brokerBrokerageBalance,
           'broker_brokerage',
           brokerBillId
@@ -5924,34 +5949,34 @@ app.post('/api/fo/contracts', async (req, res) => {
     );
     
     const createdContract = result.rows[0];
-    
-    // For CF trades, automatically update positions and generate back-forward leg
+        
+    // Update F&O position for both CF and regular T trades
+    const absQuantity = Math.abs(quantity);
+        
     if (trade_type === 'CF') {
-      const absQuantity = Math.abs(quantity);
-      
       // Update F&O position for CF trades
       const positionQuery = await client.query(
         'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
         [party_id, instrument_id]
       );
-      
+          
       // Store current position (pre-CF) to know whether we are rolling a long/short
       const currentPosition = positionQuery.rows.length > 0 ? positionQuery.rows[0] : null;
-
+    
       // Apply CF close leg into today's position (typically brings it to 0)
       if (positionQuery.rows.length > 0) {
         const position = positionQuery.rows[0];
         const currentQty = Number(position.quantity);
         let newQty;
-
+            
         if (finalSide === 'BUY') {
           newQty = currentQty + absQuantity;
         } else {
           newQty = currentQty - absQuantity;
         }
-
+            
         const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
-
+            
         await client.query(
           'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_trade_date = $4, last_updated = CURRENT_TIMESTAMP WHERE id = $5',
           [newQty, price, positionStatus, trade_date, position.id]
@@ -5965,21 +5990,21 @@ app.post('/api/fo/contracts', async (req, res) => {
           [party_id, instrument_id, positionQty, price, trade_date, 'open']
         );
       }
-
+          
       // Auto-generate the back-forward leg whenever CF is closing an existing open position,
       // even if realized P&L is 0 (same price).
       if (currentPosition) {
         const currentQty = Number(currentPosition.quantity);
         const closesLong = finalSide === 'SELL' && currentQty > 0;
         const closesShort = finalSide === 'BUY' && currentQty < 0;
-
+            
         if (closesLong || closesShort) {
           const nextDayStr = getNextTradingDayStr(trade_date);
           const reopenSide = closesLong ? 'BUY' : 'SELL';
-
+    
           const reopenContractNumber = `CF-AUTO-${party_id}-${instrument_id}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
           const reopenAmount = absQuantity * price;
-
+    
           await client.query(
             `INSERT INTO fo_contracts 
               (contract_number, party_id, instrument_id, broker_id, broker_code, trade_date, trade_type, side, quantity, price, amount, brokerage_amount, status, notes)
@@ -6001,7 +6026,7 @@ app.post('/api/fo/contracts', async (req, res) => {
               `Auto-generated CF ${reopenSide} (back-forward) after CF ${finalSide} on ${trade_date}`,
             ]
           );
-
+    
           // Update current positions to reflect the carried position (as-of next trading day).
           const reopenQtySigned = closesLong ? absQuantity : -absQuantity;
           await client.query(
@@ -6012,8 +6037,52 @@ app.post('/api/fo/contracts', async (req, res) => {
           );
         }
       }
+    } else {
+      // For regular T trades, update positions based on BUY/SELL
+      const positionQuery = await client.query(
+        'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+        [party_id, instrument_id]
+      );
+          
+      if (positionQuery.rows.length > 0) {
+        // Update existing position
+        const position = positionQuery.rows[0];
+        const currentQty = Number(position.quantity);
+        const currentAvg = Number(position.avg_price) || 0;
+            
+        let newQty = currentQty;
+        let newAvg = currentAvg;
+            
+        if (finalSide === 'BUY') {
+          newQty = currentQty + absQuantity;
+          // Weighted average calculation for BUY
+          newAvg = (currentQty * currentAvg + absQuantity * price) / newQty;
+        } else if (finalSide === 'SELL') {
+          newQty = currentQty - absQuantity;
+          // For SELL, we don't change avg_price
+          newAvg = currentAvg;
+        }
+            
+        const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+            
+        await client.query(
+          `UPDATE fo_positions 
+           SET quantity = $1, avg_price = $2, status = $3, last_trade_date = $4, last_updated = CURRENT_TIMESTAMP 
+           WHERE id = $5`,
+          [newQty, newAvg, positionStatus, trade_date, position.id]
+        );
+      } else {
+        // Create new position
+        const positionQty = finalSide === 'BUY' ? absQuantity : -absQuantity;
+        await client.query(
+          `INSERT INTO fo_positions 
+            (party_id, instrument_id, quantity, avg_price, last_trade_date, status) 
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [party_id, instrument_id, positionQty, price, trade_date, 'open']
+        );
+      }
     }
-    
+        
     await client.query('COMMIT');
     res.json(createdContract);
   } catch (error) {
@@ -6027,19 +6096,40 @@ app.post('/api/fo/contracts', async (req, res) => {
 
 // Update F&O contract
 app.put('/api/fo/contracts/:id', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
     const { 
       contract_number, party_id, instrument_id, broker_id, broker_code,
-      trade_date, trade_type, quantity, price, amount,
+      trade_date, trade_type, side, quantity, price, amount,
       brokerage_rate, brokerage_amount, status, notes 
     } = req.body;
+    
+    await client.query('BEGIN');
+    
+    // Get the existing contract to know what we're changing
+    const existingContractResult = await client.query(
+      'SELECT * FROM fo_contracts WHERE id = $1', [id]
+    );
+    
+    if (existingContractResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Contract not found' });
+    }
+    
+    const existingContract = existingContractResult.rows[0];
     
     // For CF (Carry Forward) trades, brokerage should be 0
     const finalBrokerageRate = trade_type === 'CF' ? 0 : brokerage_rate;
     const finalBrokerageAmount = trade_type === 'CF' ? 0 : brokerage_amount;
     
-    const result = await pool.query(
+    // Determine the side for the updated contract
+    let finalSide = side || existingContract.side;
+    if (trade_type === 'CF' && !side) {
+      // For CF trades, if side is not provided, determine it based on quantity sign
+      finalSide = (quantity || 0) > 0 ? 'BUY' : 'SELL';
+    }
+    
+    const result = await client.query(
       `UPDATE fo_contracts 
        SET contract_number = $1, party_id = $2, instrument_id = $3, broker_id = $4, 
            broker_code = $5, trade_date = $6, trade_type = $7, side = $8, quantity = $9, 
@@ -6049,31 +6139,183 @@ app.put('/api/fo/contracts/:id', async (req, res) => {
        RETURNING *`,
       [
         contract_number, party_id, instrument_id, broker_id, broker_code,
-        trade_date, trade_type, trade_type === 'CF' ? 'BUY' : 'SELL', quantity, price, amount,
+        trade_date, trade_type, finalSide, quantity, price, amount,
         finalBrokerageRate, finalBrokerageAmount, status, notes, id
       ]
     );
     
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Contract not found' });
+    // Update positions based on the change
+    const absQuantity = Math.abs(quantity || 0);
+    
+    if (trade_type === 'CF') {
+      // For CF trades, determine side based on quantity sign
+      const cfSide = (quantity || 0) > 0 ? 'BUY' : 'SELL';
+      
+      // Update F&O position for CF trades
+      const positionQuery = await client.query(
+        'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+        [party_id, instrument_id]
+      );
+      
+      if (positionQuery.rows.length > 0) {
+        const position = positionQuery.rows[0];
+        const currentQty = Number(position.quantity);
+        let newQty;
+        
+        if (cfSide === 'BUY') {
+          newQty = currentQty + absQuantity;
+        } else {
+          newQty = currentQty - absQuantity;
+        }
+        
+        const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+        
+        await client.query(
+          'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
+          [newQty, price, positionStatus, position.id]
+        );
+      } else {
+        const positionQty = cfSide === 'BUY' ? absQuantity : -absQuantity;
+        await client.query(
+          `INSERT INTO fo_positions 
+            (party_id, instrument_id, quantity, avg_price, status) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          [party_id, instrument_id, positionQty, price, 'open']
+        );
+      }
+    } else {
+      // For regular T trades, update positions based on BUY/SELL
+      const positionQuery = await client.query(
+        'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+        [party_id, instrument_id]
+      );
+      
+      if (positionQuery.rows.length > 0) {
+        // Update existing position
+        const position = positionQuery.rows[0];
+        const currentQty = Number(position.quantity);
+        const currentAvg = Number(position.avg_price) || 0;
+        
+        let newQty = currentQty;
+        let newAvg = currentAvg;
+        
+        if (finalSide === 'BUY') {
+          newQty = currentQty + absQuantity;
+          // Weighted average calculation for BUY
+          newAvg = (currentQty * currentAvg + absQuantity * price) / newQty;
+        } else if (finalSide === 'SELL') {
+          newQty = currentQty - absQuantity;
+          // For SELL, we don't change avg_price
+          newAvg = currentAvg;
+        }
+        
+        const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+        
+        await client.query(
+          `UPDATE fo_positions 
+           SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP 
+           WHERE id = $4`,
+          [newQty, newAvg, positionStatus, position.id]
+        );
+      } else {
+        // Create new position
+        const positionQty = finalSide === 'BUY' ? absQuantity : -absQuantity;
+        await client.query(
+          `INSERT INTO fo_positions 
+            (party_id, instrument_id, quantity, avg_price, status) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          [party_id, instrument_id, positionQty, price, 'open']
+        );
+      }
     }
+    
+    await client.query('COMMIT');
     
     res.json(result.rows[0]);
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Error updating F&O contract:', error);
-    res.status(500).json({ error: 'Failed to update F&O contract' });
+    res.status(500).json({ error: 'Failed to update F&O contract', details: error.message });
+  } finally {
+    client.release();
   }
 });
 
 // Delete F&O contract
 app.delete('/api/fo/contracts/:id', async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
-    await pool.query('DELETE FROM fo_contracts WHERE id = $1', [id]);
+    
+    // Get the contract to be deleted to adjust positions
+    const contractResult = await client.query(
+      'SELECT * FROM fo_contracts WHERE id = $1', [id]
+    );
+    
+    if (contractResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Contract not found' });
+    }
+    
+    const contract = contractResult.rows[0];
+    
+    await client.query('BEGIN');
+    
+    // Delete the contract
+    await client.query('DELETE FROM fo_contracts WHERE id = $1', [id]);
+    
+    // Adjust positions based on the deleted contract
+    const absQuantity = Math.abs(contract.quantity || 0);
+    
+    // For CF contracts, determine side based on quantity sign
+    // For T contracts, use the side field
+    let effectiveSide = contract.side;
+    if (contract.trade_type === 'CF') {
+      effectiveSide = (contract.quantity || 0) > 0 ? 'BUY' : 'SELL';
+    }
+    
+    const positionQuery = await client.query(
+      'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+      [contract.party_id, contract.instrument_id]
+    );
+    
+    if (positionQuery.rows.length > 0) {
+      const position = positionQuery.rows[0];
+      const currentQty = Number(position.quantity);
+      const currentAvg = Number(position.avg_price) || 0;
+      
+      let newQty = currentQty;
+      let newAvg = currentAvg;
+      
+      // Reverse the effect of the deleted contract
+      if (effectiveSide === 'BUY') {
+        newQty = currentQty - absQuantity; // Subtract the quantity that was added
+        // For BUY, we need to recalculate the average price
+        if (Math.abs(newQty) > 0.01) {
+          // Calculate new average by removing the effect of this contract
+          const totalValue = currentQty * currentAvg - absQuantity * contract.price;
+          newAvg = Math.abs(newQty) > 0.01 ? totalValue / newQty : 0;
+        }
+      } else if (effectiveSide === 'SELL') {
+        newQty = currentQty + absQuantity; // Add back the quantity that was subtracted
+        // For SELL, avg_price remains unchanged since we're not changing the average
+      }
+      
+      const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+      
+      await client.query(
+        'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
+        [newQty, newAvg, positionStatus, position.id]
+      );
+    }
+    
+    await client.query('COMMIT');
     res.json({ message: 'F&O contract deleted successfully' });
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Error deleting F&O contract:', error);
-    res.status(500).json({ error: 'Failed to delete F&O contract' });
+    res.status(500).json({ error: 'Failed to delete F&O contract', details: error.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -6083,21 +6325,27 @@ app.post('/api/fo/positions/sync', async (req, res) => {
   try {
     await client.query('BEGIN');
     
-    // Get all CF contracts
+    // Get all contracts ordered by trade date to process them chronologically
     const contractsResult = await client.query(
-      `SELECT * FROM fo_contracts WHERE trade_type = 'CF' ORDER BY trade_date`
+      `SELECT * FROM fo_contracts ORDER BY trade_date, created_at`
     );
     
     // Clear existing positions
     await client.query('DELETE FROM fo_positions');
     
-    // Process each CF contract to rebuild positions
+    // Process each contract to rebuild positions
     for (const contract of contractsResult.rows) {
-      const { party_id, instrument_id, quantity, price } = contract;
+      const { party_id, instrument_id, quantity, price, side, trade_type } = contract;
       
-      // Determine side based on quantity sign
-      const side = quantity > 0 ? 'BUY' : 'SELL';
-      const absQuantity = Math.abs(quantity);
+      // For CF contracts, we use the quantity sign to determine the side
+      // For T contracts, we use the side field
+      let effectiveSide = side;
+      let absQuantity = Math.abs(quantity);
+      
+      if (trade_type === 'CF') {
+        // For CF trades, determine side based on quantity sign
+        effectiveSide = quantity > 0 ? 'BUY' : 'SELL';
+      }
       
       // Update F&O position
       const positionQuery = await client.query(
@@ -6109,12 +6357,19 @@ app.post('/api/fo/positions/sync', async (req, res) => {
         // Update existing position
         const position = positionQuery.rows[0];
         const currentQty = Number(position.quantity);
-        let newQty;
+        const currentAvg = Number(position.avg_price) || 0;
         
-        if (side === 'BUY') {
+        let newQty = currentQty;
+        let newAvg = currentAvg;
+        
+        if (effectiveSide === 'BUY') {
           newQty = currentQty + absQuantity;
-        } else {
+          // Weighted average calculation for BUY
+          newAvg = (currentQty * currentAvg + absQuantity * price) / newQty;
+        } else if (effectiveSide === 'SELL') {
           newQty = currentQty - absQuantity;
+          // For SELL, we don't change avg_price
+          newAvg = currentAvg;
         }
         
         // Check if position is closed
@@ -6122,11 +6377,11 @@ app.post('/api/fo/positions/sync', async (req, res) => {
         
         await client.query(
           'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
-          [newQty, price, positionStatus, position.id]
+          [newQty, newAvg, positionStatus, position.id]
         );
       } else {
         // Create new position
-        const positionQty = side === 'BUY' ? absQuantity : -absQuantity;
+        const positionQty = effectiveSide === 'BUY' ? absQuantity : -absQuantity;
         
         await client.query(
           `INSERT INTO fo_positions 
@@ -6138,7 +6393,7 @@ app.post('/api/fo/positions/sync', async (req, res) => {
     }
     
     await client.query('COMMIT');
-    res.json({ message: `Successfully synced ${contractsResult.rows.length} CF contracts to positions` });
+    res.json({ message: `Successfully synced ${contractsResult.rows.length} contracts to positions` });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error syncing F&O positions:', error);
@@ -6345,6 +6600,91 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
             ]
           );
           createdContracts.push(contractResult.rows[0]);
+          
+          // Update positions based on the created contract
+          const absQuantity = Math.abs(contract.quantity || 0);
+          
+          if (contract.trade_type === 'CF') {
+            // For CF trades, determine side based on quantity sign
+            const cfSide = (contract.quantity || 0) > 0 ? 'BUY' : 'SELL';
+            
+            // Update F&O position for CF trades
+            const positionQuery = await client.query(
+              'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+              [contract.party_id, contract.instrument_id]
+            );
+            
+            if (positionQuery.rows.length > 0) {
+              const position = positionQuery.rows[0];
+              const currentQty = Number(position.quantity);
+              let newQty;
+              
+              if (cfSide === 'BUY') {
+                newQty = currentQty + absQuantity;
+              } else {
+                newQty = currentQty - absQuantity;
+              }
+              
+              const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+              
+              await client.query(
+                'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
+                [newQty, contract.price, positionStatus, position.id]
+              );
+            } else {
+              const positionQty = cfSide === 'BUY' ? absQuantity : -absQuantity;
+              await client.query(
+                `INSERT INTO fo_positions 
+                  (party_id, instrument_id, quantity, avg_price, status) 
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [contract.party_id, contract.instrument_id, positionQty, contract.price, 'open']
+              );
+            }
+          } else {
+            // For regular T trades, update positions based on BUY/SELL
+            const positionQuery = await client.query(
+              'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+              [contract.party_id, contract.instrument_id]
+            );
+            
+            if (positionQuery.rows.length > 0) {
+              // Update existing position
+              const position = positionQuery.rows[0];
+              const currentQty = Number(position.quantity);
+              const currentAvg = Number(position.avg_price) || 0;
+              
+              let newQty = currentQty;
+              let newAvg = currentAvg;
+              
+              if (side === 'BUY') {
+                newQty = currentQty + absQuantity;
+                // Weighted average calculation for BUY
+                newAvg = (currentQty * currentAvg + absQuantity * contract.price) / newQty;
+              } else if (side === 'SELL') {
+                newQty = currentQty - absQuantity;
+                // For SELL, we don't change avg_price
+                newAvg = currentAvg;
+              }
+              
+              const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+              
+              await client.query(
+                `UPDATE fo_positions 
+                 SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP 
+                 WHERE id = $4`,
+                [newQty, newAvg, positionStatus, position.id]
+              );
+            } else {
+              // Create new position
+              const positionQty = side === 'BUY' ? absQuantity : -absQuantity;
+              await client.query(
+                `INSERT INTO fo_positions 
+                  (party_id, instrument_id, quantity, avg_price, status) 
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [contract.party_id, contract.instrument_id, positionQty, contract.price, 'open']
+              );
+            }
+          }
 
           totalBuyAmount += parseFloat(contract.amount);
           totalBrokerage += parseFloat(contract.brokerage_amount);
@@ -6521,6 +6861,91 @@ app.post('/api/fo/contracts/batch', async (req, res) => {
           ]
         );
         createdContracts.push(contractResult.rows[0]);
+        
+        // Update positions based on the created contract
+        const absQuantity = Math.abs(contract.quantity || 0);
+        
+        if (contract.trade_type === 'CF') {
+          // For CF trades, determine side based on quantity sign
+          const cfSide = (contract.quantity || 0) > 0 ? 'BUY' : 'SELL';
+          
+          // Update F&O position for CF trades
+          const positionQuery = await client.query(
+            'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+            [contract.party_id, contract.instrument_id]
+          );
+          
+          if (positionQuery.rows.length > 0) {
+            const position = positionQuery.rows[0];
+            const currentQty = Number(position.quantity);
+            let newQty;
+            
+            if (cfSide === 'BUY') {
+              newQty = currentQty + absQuantity;
+            } else {
+              newQty = currentQty - absQuantity;
+            }
+            
+            const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+            
+            await client.query(
+              'UPDATE fo_positions SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP WHERE id = $4',
+              [newQty, contract.price, positionStatus, position.id]
+            );
+          } else {
+            const positionQty = cfSide === 'BUY' ? absQuantity : -absQuantity;
+            await client.query(
+              `INSERT INTO fo_positions 
+                (party_id, instrument_id, quantity, avg_price, status) 
+               VALUES ($1, $2, $3, $4, $5)`,
+              [contract.party_id, contract.instrument_id, positionQty, contract.price, 'open']
+            );
+          }
+        } else {
+          // For regular T trades, update positions based on BUY/SELL
+          const positionQuery = await client.query(
+            'SELECT * FROM fo_positions WHERE party_id = $1 AND instrument_id = $2',
+            [contract.party_id, contract.instrument_id]
+          );
+          
+          if (positionQuery.rows.length > 0) {
+            // Update existing position
+            const position = positionQuery.rows[0];
+            const currentQty = Number(position.quantity);
+            const currentAvg = Number(position.avg_price) || 0;
+            
+            let newQty = currentQty;
+            let newAvg = currentAvg;
+            
+            if (side === 'BUY') {
+              newQty = currentQty + absQuantity;
+              // Weighted average calculation for BUY
+              newAvg = (currentQty * currentAvg + absQuantity * contract.price) / newQty;
+            } else if (side === 'SELL') {
+              newQty = currentQty - absQuantity;
+              // For SELL, we don't change avg_price
+              newAvg = currentAvg;
+            }
+            
+            const positionStatus = Math.abs(newQty) < 0.01 ? 'closed' : 'open';
+            
+            await client.query(
+              `UPDATE fo_positions 
+               SET quantity = $1, avg_price = $2, status = $3, last_updated = CURRENT_TIMESTAMP 
+               WHERE id = $4`,
+              [newQty, newAvg, positionStatus, position.id]
+            );
+          } else {
+            // Create new position
+            const positionQty = side === 'BUY' ? absQuantity : -absQuantity;
+            await client.query(
+              `INSERT INTO fo_positions 
+                (party_id, instrument_id, quantity, avg_price, status) 
+               VALUES ($1, $2, $3, $4, $5)`,
+              [contract.party_id, contract.instrument_id, positionQty, contract.price, 'open']
+            );
+          }
+        }
       }
     }
 
@@ -6625,8 +7050,10 @@ app.post('/api/fo/billing/generate', async (req, res) => {
           totalSellAmount -= amt; // negative = money we give to client
         }
 
-        // Brokerage is always a charge collected from client (positive)
-        totalBrokerage += Math.abs(Number(c.brokerage_amount || 0));
+        // Only add brokerage for non-CF trades
+        if ((c.trade_type || '').toString().toUpperCase() !== 'CF') {
+          totalBrokerage += Math.abs(Number(c.brokerage_amount || 0));
+        }
       }
 
       // Net settlement for client:
@@ -6648,8 +7075,14 @@ app.post('/api/fo/billing/generate', async (req, res) => {
       );
       const bill = billInsert.rows[0];
 
-      // Insert bill items from contracts (one per contract)
+      // Insert bill items from contracts (one per contract, excluding CF-REOPEN trades)
       for (const c of partyContracts) {
+        // Skip CF-REOPEN contracts - they should not appear in bills
+        // Regular CF contracts (not containing '-REOPEN-' in the contract number) should be included
+        if ((c.contract_number || '').toString().toUpperCase().includes('-REOPEN-')) {
+          continue;
+        }
+        
         const qty = Math.abs(Number(c.quantity) || 0);
         const rate = Number(c.price) || 0;
         const amt = qty * rate;
@@ -6665,7 +7098,7 @@ app.post('/api/fo/billing/generate', async (req, res) => {
             c.client_code || c.party_code || null,
             c.instrument_id,
             Number(c.brokerage_rate || 0),
-            Number(c.brokerage_amount || 0),
+            ((c.trade_type || '').toString().toUpperCase() === 'CF') ? 0 : Number(c.brokerage_amount || 0),
             (c.trade_type || '').toString().toUpperCase(),
             c.side || null
           ]
