@@ -86,6 +86,7 @@ const FOHoldings = () => {
   const [activeTab, setActiveTab] = useState("positions");
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
+  const [confirmationStep, setConfirmationStep] = useState(0); // 0 = not started, 1-3 = confirmation steps
   const { toast } = useToast();
 
   // Helper function to format instrument name like NIFTY25OCT24800PE
@@ -265,6 +266,57 @@ const FOHoldings = () => {
 
   const totals = calculateTotals();
   
+  const handleClearPositions = async () => {
+    try {
+      // Increment confirmation step
+      const newConfirmationStep = confirmationStep + 1;
+      setConfirmationStep(newConfirmationStep);
+      
+      // If we haven't reached 3 confirmations yet, show toast and return
+      if (newConfirmationStep < 3) {
+        toast({
+          title: `Confirmation ${newConfirmationStep}/3`,
+          description: `Please click "Clear All Positions" ${3 - newConfirmationStep} more time(s) to proceed with deletion.`,
+          variant: "destructive",
+        });
+        return; // Early return
+      }
+      
+      // On the 3rd click, perform the actual deletion
+      const response = await fetch('http://localhost:3001/api/fo/positions', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ confirm: 'true' })
+      });
+      
+      const result = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to clear positions');
+      }
+      
+      toast({
+        title: "Success",
+        description: result.message || "All positions cleared successfully",
+      });
+      
+      // Refresh positions
+      fetchPositions();
+    } catch (error) {
+      console.error('Error clearing positions:', error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to clear positions",
+        variant: "destructive",
+      });
+    }
+    
+    // Reset confirmation after deletion attempt
+    setConfirmationStep(0);
+  };
+  
   // Separate long, short, and closed positions
   const longPositions = positions.filter(p => p.quantity > 0);
   const shortPositions = positions.filter(p => p.quantity < 0);
@@ -300,6 +352,51 @@ const FOHoldings = () => {
     return acc;
   }, {} as Record<string, Position[]>);
 
+  // Function to download reversed positions as Excel
+  const downloadReversedPositions = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (selectedParty && selectedParty !== "all") {
+        params.append('party_id', selectedParty);
+      }
+      
+      const queryString = params.toString();
+      const endpoint = `/api/fo/positions/export-reversed${queryString ? `?${queryString}` : ""}`;
+      
+      const response = await fetch(`http://localhost:3001${endpoint}`);
+      if (!response.ok) throw new Error("Failed to fetch reversed positions");
+      
+      const result = await response.json();
+      
+      // Import xlsx dynamically
+      const XLSX = await import('xlsx');
+      
+      // Create worksheet and workbook
+      const ws = XLSX.utils.json_to_sheet(result.data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Reversed Positions");
+      
+      // Generate filename with timestamp
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+      const filename = `reversed_positions_${timestamp}.xlsx`;
+      
+      // Download the file
+      XLSX.writeFile(wb, filename);
+      
+      toast({
+        title: "Success",
+        description: `Reversed positions exported successfully (${result.count} trades)`
+      });
+    } catch (error) {
+      console.error('Error downloading reversed positions:', error);
+      toast({
+        title: "Error",
+        description: "Failed to download reversed positions",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <div className="flex-1 overflow-auto">
       <PageHeader
@@ -308,6 +405,26 @@ const FOHoldings = () => {
       />
 
       <div className="p-6 space-y-6">
+        {/* Action buttons section */}
+        <div className="flex justify-end gap-2">
+          <Button 
+            onClick={downloadReversedPositions}
+            variant="outline"
+            className="flex items-center gap-2"
+          >
+            <Package className="w-4 h-4" />
+            Download Reversed Trades
+          </Button>
+          
+          <Button 
+            onClick={handleClearPositions}
+            variant="outline"
+            className="flex items-center gap-2 bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
+            disabled={isLoading}
+          >
+            Clear All Positions {confirmationStep > 0 ? `(${confirmationStep}/3)` : ''}
+          </Button>
+        </div>
         {/* Filter Section */}
         <div className="bg-gradient-to-r from-purple-50 to-fuchsia-50 rounded-lg border border-purple-200 p-6">
           <div className="flex items-center justify-between gap-8">

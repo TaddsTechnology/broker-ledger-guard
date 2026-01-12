@@ -2202,15 +2202,17 @@ app.get('/api/summary/parties', async (req, res) => {
           END AS party_name,
           CASE 
             WHEN lb.group_key = 'MAIN-BROKER' THEN ABS(COALESCE(lb.balance, 0))
+            WHEN lb.group_key = 'SUB-BROKER' THEN ABS(COALESCE(lb.balance, 0))
             ELSE 0
           END AS total_debit,
           CASE 
-            WHEN lb.group_key <> 'MAIN-BROKER' THEN ABS(COALESCE(lb.balance, 0))
+            WHEN lb.group_key NOT IN ('MAIN-BROKER', 'SUB-BROKER') THEN ABS(COALESCE(lb.balance, 0))
             ELSE 0
           END AS total_credit,
           CASE 
-            WHEN lb.group_key = 'MAIN-BROKER' THEN ABS(COALESCE(lb.balance, 0))
-            ELSE -ABS(COALESCE(lb.balance, 0))
+            WHEN lb.group_key = 'MAIN-BROKER' THEN -ABS(COALESCE(lb.balance, 0))
+            WHEN lb.group_key = 'SUB-BROKER' THEN -ABS(COALESCE(lb.balance, 0))
+            ELSE ABS(COALESCE(lb.balance, 0))
           END AS closing_balance
         FROM latest_balances lb
         LEFT JOIN party_master p ON lb.party_id = p.id
@@ -3354,9 +3356,9 @@ app.post('/api/fo/payments', async (req, res) => {
       brokerParticulars = `Broker adjustment for client pay-in: ${party.party_code} paid ${amountValue}`;
     } else {
       // You pay party (Money OUT to party = you GIVE to party)
-      // PARTY CREDIT: Party is owed more, you pay money
-      debitAmount = 0;
-      creditAmount = amountValue;
+      // PARTY DEBIT: Reduce what they owe you (or increase their credit)
+      debitAmount = amountValue;
+      creditAmount = 0;
       newBalance = currentBalance - amountValue;  // Balance decreases (you owe less)
       particulars = bill 
         ? `F&O Pay-Out (${paymentMethod}) for bill ${bill.bill_number}` 
@@ -4211,8 +4213,18 @@ app.put('/api/fo/instruments/:id', async (req, res) => {
 // Delete F&O instrument
 app.delete('/api/fo/instruments/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    await pool.query('DELETE FROM fo_instrument_master WHERE id = $1', [id]);
+    const { id, confirm } = req.body;
+    
+    // Require confirmation
+    if (!confirm || confirm !== 'true') {
+      return res.status(400).json({ 
+        error: 'Deletion requires confirmation',
+        message: 'Please send {"confirm": "true"} in the request body to confirm deletion'
+      });
+    }
+    
+    const { id: instrumentId } = req.params;
+    await pool.query('DELETE FROM fo_instrument_master WHERE id = $1', [instrumentId]);
     res.json({ message: 'Instrument deleted successfully' });
   } catch (error) {
     console.error('Error deleting instrument:', error);
@@ -4399,12 +4411,12 @@ app.post('/api/fo/trades/import', async (req, res) => {
         
         if (instrumentType === 'FUT') {
           instrumentQuery = await client.query(
-            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND (expiry_date = $3 OR ($3 IS NULL AND expiry_date IS NULL)) AND is_active = true',
+            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND expiry_date = $3 AND is_active = true ORDER BY id ASC LIMIT 1',
             [symbol, 'FUT', expiryDateValue]
           );
         } else if (instrumentType === 'CE' || instrumentType === 'PE') {
           instrumentQuery = await client.query(
-            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND (expiry_date = $3 OR ($3 IS NULL AND expiry_date IS NULL)) AND strike_price = $4 AND is_active = true',
+            'SELECT * FROM fo_instrument_master WHERE UPPER(symbol) = $1 AND instrument_type = $2 AND expiry_date = $3 AND strike_price = $4 AND is_active = true ORDER BY id ASC LIMIT 1',
             [symbol, instrumentType, expiryDateValue, strikePrice]
           );
         }
@@ -6246,6 +6258,16 @@ app.delete('/api/fo/contracts/:id', async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
+    const { confirm } = req.body;
+    
+    // Require confirmation
+    if (!confirm || confirm !== 'true') {
+      client.release();
+      return res.status(400).json({ 
+        error: 'Deletion requires confirmation',
+        message: 'Please send {"confirm": "true"} in the request body to confirm deletion'
+      });
+    }
     
     // Get the contract to be deleted to adjust positions
     const contractResult = await client.query(
@@ -7341,11 +7363,21 @@ app.get('/api/fo/positions/broker', async (req, res) => {
 // Get F&O positions (holdings)
 app.get('/api/fo/positions', async (req, res) => {
   try {
-    const { party_id } = req.query;
+    const { party_id, from_date, to_date } = req.query;
     
     // Enrich open positions with last trade date and per-broker quantity breakdown from F&O BROKER bills
     let query = `
-      WITH raw AS (
+      WITH contract_brokers AS (
+        SELECT 
+          party_id,
+          instrument_id,
+          STRING_AGG(DISTINCT broker_code, ', ') AS contract_broker_codes,
+          STRING_AGG(broker_code || ':' || quantity::text, ', ') AS contract_broker_qty_breakdown
+        FROM fo_contracts
+        WHERE broker_code IS NOT NULL AND status = 'open'
+        GROUP BY party_id, instrument_id
+      ),
+      raw AS (
         SELECT 
           pm.id AS party_id,
           bi.instrument_id,
@@ -7401,12 +7433,20 @@ app.get('/api/fo/positions', async (req, res) => {
         i.lot_size,
         pm.party_code,
         pm.name as party_name,
-        NULL::text as broker_codes,
-        NULL::text as broker_qty_breakdown
+        COALESCE(tx.broker_codes, cb.contract_broker_codes) as broker_codes,
+        COALESCE(tx.broker_qty_breakdown, cb.contract_broker_qty_breakdown) as broker_qty_breakdown
       FROM fo_positions p
       LEFT JOIN fo_instrument_master i ON i.id = p.instrument_id
       LEFT JOIN party_master pm ON pm.id = p.party_id
+      LEFT JOIN tx ON tx.party_id = p.party_id AND tx.instrument_id = p.instrument_id
+      LEFT JOIN contract_brokers cb ON cb.party_id = p.party_id AND cb.instrument_id = p.instrument_id
       WHERE ABS(p.quantity) > 0.01
+      AND (
+        ($1::date IS NULL AND $2::date IS NULL) OR
+        (p.last_trade_date IS NOT NULL AND p.last_trade_date >= $1::date AND $2::date IS NULL) OR
+        (p.last_trade_date IS NOT NULL AND $1::date IS NULL AND p.last_trade_date <= $2::date) OR
+        (p.last_trade_date IS NOT NULL AND p.last_trade_date >= $1::date AND p.last_trade_date <= $2::date)
+      )
       GROUP BY
         p.party_id,
         i.symbol,
@@ -7416,13 +7456,23 @@ app.get('/api/fo/positions', async (req, res) => {
         i.display_name,
         i.lot_size,
         pm.party_code,
-        pm.name
+        pm.name,
+        tx.broker_codes,
+        tx.broker_qty_breakdown,
+        cb.contract_broker_codes,
+        cb.contract_broker_qty_breakdown
     `;
     const params = [];
     
+    // Add date filters to parameters first
+    params.push(from_date || null);
+    params.push(to_date || null);
+    
+    // Add party_id if exists
     if (party_id) {
       params.push(party_id);
-      query += ` AND p.party_id = $${params.length}`;
+      // Add party_id condition to the query (this will be $3 since $1 and $2 are the dates)
+      query += ` AND p.party_id = $3`;
     }
     
     query += ` ORDER BY MAX(p.last_updated) DESC`;
@@ -7432,6 +7482,108 @@ app.get('/api/fo/positions', async (req, res) => {
   } catch (error) {
     console.error('Error fetching F&O positions:', error);
     res.status(500).json({ error: 'Failed to fetch F&O positions' });
+  }
+});
+
+// Export F&O positions as reversed trades for Excel download
+app.get('/api/fo/positions/export-reversed', async (req, res) => {
+  try {
+    const { party_id, from_date, to_date } = req.query;
+    
+    // Get current positions with broker information from related contracts
+    let query = `
+      SELECT
+        p.id,
+        p.party_id,
+        p.instrument_id,
+        p.quantity,
+        p.avg_price,
+        p.realized_pnl,
+        p.unrealized_pnl,
+        p.last_trade_date,
+        p.status,
+        p.last_updated,
+        i.symbol,
+        i.instrument_type,
+        i.expiry_date,
+        i.strike_price,
+        i.display_name,
+        i.lot_size,
+        pm.party_code,
+        pm.name as party_name,
+        bm.broker_code as broker_code
+      FROM fo_positions p
+      LEFT JOIN fo_instrument_master i ON i.id = p.instrument_id
+      LEFT JOIN party_master pm ON pm.id = p.party_id
+      LEFT JOIN (
+        SELECT DISTINCT ON (party_id, instrument_id) 
+          party_id, 
+          instrument_id, 
+          broker_id,
+          broker_code
+        FROM fo_contracts 
+        WHERE broker_id IS NOT NULL
+        ORDER BY party_id, instrument_id, created_at DESC
+      ) fc ON fc.party_id = p.party_id AND fc.instrument_id = p.instrument_id
+      LEFT JOIN broker_master bm ON bm.id = fc.broker_id
+      WHERE ABS(p.quantity) > 0.01
+      AND (
+        ($1::date IS NULL AND $2::date IS NULL) OR
+        (p.last_trade_date IS NOT NULL AND p.last_trade_date >= $1::date AND $2::date IS NULL) OR
+        (p.last_trade_date IS NOT NULL AND $1::date IS NULL AND p.last_trade_date <= $2::date) OR
+        (p.last_trade_date IS NOT NULL AND p.last_trade_date >= $1::date AND p.last_trade_date <= $2::date)
+      )
+    `;
+    const params = [];
+    
+    // Add date filters to parameters first
+    params.push(from_date || null);
+    params.push(to_date || null);
+    
+    // Add party_id if exists
+    if (party_id) {
+      params.push(party_id);
+      // Add party_id condition to the query (this will be $3 since $1 and $2 are the dates)
+      query += ` AND p.party_id = $3`;
+    }
+    
+    query += ` ORDER BY p.last_updated DESC`;
+    
+    const result = await pool.query(query, params);
+    const positions = result.rows;
+    
+    // Create reversed trades based on current positions
+    const reversedTrades = [];
+    
+    for (const position of positions) {
+      // If quantity is positive (long position), create a SELL trade to close it
+      // If quantity is negative (short position), create a BUY trade to close it
+      const absQty = Math.abs(position.quantity);
+      
+      const reversedTrade = {
+        "SecurityName": position.symbol,
+        "Side": position.quantity > 0 ? "SELL" : "BUY",
+        "ClientId": position.party_code,
+        "brokerid": position.broker_code || "", // Use broker code from position if available
+        "Type": "CF", // Reverse trades should be marked as CF
+        "BuyQty": position.quantity > 0 ? 0 : absQty,  // If original position was long (BUY), reversed is SELL so BuyQty = 0
+        "BuyAvg": position.quantity > 0 ? 0 : position.avg_price, // If original position was long, BuyAvg = 0
+        "SellQty": position.quantity > 0 ? absQty : 0, // If original position was long (BUY), reversed is SELL so SellQty = quantity
+        "SellAvg": position.quantity > 0 ? position.avg_price : 0 // If original position was long, SellAvg = price
+      };
+      
+      reversedTrades.push(reversedTrade);
+    }
+    
+    // Send as JSON response for frontend to handle the Excel export
+    res.json({
+      success: true,
+      data: reversedTrades,
+      count: reversedTrades.length
+    });
+  } catch (error) {
+    console.error('Error exporting reversed F&O positions:', error);
+    res.status(500).json({ error: 'Failed to export reversed F&O positions' });
   }
 });
 
@@ -8094,6 +8246,18 @@ app.delete('/api/fo/bills/:id', async (req, res) => {
   const client = await pool.connect();
   try {
     const { id } = req.params;
+    const { confirm } = req.body;
+    
+    // Require confirmation
+    if (!confirm || confirm !== 'true') {
+      await client.query('ROLLBACK'); // Just in case
+      client.release();
+      return res.status(400).json({ 
+        error: 'Deletion requires confirmation',
+        message: 'Please send {"confirm": "true"} in the request body to confirm deletion'
+      });
+    }
+    
     await client.query('BEGIN');
     
     // Delete bill items first
@@ -8108,6 +8272,39 @@ app.delete('/api/fo/bills/:id', async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Error deleting F&O bill:', error);
     res.status(500).json({ error: 'Failed to delete F&O bill' });
+  } finally {
+    client.release();
+  }
+});
+
+// ========================================
+// F&O POSITION APIs
+// ========================================
+
+// Clear all F&O positions (requires confirmation)
+app.delete('/api/fo/positions', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { confirm } = req.body;
+    
+    // Require confirmation
+    if (!confirm || confirm !== 'true') {
+      client.release();
+      return res.status(400).json({ 
+        error: 'Deletion requires confirmation',
+        message: 'Please send {"confirm": "true"} in the request body to confirm deletion'
+      });
+    }
+    
+    await client.query('BEGIN');
+    await client.query('DELETE FROM fo_positions');
+    await client.query('COMMIT');
+    
+    res.json({ message: 'All F&O positions cleared successfully' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error clearing F&O positions:', error);
+    res.status(500).json({ error: 'Failed to clear F&O positions' });
   } finally {
     client.release();
   }
@@ -8235,6 +8432,16 @@ app.put('/api/fo/ledger/:id', async (req, res) => {
 app.delete('/api/fo/ledger/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const { confirm } = req.body;
+    
+    // Require confirmation
+    if (!confirm || confirm !== 'true') {
+      return res.status(400).json({ 
+        error: 'Deletion requires confirmation',
+        message: 'Please send {"confirm": "true"} in the request body to confirm deletion'
+      });
+    }
+    
     await pool.query('DELETE FROM fo_ledger_entries WHERE id = $1', [id]);
     res.json({ message: 'Ledger entry deleted successfully' });
   } catch (error) {

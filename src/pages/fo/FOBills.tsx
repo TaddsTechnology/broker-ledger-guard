@@ -70,6 +70,7 @@ const FOBills = () => {
   const [filteredBills, setFilteredBills] = useState<Bill[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [billToDelete, setBillToDelete] = useState<Bill | null>(null);
+  const [confirmationStep, setConfirmationStep] = useState(0);
   const [viewBillId, setViewBillId] = useState<string | null>(null);
   const [billViewOpen, setBillViewOpen] = useState(false);
   const [brokerBillViewOpen, setBrokerBillViewOpen] = useState(false);
@@ -345,15 +346,35 @@ const FOBills = () => {
 
   const confirmDelete = async () => {
     if (!billToDelete) return;
-
+    
+    // Increment confirmation step
+    const newConfirmationStep = confirmationStep + 1;
+    setConfirmationStep(newConfirmationStep);
+    
+    // If we haven't reached 3 confirmations yet, show toast and return
+    if (newConfirmationStep < 3) {
+      toast({
+        title: `Confirmation ${newConfirmationStep}/3`,
+        description: `Please click "Confirm" ${3 - newConfirmationStep} more time(s) to proceed with deletion.`,
+        variant: "destructive",
+      });
+      return; // Early return
+    }
+    
+    // On the 3rd confirmation, perform the actual deletion
     try {
       // Use F&O API endpoint
       const response = await fetch(`http://localhost:3001/api/fo/bills/${billToDelete.id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ confirm: 'true' })
       });
       
       if (!response.ok) {
-        throw new Error(`Failed to delete bill: ${response.statusText}`);
+        const result = await response.json();
+        throw new Error(result.error || `Failed to delete bill: ${response.statusText}`);
       }
       
       toast({ 
@@ -372,8 +393,10 @@ const FOBills = () => {
         variant: "destructive",
       });
     } finally {
+      // Reset confirmation after deletion attempt
       setDeleteDialogOpen(false);
       setBillToDelete(null);
+      setConfirmationStep(0);
     }
   };
 
@@ -946,7 +969,11 @@ const FOBills = () => {
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         title="Delete Bill"
-        description={`Are you sure you want to delete bill "${billToDelete?.bill_number}"? This action cannot be undone.`}
+        description={
+          confirmationStep > 0 
+            ? `This is confirmation ${confirmationStep}/3. Please click "Confirm" ${3 - confirmationStep} more time(s) to proceed with deletion.`
+            : `Are you sure you want to delete bill "${billToDelete?.bill_number}"? This action cannot be undone.`
+        }
         confirmText="Delete"
         cancelText="Cancel"
         onConfirm={confirmDelete}

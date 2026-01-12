@@ -78,6 +78,7 @@ const FOLedger = () => {
   const [editingEntry, setEditingEntry] = useState<LedgerEntry | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [entryToDelete, setEntryToDelete] = useState<LedgerEntry | null>(null);
+  const [confirmationStep, setConfirmationStep] = useState(0);
 
   useEffect(() => {
     fetchParties();
@@ -308,12 +309,37 @@ const FOLedger = () => {
 
   const handleDeleteConfirm = async () => {
     if (!entryToDelete) return;
-
+    
+    // Increment confirmation step
+    const newConfirmationStep = confirmationStep + 1;
+    setConfirmationStep(newConfirmationStep);
+    
+    // If we haven't reached 3 confirmations yet, show toast and return
+    if (newConfirmationStep < 3) {
+      toast({
+        title: `Confirmation ${newConfirmationStep}/3`,
+        description: `Please click "Confirm" ${3 - newConfirmationStep} more time(s) to proceed with deletion.`,
+        variant: "destructive",
+      });
+      return; // Early return
+    }
+    
+    // On the 3rd confirmation, perform the actual deletion
     try {
       // For F&O, delete from fo_ledger_entries via FO-specific API
-      await fetch(`http://localhost:3001/api/fo/ledger/${entryToDelete.id}`, {
+      const response = await fetch(`http://localhost:3001/api/fo/ledger/${entryToDelete.id}`, {
         method: "DELETE",
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ confirm: 'true' })
       });
+      
+      if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result.error || 'Failed to delete ledger entry');
+      }
+      
       toast({ 
         title: "Success", 
         description: "Ledger entry deleted successfully",
@@ -324,12 +350,14 @@ const FOLedger = () => {
       console.error('Error deleting ledger entry:', error);
       toast({
         title: "Error",
-        description: "Failed to delete ledger entry",
+        description: error instanceof Error ? error.message : "Failed to delete ledger entry",
         variant: "destructive",
       });
     } finally {
+      // Reset confirmation after deletion attempt
       setEntryToDelete(null);
       setDeleteDialogOpen(false);
+      setConfirmationStep(0);
     }
   };
 
@@ -971,7 +999,11 @@ const FOLedger = () => {
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         title="Delete Ledger Entry"
-        description={`Are you sure you want to delete this ledger entry? This action cannot be undone.`}
+        description={
+          confirmationStep > 0 
+            ? `This is confirmation ${confirmationStep}/3. Please click "Confirm" ${3 - confirmationStep} more time(s) to proceed with deletion.`
+            : `Are you sure you want to delete this ledger entry? This action cannot be undone.`
+        }
         confirmText="Delete"
         cancelText="Cancel"
         onConfirm={handleDeleteConfirm}

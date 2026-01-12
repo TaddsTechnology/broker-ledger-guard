@@ -41,6 +41,7 @@ const FOBrokerMaster = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [brokerToDelete, setBrokerToDelete] = useState<Broker | null>(null);
+  const [confirmationStep, setConfirmationStep] = useState(0);
   const { toast } = useToast();
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -181,21 +182,42 @@ const FOBrokerMaster = () => {
 
   const handleDelete = async () => {
     if (!brokerToDelete) return;
-
+    
+    // Increment confirmation step
+    const newConfirmationStep = confirmationStep + 1;
+    setConfirmationStep(newConfirmationStep);
+    
+    // If we haven't reached 3 confirmations yet, show toast and return
+    if (newConfirmationStep < 3) {
+      toast({
+        title: `Confirmation ${newConfirmationStep}/3`,
+        description: `Please click "Confirm" ${3 - newConfirmationStep} more time(s) to proceed with deletion.`,
+        variant: "destructive",
+      });
+      return; // Early return
+    }
+    
+    // On the 3rd confirmation, perform the actual deletion
     try {
       await brokerQueries.delete(brokerToDelete.id);
-      toast({ title: "Success", description: "Broker deleted successfully" });
+      toast({ 
+        title: "Success", 
+        description: `Broker "${brokerToDelete.name}" deleted successfully` 
+      });
       fetchBrokers();
     } catch (error) {
-      console.error('Error deleting party:', error);
+      console.error('Error deleting broker:', error);
       toast({
         title: "Error",
         description: "Failed to delete broker",
         variant: "destructive",
       });
     }
+    
+    // Reset confirmation after deletion attempt
     setDeleteDialogOpen(false);
     setBrokerToDelete(null);
+    setConfirmationStep(0);
   };
 
   return (
@@ -426,7 +448,11 @@ const FOBrokerMaster = () => {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleDelete}
         title="Delete Broker"
-        description={`Are you sure you want to delete ${brokerToDelete?.name}? This action cannot be undone.`}
+        description={
+          confirmationStep > 0 
+            ? `This is confirmation ${confirmationStep}/3. Please click "Confirm" ${3 - confirmationStep} more time(s) to proceed with deletion.`
+            : `Are you sure you want to delete ${brokerToDelete?.name}? This action cannot be undone.`
+        }
       />
     </div>
   );

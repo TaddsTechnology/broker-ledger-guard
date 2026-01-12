@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS fo_ledger_entries (
   credit_amount DECIMAL(15, 2) DEFAULT 0,
   balance DECIMAL(15, 2) NOT NULL,
   reference_type VARCHAR(50),                     -- 'client_settlement', 'broker_brokerage', 'sub_broker_profit', 'payment', etc.
-  reference_id INTEGER,                           -- ID of related record
+  reference_id UUID,                            -- ID of related record (UUID from cash_transactions)
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

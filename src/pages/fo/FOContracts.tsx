@@ -92,6 +92,7 @@ const FOContracts = () => {
   const [filteredContracts, setFilteredContracts] = useState<Contract[]>([]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [contractToDelete, setContractToDelete] = useState<Contract | null>(null);
+  const [confirmationStep, setConfirmationStep] = useState(0);
   const { toast } = useToast();
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -385,14 +386,36 @@ const FOContracts = () => {
 
   const confirmDelete = async () => {
     if (!contractToDelete) return;
-
+    
+    // Increment confirmation step
+    const newConfirmationStep = confirmationStep + 1;
+    setConfirmationStep(newConfirmationStep);
+    
+    // If we haven't reached 3 confirmations yet, show toast and return
+    if (newConfirmationStep < 3) {
+      toast({
+        title: `Confirmation ${newConfirmationStep}/3`,
+        description: `Please click "Confirm" ${3 - newConfirmationStep} more time(s) to proceed with deletion.`,
+        variant: "destructive",
+      });
+      return; // Early return
+    }
+    
+    // On the 3rd confirmation, perform the actual deletion
     try {
       const response = await fetch(`http://localhost:3001/api/fo/contracts/${contractToDelete.id}`, {
         method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ confirm: 'true' })
       });
-
-      if (!response.ok) throw new Error('Failed to delete contract');
-
+      
+      if (!response.ok) {
+        const result = await response.json();
+        throw new Error(result.error || 'Failed to delete contract');
+      }
+      
       toast({ 
         title: "Success", 
         description: `Contract "${contractToDelete.contract_number}" deleted successfully`,
@@ -405,10 +428,13 @@ const FOContracts = () => {
       console.error('Error deleting contract:', error);
       toast({
         title: "Error",
-        description: "Failed to delete contract",
+        description: error instanceof Error ? error.message : "Failed to delete contract",
         variant: "destructive",
       });
     }
+    
+    // Reset confirmation after deletion attempt
+    setConfirmationStep(0);
   };
 
   // Business keyboard shortcuts
@@ -925,7 +951,11 @@ const FOContracts = () => {
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         title="Delete Contract"
-        description={`Are you sure you want to delete contract "${contractToDelete?.contract_number}"? This action cannot be undone.`}
+        description={
+          confirmationStep > 0 
+            ? `This is confirmation ${confirmationStep}/3. Please click "Confirm" ${3 - confirmationStep} more time(s) to proceed with deletion.`
+            : `Are you sure you want to delete contract "${contractToDelete?.contract_number}"? This action cannot be undone.`
+        }
         confirmText="Delete"
         cancelText="Cancel"
         onConfirm={confirmDelete}

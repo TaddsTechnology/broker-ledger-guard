@@ -49,6 +49,7 @@ const FOInstrumentMaster = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [instrumentToDelete, setInstrumentToDelete] = useState<FOInstrument | null>(null);
+  const [confirmationStep, setConfirmationStep] = useState(0);
   const { toast } = useToast();
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -224,28 +225,54 @@ const FOInstrumentMaster = () => {
 
   const handleDelete = async () => {
     if (!instrumentToDelete) return;
-
+    
+    // Increment confirmation step
+    const newConfirmationStep = confirmationStep + 1;
+    setConfirmationStep(newConfirmationStep);
+    
+    // If we haven't reached 3 confirmations yet, show toast and return
+    if (newConfirmationStep < 3) {
+      toast({
+        title: `Confirmation ${newConfirmationStep}/3`,
+        description: `Please click "Confirm" ${3 - newConfirmationStep} more time(s) to proceed with deletion.`,
+        variant: "destructive",
+      });
+      return; // Early return
+    }
+    
+    // On the 3rd confirmation, perform the actual deletion
     try {
       const response = await fetch(`http://localhost:3001/api/fo/instruments/${instrumentToDelete.id}`, {
         method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ confirm: 'true' })
       });
-
+      
       if (response.ok) {
-        toast({ title: "Success", description: "Instrument deleted successfully" });
+        toast({ 
+          title: "Success", 
+          description: `Instrument "${instrumentToDelete.symbol} ${instrumentToDelete.instrument_type}" deleted successfully` 
+        });
         fetchInstruments();
       } else {
-        throw new Error('Failed to delete instrument');
+        const result = await response.json();
+        throw new Error(result.error || 'Failed to delete instrument');
       }
     } catch (error) {
       console.error('Error deleting instrument:', error);
       toast({
         title: "Error",
-        description: "Failed to delete instrument",
+        description: error instanceof Error ? error.message : "Failed to delete instrument",
         variant: "destructive",
       });
     }
+    
+    // Reset confirmation after deletion attempt
     setDeleteDialogOpen(false);
     setInstrumentToDelete(null);
+    setConfirmationStep(0);
   };
 
   const getInstrumentTypeBadge = (type: string) => {
@@ -545,7 +572,11 @@ const FOInstrumentMaster = () => {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleDelete}
         title="Delete Instrument"
-        description={`Are you sure you want to delete ${instrumentToDelete?.symbol} ${instrumentToDelete?.instrument_type}? This action cannot be undone.`}
+        description={
+          confirmationStep > 0 
+            ? `This is confirmation ${confirmationStep}/3. Please click "Confirm" ${3 - confirmationStep} more time(s) to proceed with deletion.`
+            : `Are you sure you want to delete ${instrumentToDelete?.symbol} ${instrumentToDelete?.instrument_type}? This action cannot be undone.`
+        }
       />
     </div>
   );
