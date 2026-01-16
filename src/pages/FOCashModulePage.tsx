@@ -199,7 +199,7 @@ export default function FOCashModulePage() {
     if (!transactionToDelete) return;
     
     try {
-      const res = await fetch(`http://localhost:3001/api/cash/delete/${transactionToDelete.id}`, {
+      const res = await fetch(`http://localhost:3001/api/cash/${transactionToDelete.id}`, {
         method: "DELETE",
       });
       

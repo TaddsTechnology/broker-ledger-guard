@@ -2150,73 +2150,64 @@ app.get('/api/summary/parties', async (req, res) => {
 
     const table = isFO ? 'fo_ledger_entries' : 'ledger_entries';
 
-    // For F&O module, get the latest balance for each party instead of summing all entries
-    // This ensures we show current balances like the equity module does
+    // For F&O module, sum all debit and credit amounts for each party/group
     let sql;
     if (isFO) {
-      // For F&O, show a "balanced" summary:
-      // - MAIN-BROKER shows under Debit (amount payable to main broker)
-      // - Parties + SUB-BROKER show under Credit (amount receivable + profit)
-      // And we emit signed closing balances so Net Closing becomes 0 when books balance.
+      // For F&O, aggregate net amounts by party/group (only show debit OR credit, not both)
       sql = `
-        WITH latest_balances AS (
-          SELECT DISTINCT ON (
-            CASE 
-              WHEN party_id IS NULL AND reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
-              WHEN party_id IS NULL AND reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
-              ELSE party_id::text
-            END
-          )
-            party_id,
-            reference_type,
-            balance,
-            entry_date,
-            created_at,
-            CASE 
-              WHEN party_id IS NULL AND reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
-              WHEN party_id IS NULL AND reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
-              ELSE party_id::text
-            END AS group_key
-          FROM ${table}
-          WHERE (party_id IS NOT NULL)
-             OR (party_id IS NULL AND reference_type IN ('broker_brokerage','broker_payment','sub_broker_profit'))
-          ORDER BY 
-            CASE 
-              WHEN party_id IS NULL AND reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
-              WHEN party_id IS NULL AND reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
-              ELSE party_id::text
-            END,
-            entry_date DESC,
-            created_at DESC
-        )
         SELECT
+          party_code,
+          party_name,
           CASE 
-            WHEN lb.group_key = 'MAIN-BROKER' THEN 'MAIN-BROKER'
-            WHEN lb.group_key = 'SUB-BROKER' THEN 'SUB-BROKER'
-            ELSE p.party_code
-          END AS party_code,
-          CASE 
-            WHEN lb.group_key = 'MAIN-BROKER' THEN 'Main Broker'
-            WHEN lb.group_key = 'SUB-BROKER' THEN 'Sub Broker Profit'
-            ELSE p.name
-          END AS party_name,
-          CASE 
-            WHEN lb.group_key = 'MAIN-BROKER' THEN ABS(COALESCE(lb.balance, 0))
-            WHEN lb.group_key = 'SUB-BROKER' THEN ABS(COALESCE(lb.balance, 0))
+            WHEN net_amount >= 0 THEN net_amount
             ELSE 0
           END AS total_debit,
           CASE 
-            WHEN lb.group_key NOT IN ('MAIN-BROKER', 'SUB-BROKER') THEN ABS(COALESCE(lb.balance, 0))
+            WHEN net_amount < 0 THEN ABS(net_amount)
             ELSE 0
           END AS total_credit,
-          CASE 
-            WHEN lb.group_key = 'MAIN-BROKER' THEN -ABS(COALESCE(lb.balance, 0))
-            WHEN lb.group_key = 'SUB-BROKER' THEN -ABS(COALESCE(lb.balance, 0))
-            ELSE ABS(COALESCE(lb.balance, 0))
-          END AS closing_balance
-        FROM latest_balances lb
-        LEFT JOIN party_master p ON lb.party_id = p.id
-        WHERE lb.balance IS NOT NULL
+          net_amount AS closing_balance
+        FROM (
+          SELECT
+            COALESCE(
+              p.party_code,
+              CASE 
+                WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+                WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
+                ELSE NULL
+              END
+            ) AS party_code,
+            COALESCE(
+              p.name,
+              CASE 
+                WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
+                WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'Sub Broker Profit'
+                ELSE NULL
+              END
+            ) AS party_name,
+            SUM(l.debit_amount - l.credit_amount) AS net_amount
+          FROM ${table} l
+          LEFT JOIN party_master p ON l.party_id = p.id
+          WHERE (l.party_id IS NOT NULL)
+             OR (l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment','sub_broker_profit'))
+          GROUP BY 
+            COALESCE(
+              p.party_code,
+              CASE 
+                WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+                WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
+                ELSE NULL
+              END
+            ),
+            COALESCE(
+              p.name,
+              CASE 
+                WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
+                WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'Sub Broker Profit'
+                ELSE NULL
+              END
+            )
+        ) AS aggregated_data
         ORDER BY party_code
       `;
     } else {
@@ -3341,9 +3332,9 @@ app.post('/api/fo/payments', async (req, res) => {
     
     if (payType === 'payin') {
       // Party pays you (Money IN from party = you TAKE from party)
-      // PARTY DEBIT: Party owes less, you receive money
-      debitAmount = amountValue;
-      creditAmount = 0;
+      // PARTY CREDIT: Party owes less, you receive money
+      debitAmount = 0;
+      creditAmount = amountValue;
       newBalance = currentBalance - amountValue;  // Balance decreases (they owe less)
       particulars = bill 
         ? `F&O Pay-In (${paymentMethod}) applied to bill ${bill.bill_number}` 
@@ -3356,10 +3347,10 @@ app.post('/api/fo/payments', async (req, res) => {
       brokerParticulars = `Broker adjustment for client pay-in: ${party.party_code} paid ${amountValue}`;
     } else {
       // You pay party (Money OUT to party = you GIVE to party)
-      // PARTY DEBIT: Reduce what they owe you (or increase their credit)
+      // PARTY DEBIT: Increase what they are owed (reduce what they owe you)
       debitAmount = amountValue;
       creditAmount = 0;
-      newBalance = currentBalance - amountValue;  // Balance decreases (you owe less)
+      newBalance = currentBalance + amountValue;  // Balance increases (you owe more)
       particulars = bill 
         ? `F&O Pay-Out (${paymentMethod}) for bill ${bill.bill_number}` 
         : `F&O Pay-Out made (${paymentMethod})`;
@@ -5539,8 +5530,8 @@ app.post('/api/fo/trades/process', async (req, res) => {
           null,
           billDateStr,
           `Sub-Broker Profit - Bill ${brokerBillNumber} - Sub-broker: ₹${totalBrokerageAllClients.toFixed(2)}, Main Broker: ₹${mainBrokerBrokerage.toFixed(2)}, Profit: ₹${subBrokerProfit.toFixed(2)}`,
-          0,
           subBrokerProfit,
+          0,
           subBrokerProfitBalance,
           'sub_broker_profit',
           brokerBillId
@@ -7526,7 +7517,7 @@ app.get('/api/fo/positions/export-reversed', async (req, res) => {
         ORDER BY party_id, instrument_id, created_at DESC
       ) fc ON fc.party_id = p.party_id AND fc.instrument_id = p.instrument_id
       LEFT JOIN broker_master bm ON bm.id = fc.broker_id
-      WHERE ABS(p.quantity) > 0.01
+      WHERE ABS(p.quantity) > 0
       AND (
         ($1::date IS NULL AND $2::date IS NULL) OR
         (p.last_trade_date IS NOT NULL AND p.last_trade_date >= $1::date AND $2::date IS NULL) OR
@@ -7552,27 +7543,66 @@ app.get('/api/fo/positions/export-reversed', async (req, res) => {
     const result = await pool.query(query, params);
     const positions = result.rows;
     
-    // Create reversed trades based on current positions
-    const reversedTrades = [];
+    // Aggregate positions by party and instrument characteristics to handle duplicate instruments
+    const aggregatedPositions = {};
     
     for (const position of positions) {
-      // If quantity is positive (long position), create a SELL trade to close it
-      // If quantity is negative (short position), create a BUY trade to close it
-      const absQty = Math.abs(position.quantity);
+      // Create key based on instrument characteristics to handle duplicates
+      const key = `${position.party_id}-${position.symbol}-${position.instrument_type}-${position.expiry_date || 'NULL'}-${position.strike_price || 'NULL'}`;
       
-      const reversedTrade = {
-        "SecurityName": position.symbol,
-        "Side": position.quantity > 0 ? "SELL" : "BUY",
-        "ClientId": position.party_code,
-        "brokerid": position.broker_code || "", // Use broker code from position if available
-        "Type": "CF", // Reverse trades should be marked as CF
-        "BuyQty": position.quantity > 0 ? 0 : absQty,  // If original position was long (BUY), reversed is SELL so BuyQty = 0
-        "BuyAvg": position.quantity > 0 ? 0 : position.avg_price, // If original position was long, BuyAvg = 0
-        "SellQty": position.quantity > 0 ? absQty : 0, // If original position was long (BUY), reversed is SELL so SellQty = quantity
-        "SellAvg": position.quantity > 0 ? position.avg_price : 0 // If original position was long, SellAvg = price
-      };
+      if (!aggregatedPositions[key]) {
+        aggregatedPositions[key] = {
+          ...position,
+          quantity: 0,
+          avg_price: 0,
+          total_value: 0,
+          position_count: 0,
+          // Use the first occurrence's details as representative
+          symbol: position.symbol,
+          instrument_type: position.instrument_type,
+          expiry_date: position.expiry_date,
+          strike_price: position.strike_price,
+          display_name: position.display_name,
+          lot_size: position.lot_size,
+          party_code: position.party_code,
+          party_name: position.party_name,
+          broker_code: position.broker_code
+        };
+      }
       
-      reversedTrades.push(reversedTrade);
+      const aggPos = aggregatedPositions[key];
+      aggPos.quantity += position.quantity;
+      aggPos.total_value += (position.quantity * position.avg_price);
+      aggPos.position_count++;
+      
+      // Recalculate weighted average price
+      if (aggPos.quantity !== 0) {
+        aggPos.avg_price = aggPos.total_value / aggPos.quantity;
+      }
+    }
+    
+    // Create reversed trades based on aggregated positions (only if net quantity is not zero)
+    const reversedTrades = [];
+    
+    for (const [_, aggPosition] of Object.entries(aggregatedPositions)) {
+      // Only create reverse trade if the net quantity is not zero
+      if (Math.abs(aggPosition.quantity) > 0.01) { // Using small threshold to handle floating point precision
+        const absQty = Math.abs(aggPosition.quantity);
+        
+        const reversedTrade = {
+          "SecurityName": aggPosition.symbol,
+          "Side": aggPosition.quantity > 0 ? "SELL" : "BUY",
+          "ClientId": aggPosition.party_code,
+          "brokerid": aggPosition.broker_code || "", // Use broker code from aggregated position if available
+          "Type": "CF", // Reverse trades should be marked as CF
+          "BuyQty": aggPosition.quantity > 0 ? 0 : absQty,  // If original position was long (BUY), reversed is SELL so BuyQty = 0
+          "BuyAvg": aggPosition.quantity > 0 ? 0 : aggPosition.avg_price, // If original position was long, BuyAvg = 0
+          "SellQty": aggPosition.quantity > 0 ? absQty : 0, // If original position was long (BUY), reversed is SELL so SellQty = quantity
+          "SellAvg": aggPosition.quantity > 0 ? aggPosition.avg_price : 0 // If original position was long, SellAvg = price
+        };
+        
+        reversedTrades.push(reversedTrade);
+      }
     }
     
     // Send as JSON response for frontend to handle the Excel export
@@ -8323,11 +8353,13 @@ app.get('/api/fo/ledger', async (req, res) => {
       SELECT 
         l.*,
         CASE 
-          WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN NULL
+          WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'MAIN-BROKER'
+          WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'SUB-BROKER'
           ELSE p.party_code
         END AS party_code,
         CASE 
-          WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN NULL
+          WHEN l.party_id IS NULL AND l.reference_type IN ('broker_brokerage','broker_payment') THEN 'Main Broker'
+          WHEN l.party_id IS NULL AND l.reference_type = 'sub_broker_profit' THEN 'Sub Broker Profit'
           ELSE p.name
         END AS party_name
       FROM fo_ledger_entries l
