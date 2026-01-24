@@ -4613,6 +4613,10 @@ app.post('/api/fo/trades/import', async (req, res) => {
               [carriedSignedQty, price, 'open', nextDayStr, canonicalPosRes.rows[0].id]
             );
           } else {
+            // Preserve broker code information for CF positions
+            const brokerCode = null; // For new positions, broker code comes from contracts
+            const brokerQtyBreakdown = null;
+            
             await client.query(
               'INSERT INTO fo_positions (party_id, instrument_id, quantity, avg_price, last_trade_date, status) VALUES ($1,$2,$3,$4,$5,$6)',
               [party.id, canonicalInstrumentId, carriedSignedQty, price, nextDayStr, 'open']
@@ -4743,10 +4747,18 @@ app.post('/api/fo/trades/import', async (req, res) => {
         } else {
           const qty = side === 'SELL' ? -actualQuantity : actualQuantity;
           const status = Math.abs(qty) < 0.01 ? 'closed' : 'open';
-          await client.query(
-            'INSERT INTO fo_positions (party_id, instrument_id, quantity, avg_price, last_trade_date, status) VALUES ($1, $2, $3, $4, $5, $6)',
+          const positionResult = await client.query(
+            'INSERT INTO fo_positions (party_id, instrument_id, quantity, avg_price, last_trade_date, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
             [party.id, instrument.id, qty, price, tradeDateValue, status]
           );
+          
+          // Insert broker association if broker exists
+          if (brokerId) {
+            await client.query(
+              'INSERT INTO fo_position_brokers (position_id, broker_id, quantity) VALUES ($1, $2, $3)',
+              [positionResult.rows[0].id, brokerId, actualQuantity]
+            );
+          }
         }
 
         imported.push({ 
@@ -5188,10 +5200,28 @@ app.post('/api/fo/trades/process', async (req, res) => {
             
             // Create new position for next trading day (reopen same position)
             const reopenQty = currentPositionQty; // Same quantity and direction
-            await client.query(
-              'INSERT INTO fo_positions (party_id, instrument_id, quantity, avg_price, last_trade_date, status) VALUES ($1, $2, $3, $4, $5, $6)',
+            // Preserve broker code information from the closed position
+            const brokerCode = position.broker_codes || null;
+            const brokerQtyBreakdown = position.broker_qty_breakdown || null;
+            
+            const newPositionResult = await client.query(
+              'INSERT INTO fo_positions (party_id, instrument_id, quantity, avg_price, last_trade_date, status) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
               [party.id, instrument.id, reopenQty, price, nextTradingDay, 'open']
             );
+            
+            // Copy broker associations from the closed position
+            const brokerAssociations = await client.query(
+              'SELECT broker_id, quantity FROM fo_position_brokers WHERE position_id = $1',
+              [position.id]
+            );
+            
+            // Insert copied broker associations for the new position
+            for (const assoc of brokerAssociations.rows) {
+              await client.query(
+                'INSERT INTO fo_position_brokers (position_id, broker_id, quantity) VALUES ($1, $2, $3)',
+                [newPositionResult.rows[0].id, assoc.broker_id, assoc.quantity]
+              );
+            }
                     
             // Insert ONLY P&L ledger entry (no full amount)
             // CF must NOT affect buy/sell totals, create bills, create broker bills, charge brokerage, or change ledger with full amounts
@@ -6032,6 +6062,8 @@ app.post('/api/fo/contracts', async (req, res) => {
     
           // Update current positions to reflect the carried position (as-of next trading day).
           const reopenQtySigned = closesLong ? absQuantity : -absQuantity;
+          
+          // Preserve existing broker information when updating position
           await client.query(
             `UPDATE fo_positions
              SET quantity = $1, avg_price = $2, status = 'open', last_trade_date = $3, last_updated = CURRENT_TIMESTAMP
@@ -7008,7 +7040,7 @@ app.post('/api/fo/billing/generate', async (req, res) => {
       SELECT c.*, p.party_code
       FROM fo_contracts c
       LEFT JOIN party_master p ON p.id = c.party_id
-      WHERE c.trade_date::date >= $1::date AND c.trade_date::date <= $2::date
+      WHERE c.trade_date >= $1 AND c.trade_date <= $2
     `;
     const params = [fromDate, toDate];
 
@@ -7274,7 +7306,7 @@ app.get('/api/fo/ledger/sub-broker-profit', async (req, res) => {
 // Get F&O broker holdings summary (aggregated by broker across all clients)
 app.get('/api/fo/positions/broker', async (req, res) => {
   try {
-    const { from_date, to_date } = req.query;
+    const { from_date, to_date, broker_code } = req.query;
 
     // Build query with proper parameterization to prevent SQL injection
     let query = `
@@ -7282,6 +7314,8 @@ app.get('/api/fo/positions/broker', async (req, res) => {
         SELECT 
           b.broker_code,
           bi.instrument_id,
+          i.symbol,
+          i.display_name,
           bi.quantity,
           bi.rate,
           bi.amount,
@@ -7290,6 +7324,7 @@ app.get('/api/fo/positions/broker', async (req, res) => {
         FROM fo_bill_items bi
         INNER JOIN fo_bills b ON bi.bill_id = b.id
         INNER JOIN party_master pm ON UPPER(pm.party_code) = UPPER(bi.client_code)
+        INNER JOIN fo_instrument_master i ON i.id = bi.instrument_id
         WHERE b.bill_type = 'broker' AND b.broker_code IS NOT NULL
     `;
     
@@ -7308,26 +7343,35 @@ app.get('/api/fo/positions/broker', async (req, res) => {
       paramIndex++;
     }
     
+    // Add broker code filter if provided
+    if (broker_code) {
+      query += ` AND b.broker_code = $${paramIndex}`;
+      params.push(broker_code);
+      paramIndex++;
+    }
+    
     query += `
       ),
       broker_summary AS (
         SELECT 
           broker_code,
-          instrument_id,
+          symbol,
+          display_name,
+          MIN(instrument_id) AS instrument_id, -- Take the first instrument_id as representative
           SUM(quantity) AS total_quantity,
           AVG(rate) AS avg_price,
           SUM(amount) AS total_invested,
           COUNT(DISTINCT client_id) AS client_count,
           MAX(last_trade_date) AS last_trade_date
         FROM broker_data
-        GROUP BY broker_code, instrument_id
+        GROUP BY broker_code, symbol, display_name
       )
       SELECT 
         bs.broker_code,
         bm.name as broker_name,
         bs.instrument_id,
-        im.symbol,
-        im.display_name,
+        bs.symbol,
+        bs.display_name,
         im.instrument_type,
         im.expiry_date,
         im.strike_price,
@@ -7340,7 +7384,7 @@ app.get('/api/fo/positions/broker', async (req, res) => {
       LEFT JOIN broker_master bm ON bs.broker_code = bm.broker_code
       LEFT JOIN fo_instrument_master im ON bs.instrument_id = im.id
       WHERE ABS(bs.total_quantity) > 0.01
-      ORDER BY bs.total_quantity DESC, bs.broker_code, im.symbol
+      ORDER BY bs.total_quantity DESC, bs.broker_code, bs.symbol
     `;
 
     const result = await pool.query(query, params);
@@ -7432,12 +7476,6 @@ app.get('/api/fo/positions', async (req, res) => {
       LEFT JOIN tx ON tx.party_id = p.party_id AND tx.instrument_id = p.instrument_id
       LEFT JOIN contract_brokers cb ON cb.party_id = p.party_id AND cb.instrument_id = p.instrument_id
       WHERE ABS(p.quantity) > 0.01
-      AND (
-        ($1::date IS NULL AND $2::date IS NULL) OR
-        (p.last_trade_date IS NOT NULL AND p.last_trade_date >= $1::date AND $2::date IS NULL) OR
-        (p.last_trade_date IS NOT NULL AND $1::date IS NULL AND p.last_trade_date <= $2::date) OR
-        (p.last_trade_date IS NOT NULL AND p.last_trade_date >= $1::date AND p.last_trade_date <= $2::date)
-      )
       GROUP BY
         p.party_id,
         i.symbol,
@@ -7455,15 +7493,10 @@ app.get('/api/fo/positions', async (req, res) => {
     `;
     const params = [];
     
-    // Add date filters to parameters first
-    params.push(from_date || null);
-    params.push(to_date || null);
-    
     // Add party_id if exists
     if (party_id) {
       params.push(party_id);
-      // Add party_id condition to the query (this will be $3 since $1 and $2 are the dates)
-      query += ` AND p.party_id = $3`;
+      query += ` AND p.party_id = $1`;
     }
     
     query += ` ORDER BY MAX(p.last_updated) DESC`;
@@ -7518,24 +7551,34 @@ app.get('/api/fo/positions/export-reversed', async (req, res) => {
       ) fc ON fc.party_id = p.party_id AND fc.instrument_id = p.instrument_id
       LEFT JOIN broker_master bm ON bm.id = fc.broker_id
       WHERE ABS(p.quantity) > 0
-      AND (
-        ($1::date IS NULL AND $2::date IS NULL) OR
-        (p.last_trade_date IS NOT NULL AND p.last_trade_date >= $1::date AND $2::date IS NULL) OR
-        (p.last_trade_date IS NOT NULL AND $1::date IS NULL AND p.last_trade_date <= $2::date) OR
-        (p.last_trade_date IS NOT NULL AND p.last_trade_date >= $1::date AND p.last_trade_date <= $2::date)
-      )
     `;
     const params = [];
+    let paramIndex = 1;
     
-    // Add date filters to parameters first
-    params.push(from_date || null);
-    params.push(to_date || null);
+    // Add date filters if provided
+    if (from_date || to_date) {
+      query += ` AND (`;
+      if (from_date && to_date) {
+        query += `p.last_trade_date >= $${paramIndex} AND p.last_trade_date <= $${paramIndex + 1}`;
+        params.push(from_date, to_date);
+        paramIndex += 2;
+      } else if (from_date) {
+        query += `p.last_trade_date >= $${paramIndex}`;
+        params.push(from_date);
+        paramIndex += 1;
+      } else if (to_date) {
+        query += `p.last_trade_date <= $${paramIndex}`;
+        params.push(to_date);
+        paramIndex += 1;
+      }
+      query += `)`;
+    }
     
     // Add party_id if exists
     if (party_id) {
+      query += ` AND p.party_id = $${paramIndex}`;
       params.push(party_id);
-      // Add party_id condition to the query (this will be $3 since $1 and $2 are the dates)
-      query += ` AND p.party_id = $3`;
+      paramIndex += 1;
     }
     
     query += ` ORDER BY p.last_updated DESC`;
@@ -7614,6 +7657,124 @@ app.get('/api/fo/positions/export-reversed', async (req, res) => {
   } catch (error) {
     console.error('Error exporting reversed F&O positions:', error);
     res.status(500).json({ error: 'Failed to export reversed F&O positions' });
+  }
+});
+
+// Export current F&O positions as Excel
+app.get('/api/fo/positions/export', async (req, res) => {
+  try {
+    const { party_id, from_date, to_date } = req.query;
+    
+    // Get current positions with detailed information
+    let query = `
+      WITH contract_brokers AS (
+        SELECT 
+          party_id,
+          instrument_id,
+          STRING_AGG(DISTINCT broker_code, ', ') AS contract_broker_codes,
+          STRING_AGG(broker_code || ':' || quantity::text, ', ') AS contract_broker_qty_breakdown
+        FROM fo_contracts
+        WHERE broker_code IS NOT NULL AND status = 'open'
+        GROUP BY party_id, instrument_id
+      ),
+      tx AS (
+        SELECT 
+          p.party_id,
+          p.instrument_id,
+          STRING_AGG(DISTINCT bb.broker_code, ', ') AS broker_codes,
+          STRING_AGG(bb.broker_code || ':' || bi.quantity::text, ', ') AS broker_qty_breakdown,
+          MAX(b.bill_date) as last_trade_date
+        FROM fo_positions p
+        LEFT JOIN fo_bill_items bi ON bi.instrument_id = p.instrument_id
+        LEFT JOIN fo_bills b ON b.id = bi.bill_id
+        LEFT JOIN broker_master bb ON bb.broker_code = b.broker_code
+        WHERE b.bill_type = 'broker' AND b.broker_code IS NOT NULL
+        GROUP BY p.party_id, p.instrument_id
+      )
+      SELECT 
+        p.id,
+        p.party_id,
+        p.instrument_id,
+        p.quantity,
+        p.avg_price,
+        p.realized_pnl,
+        p.unrealized_pnl,
+        p.last_trade_date,
+        p.status,
+        p.last_updated,
+        i.symbol,
+        i.instrument_type,
+        i.expiry_date,
+        i.strike_price,
+        i.display_name,
+        i.lot_size,
+        pm.party_code,
+        pm.name as party_name,
+        COALESCE(tx.broker_codes, cb.contract_broker_codes) as broker_codes,
+        COALESCE(tx.broker_qty_breakdown, cb.contract_broker_qty_breakdown) as broker_qty_breakdown
+      FROM fo_positions p
+      LEFT JOIN fo_instrument_master i ON i.id = p.instrument_id
+      LEFT JOIN party_master pm ON pm.id = p.party_id
+      LEFT JOIN tx ON tx.party_id = p.party_id AND tx.instrument_id = p.instrument_id
+      LEFT JOIN contract_brokers cb ON cb.party_id = p.party_id AND cb.instrument_id = p.instrument_id
+      WHERE ABS(p.quantity) > 0
+    `;
+    const params = [];
+    let paramIndex = 1;
+    
+    // Add date filters if provided
+    if (from_date || to_date) {
+      query += ` AND (`;
+      if (from_date && to_date) {
+        query += `p.last_trade_date >= $${paramIndex} AND p.last_trade_date <= $${paramIndex + 1}`;
+        params.push(from_date, to_date);
+        paramIndex += 2;
+      } else if (from_date) {
+        query += `p.last_trade_date >= $${paramIndex}`;
+        params.push(from_date);
+        paramIndex += 1;
+      } else if (to_date) {
+        query += `p.last_trade_date <= $${paramIndex}`;
+        params.push(to_date);
+        paramIndex += 1;
+      }
+      query += `)`;
+    }
+    
+    // Add party_id if exists
+    if (party_id) {
+      query += ` AND p.party_id = $${paramIndex}`;
+      params.push(party_id);
+      paramIndex += 1;
+    }
+    
+    query += ` ORDER BY pm.party_code, i.symbol, p.last_updated DESC`;
+    
+    const result = await pool.query(query, params);
+    const positions = result.rows;
+    
+    // Transform positions for export - only include required columns
+    const exportData = positions.map(position => ({
+      "SecurityName": position.display_name || position.symbol,
+      "Side": Number(position.quantity) > 0 ? "BUY" : "SELL",
+      "ClientId": position.party_code,
+      "brokerid": position.broker_codes || "",
+      "Type": "T", // Position type - could be set based on other criteria
+      "BuyQty": Number(position.quantity) > 0 ? Math.abs(Number(position.quantity)) : 0,
+      "BuyAvg": Number(position.quantity) > 0 ? Number(position.avg_price).toFixed(2) : 0,
+      "SellQty": Number(position.quantity) < 0 ? Math.abs(Number(position.quantity)) : 0,
+      "SellAvg": Number(position.quantity) < 0 ? Number(position.avg_price).toFixed(2) : 0
+    }));
+    
+    // Send as JSON response for frontend to handle the Excel export
+    res.json({
+      success: true,
+      data: exportData,
+      count: exportData.length
+    });
+  } catch (error) {
+    console.error('Error exporting F&O positions:', error);
+    res.status(500).json({ error: 'Failed to export F&O positions' });
   }
 });
 

@@ -21,11 +21,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { TrendingUp, TrendingDown, Package, History, Users } from "lucide-react";
+import { FOPositionsPrintView } from "@/components/fo/FOPositionsPrintView";
+import { TrendingUp, TrendingDown, Package, History, Users, Printer, Download } from "lucide-react";
 
 interface Party {
   id: string;
   party_code: string;
+  name: string;
+}
+
+interface Broker {
+  id: string;
+  broker_code: string;
   name: string;
 }
 
@@ -77,7 +84,9 @@ interface Transaction {
 const FOHoldings = () => {
   const [positions, setPositions] = useState<Position[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
+  const [brokers, setBrokers] = useState<Broker[]>([]);
   const [selectedParty, setSelectedParty] = useState<string>("all");
+  const [selectedBroker, setSelectedBroker] = useState<string>("all");
   const [isLoading, setIsLoading] = useState(true);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isLoadingTransactions, setIsLoadingTransactions] = useState(false);
@@ -114,19 +123,441 @@ const FOHoldings = () => {
     return displayName;
   };
 
+  // Handle print functionality for Current Positions
+  const handlePrintPositions = async () => {
+    try {
+      setIsLoading(true);
+      
+      // Fetch positions data
+      const response = await fetch(`http://localhost:3001/api/fo/positions${selectedParty && selectedParty !== "all" ? `?party_id=${selectedParty}` : ""}`);
+      
+      if (!response.ok) {
+        throw new Error("Failed to fetch positions data for printing");
+      }
+
+      const positionsData = await response.json();
+      const positionsArray = Array.isArray(positionsData) ? positionsData : [];
+      
+      // Generate HTML content for printing
+      const generateHTML = () => {
+        const partyInfo = selectedParty !== "all" 
+          ? parties.find(p => p.id === selectedParty) 
+          : null;
+        
+        return `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>F&O Positions Print</title>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 20px; }
+              .header { text-align: center; margin-bottom: 20px; }
+              .section-title { font-size: 18px; font-weight: bold; margin: 20px 0 10px 0; border-bottom: 2px solid #333; padding-bottom: 5px; }
+              table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+              th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+              th { background-color: #f2f2f2; font-weight: bold; }
+              .text-right { text-align: right; }
+              .text-center { text-align: center; }
+              .font-mono { font-family: monospace; }
+              @media print {
+                body { margin: 0; }
+                .no-print { display: none; }
+              }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <h1>F&O CURRENT POSITIONS</h1>
+              ${partyInfo ? `<p>Party: ${partyInfo.party_code} - ${partyInfo.name}</p>` : '<p>All Parties</p>'}
+              <p>Print Date: ${new Date().toLocaleString('en-IN')}</p>
+            </div>
+            
+            <div class="section-title">POSITIONS DETAIL</div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Instrument</th>
+                  <th>Party</th>
+                  <th>Type</th>
+                  <th class="text-right">Quantity</th>
+                  <th class="text-right">Avg Price</th>
+                  <th class="text-right">Market Value</th>
+                  <th class="text-right">P&L</th>
+                  <th>Last Trade</th>
+                  <th>Brokers</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${positionsArray.map(holding => {
+                  const qty = Number(holding.quantity || 0);
+                  const avgPrice = Number(holding.avg_price || 0);
+                  const marketValue = Math.abs(qty) * avgPrice;
+                  const pnl = Number(holding.unrealized_pnl || 0);
+                  const isLong = qty > 0;
+                  return `
+                    <tr>
+                      <td>
+                        <div><strong>${holding.symbol}</strong></div>
+                        <div style="font-size: 10px; color: #666;">
+                          ${holding.instrument_type} ${holding.strike_price ? `@${holding.strike_price}` : ''}
+                          ${holding.expiry_date ? ` (${new Date(holding.expiry_date).toLocaleDateString()})` : ''}
+                        </div>
+                      </td>
+                      <td>
+                        <div>${holding.party_name || '-'}</div>
+                        <div style="font-size: 10px; color: #666;">
+                          ${holding.party_code || ''}
+                        </div>
+                      </td>
+                      <td>
+                        <span style="padding: 4px 8px; border-radius: 12px; font-size: 10px; font-weight: bold; 
+                          background-color: ${isLong ? '#d1fad1' : '#ffd1d1'}; 
+                          color: ${isLong ? '#006400' : '#8b0000'}">
+                          ${isLong ? 'LONG' : 'SHORT'}
+                        </span>
+                      </td>
+                      <td class="text-right font-mono" style="color: ${isLong ? '#008000' : '#ff0000'}; font-weight: bold;">
+                        ${isLong ? '+' : ''}${Number(qty).toLocaleString()}
+                      </td>
+                      <td class="text-right font-mono">₹${Number(avgPrice).toFixed(2)}</td>
+                      <td class="text-right font-mono">₹${Number(marketValue).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                      <td class="text-right font-mono" style="color: ${pnl > 0 ? '#008000' : pnl < 0 ? '#ff0000' : '#666'}; font-weight: bold;">
+                        ${pnl >= 0 ? '+' : ''}₹${Math.abs(pnl).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                      </td>
+                      <td>${holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}</td>
+                      <td style="word-break: break-word;">${holding.broker_codes || '-'}</td>
+                    </tr>
+                  `;
+                }).join('')}
+              </tbody>
+            </table>
+            
+            <div style="margin-top: 30px; text-align: center;" class="no-print">
+              <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; margin-right: 10px;">
+                Print
+              </button>
+              <button onclick="window.close()" style="padding: 10px 20px; font-size: 16px; background-color: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                Close
+              </button>
+            </div>
+          </body>
+          </html>
+        `;
+      };
+      
+      // Open in new browser tab
+      const newTab = window.open();
+      if (newTab) {
+        newTab.document.write(generateHTML());
+        newTab.document.close();
+        newTab.focus();
+        // Auto-print after content loads
+        newTab.onload = () => {
+          setTimeout(() => {
+            newTab.print();
+          }, 1000);
+        };
+      }
+      
+    } catch (error) {
+      console.error("Error preparing positions print data:", error);
+      toast({
+        title: "Error",
+        description: "Failed to prepare positions data for printing",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle print functionality for Broker Holdings
+  const handlePrintBrokerHoldings = async () => {
+    try {
+      setIsLoadingBrokerHoldings(true);
+      
+      // Fetch broker holdings data
+      const params = new URLSearchParams();
+      if (fromDate) params.append('from_date', fromDate);
+      if (toDate) params.append('to_date', toDate);
+      if (selectedBroker && selectedBroker !== "all") {
+        const broker = brokers.find(b => b.id === selectedBroker);
+        if (broker) {
+          params.append('broker_code', broker.broker_code);
+        }
+      }
+      
+      const queryString = params.toString();
+      const endpoint = `/api/fo/positions/broker${queryString ? `?${queryString}` : ""}`;
+      
+      const response = await fetch(`http://localhost:3001${endpoint}`);
+      
+      if (!response.ok) {
+        throw new Error("Failed to fetch broker holdings data for printing");
+      }
+
+      const brokerHoldingsData = await response.json();
+      const brokerHoldingsArray = Array.isArray(brokerHoldingsData) ? brokerHoldingsData : [];
+      
+      // Generate HTML content for printing
+      const generateHTML = () => {
+        const brokerInfo = selectedBroker !== "all" 
+          ? brokers.find(b => b.id === selectedBroker) 
+          : null;
+        
+        return `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>F&O Broker Holdings Print</title>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 20px; }
+              .header { text-align: center; margin-bottom: 20px; }
+              .section-title { font-size: 18px; font-weight: bold; margin: 20px 0 10px 0; border-bottom: 2px solid #333; padding-bottom: 5px; }
+              table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+              th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+              th { background-color: #f2f2f2; font-weight: bold; }
+              .text-right { text-align: right; }
+              .text-center { text-align: center; }
+              .font-mono { font-family: monospace; }
+              @media print {
+                body { margin: 0; }
+                .no-print { display: none; }
+              }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <h1>F&O BROKER HOLDINGS</h1>
+              ${brokerInfo ? `<p>Broker: ${brokerInfo.broker_code} - ${brokerInfo.name}</p>` : '<p>All Brokers</p>'}
+              <p>Print Date: ${new Date().toLocaleString('en-IN')}</p>
+              ${fromDate || toDate ? `<p>Date Range: ${fromDate ? new Date(fromDate).toLocaleDateString('en-IN') : 'All'} to ${toDate ? new Date(toDate).toLocaleDateString('en-IN') : 'All'}</p>` : ''}
+            </div>
+            
+            <div class="section-title">BROKER HOLDINGS SUMMARY</div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Broker Code</th>
+                  <th>Clients</th>
+                  <th class="text-right">Total Qty</th>
+                  <th class="text-right">Avg Price</th>
+                  <th class="text-right">Investment</th>
+                  <th>Last Trade</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${brokerHoldingsArray.map(holding => `
+                  <tr>
+                    <td>
+                      <div><strong>${holding.broker_code}</strong></div>
+                      ${holding.broker_name ? `<div style="font-size: 10px; color: #666;">${holding.broker_name}</div>` : ''}
+                    </td>
+                    <td class="text-center">${holding.client_count}</td>
+                    <td class="text-right font-mono">${Number(holding.total_quantity || 0).toLocaleString()}</td>
+                    <td class="text-right font-mono">₹${Number(holding.avg_price || 0).toFixed(2)}</td>
+                    <td class="text-right font-mono">₹${Number(holding.total_invested || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                    <td>${holding.last_trade_date ? new Date(holding.last_trade_date).toLocaleDateString() : '-'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+            
+            <div style="margin-top: 30px; text-align: center;" class="no-print">
+              <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; margin-right: 10px;">
+                Print
+              </button>
+              <button onclick="window.close()" style="padding: 10px 20px; font-size: 16px; background-color: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                Close
+              </button>
+            </div>
+          </body>
+          </html>
+        `;
+      };
+      
+      // Open in new browser tab
+      const newTab = window.open();
+      if (newTab) {
+        newTab.document.write(generateHTML());
+        newTab.document.close();
+        newTab.focus();
+        // Auto-print after content loads
+        newTab.onload = () => {
+          setTimeout(() => {
+            newTab.print();
+          }, 1000);
+        };
+      }
+      
+    } catch (error) {
+      console.error("Error preparing broker holdings print data:", error);
+      toast({
+        title: "Error",
+        description: "Failed to prepare broker holdings data for printing",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingBrokerHoldings(false);
+    }
+  };
+
+  // Handle print functionality for Transaction History
+  const handlePrintTransactions = async () => {
+    try {
+      setIsLoadingTransactions(true);
+      
+      // Fetch transactions data
+      const params = new URLSearchParams();
+      if (selectedParty && selectedParty !== "all") {
+        params.append("party_id", selectedParty);
+      }
+      if (fromDate) {
+        params.append("from_date", fromDate);
+      }
+      if (toDate) {
+        params.append("to_date", toDate);
+      }
+      
+      const endpoint = `/api/fo/positions/transactions${params.toString() ? `?${params.toString()}` : ""}`;
+      const response = await fetch(`http://localhost:3001${endpoint}`);
+      
+      if (!response.ok) {
+        throw new Error("Failed to fetch transactions data for printing");
+      }
+
+      const transactionsData = await response.json();
+      const transactionsArray = Array.isArray(transactionsData) ? transactionsData : [];
+      
+      // Generate HTML content for printing
+      const generateHTML = () => {
+        const partyInfo = selectedParty !== "all" 
+          ? parties.find(p => p.id === selectedParty) 
+          : null;
+        
+        return `
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>F&O Transaction History Print</title>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 20px; }
+              .header { text-align: center; margin-bottom: 20px; }
+              .section-title { font-size: 18px; font-weight: bold; margin: 20px 0 10px 0; border-bottom: 2px solid #333; padding-bottom: 5px; }
+              table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+              th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+              th { background-color: #f2f2f2; font-weight: bold; }
+              .text-right { text-align: right; }
+              .text-center { text-align: center; }
+              .font-mono { font-family: monospace; }
+              @media print {
+                body { margin: 0; }
+                .no-print { display: none; }
+              }
+            </style>
+          </head>
+          <body>
+            <div class="header">
+              <h1>F&O TRANSACTION HISTORY</h1>
+              ${partyInfo ? `<p>Party: ${partyInfo.party_code} - ${partyInfo.name}</p>` : '<p>All Parties</p>'}
+              <p>Print Date: ${new Date().toLocaleString('en-IN')}</p>
+              ${fromDate || toDate ? `<p>Date Range: ${fromDate ? new Date(fromDate).toLocaleDateString('en-IN') : 'All'} to ${toDate ? new Date(toDate).toLocaleDateString('en-IN') : 'All'}</p>` : ''}
+            </div>
+            
+            <div class="section-title">TRANSACTION HISTORY</div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Bill No</th>
+                  <th>Party</th>
+                  <th>Description</th>
+                  <th>Type</th>
+                  <th class="text-right">Qty</th>
+                  <th class="text-right">Rate</th>
+                  <th class="text-right">Amount</th>
+                  <th class="text-right">Balance</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${transactionsArray.map(txn => `
+                  <tr>
+                    <td>${new Date(txn.bill_date).toLocaleDateString('en-IN')}</td>
+                    <td class="font-mono">${txn.bill_number}</td>
+                    <td>${txn.party_name || txn.party_code || '-'}</td>
+                    <td style="word-break: break-word;">${txn.symbol || txn.description}</td>
+                    <td>
+                      <span style="padding: 4px 8px; border-radius: 12px; font-size: 10px; font-weight: bold; 
+                        background-color: ${txn.type === 'BUY' ? '#d1fad1' : txn.type === 'SELL' ? '#ffd1d1' : '#f0f0f0'}; 
+                        color: ${txn.type === 'BUY' ? '#006400' : txn.type === 'SELL' ? '#8b0000' : '#333'}">
+                        ${txn.type}
+                      </span>
+                    </td>
+                    <td class="text-right font-mono">${Number(txn.quantity || 0).toLocaleString()}</td>
+                    <td class="text-right font-mono">₹${Number(txn.rate || 0).toFixed(2)}</td>
+                    <td class="text-right font-mono">₹${Number(txn.amount || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                    <td class="text-right font-mono" style="font-weight: bold; color: ${Number(txn.balance || 0) > 0 ? '#008000' : Number(txn.balance || 0) < 0 ? '#ff0000' : '#666'}">
+                      ${Number(txn.balance || 0).toLocaleString()}
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+            
+            <div style="margin-top: 30px; text-align: center;" class="no-print">
+              <button onclick="window.print()" style="padding: 10px 20px; font-size: 16px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; margin-right: 10px;">
+                Print
+              </button>
+              <button onclick="window.close()" style="padding: 10px 20px; font-size: 16px; background-color: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer;">
+                Close
+              </button>
+            </div>
+          </body>
+          </html>
+        `;
+      };
+      
+      // Open in new browser tab
+      const newTab = window.open();
+      if (newTab) {
+        newTab.document.write(generateHTML());
+        newTab.document.close();
+        newTab.focus();
+        // Auto-print after content loads
+        newTab.onload = () => {
+          setTimeout(() => {
+            newTab.print();
+          }, 1000);
+        };
+      }
+      
+    } catch (error) {
+      console.error("Error preparing transactions print data:", error);
+      toast({
+        title: "Error",
+        description: "Failed to prepare transactions data for printing",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoadingTransactions(false);
+    }
+  };
+
   useEffect(() => {
     fetchParties();
+    fetchBrokers();
     fetchPositions();
   }, []);
 
   useEffect(() => {
-    if (selectedParty) {
-      fetchPositions();
-      if (activeTab === "transactions") {
-        fetchTransactions();
-      }
+    // Always fetch positions when party filter changes
+    fetchPositions();
+    
+    // Also fetch transactions if we're on the transactions tab
+    if (activeTab === "transactions") {
+      fetchTransactions();
     }
-  }, [selectedParty]);
+  }, [selectedParty, fromDate, toDate]);
 
   useEffect(() => {
     if (activeTab === "transactions") {
@@ -150,9 +581,28 @@ const FOHoldings = () => {
     }
   };
 
+  const fetchBrokers = async () => {
+    try {
+      // Use Equity API - brokers are shared between Equity and F&O
+      const response = await fetch('http://localhost:3001/api/brokers');
+      const result = await response.json();
+      setBrokers(Array.isArray(result) ? result : []);
+    } catch (error) {
+      console.error('Error fetching brokers:', error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch brokers",
+        variant: "destructive",
+      });
+    }
+  };
+
   const fetchPositions = async () => {
     setIsLoading(true);
     try {
+      // Debug logging
+      console.log("fetchPositions called with:", { selectedParty, fromDate, toDate });
+      
       // Build query parameters
       const params = new URLSearchParams();
       if (selectedParty && selectedParty !== "all") {
@@ -164,10 +614,13 @@ const FOHoldings = () => {
       const queryString = params.toString();
       const endpoint = `/api/fo/positions${queryString ? `?${queryString}` : ""}`;
       
+      console.log("Making API call to:", `http://localhost:3001${endpoint}`);
+      
       const response = await fetch(`http://localhost:3001${endpoint}`);
       if (!response.ok) throw new Error("Failed to fetch F&O positions");
       
       const result = await response.json();
+      console.log("Received positions data:", result);
       setPositions(Array.isArray(result) ? result : []);
     } catch (error) {
       console.error("Error fetching F&O positions:", error);
@@ -214,10 +667,24 @@ const FOHoldings = () => {
   const fetchBrokerHoldings = async () => {
     setIsLoadingBrokerHoldings(true);
     try {
+      // Debug logging
+      console.log("fetchBrokerHoldings - Selected broker ID:", selectedBroker);
+      console.log("fetchBrokerHoldings - Available brokers:", brokers);
+      
       // Build query parameters
       const params = new URLSearchParams();
       if (fromDate) params.append('from_date', fromDate);
       if (toDate) params.append('to_date', toDate);
+      if (selectedBroker && selectedBroker !== "all") {
+        const broker = brokers.find(b => b.id === selectedBroker);
+        console.log("fetchBrokerHoldings - Found broker:", broker);
+        if (broker) {
+          params.append('broker_code', broker.broker_code);
+          console.log("fetchBrokerHoldings - Adding broker_code parameter:", broker.broker_code);
+        } else {
+          console.log("fetchBrokerHoldings - Broker not found in brokers array");
+        }
+      }
       
       const queryString = params.toString();
       const endpoint = `/api/fo/positions/broker${queryString ? `?${queryString}` : ""}`;
@@ -352,6 +819,51 @@ const FOHoldings = () => {
     return acc;
   }, {} as Record<string, Position[]>);
 
+  // Function to download current positions as Excel
+  const downloadCurrentPositions = async () => {
+    try {
+      const params = new URLSearchParams();
+      if (selectedParty && selectedParty !== "all") {
+        params.append('party_id', selectedParty);
+      }
+      
+      const queryString = params.toString();
+      const endpoint = `/api/fo/positions/export${queryString ? `?${queryString}` : ""}`;
+      
+      const response = await fetch(`http://localhost:3001${endpoint}`);
+      if (!response.ok) throw new Error("Failed to fetch current positions");
+      
+      const result = await response.json();
+      
+      // Import xlsx dynamically
+      const XLSX = await import('xlsx');
+      
+      // Create worksheet and workbook
+      const ws = XLSX.utils.json_to_sheet(result.data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Current Positions");
+      
+      // Generate filename with timestamp
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+      const filename = `current_positions_${timestamp}.xlsx`;
+      
+      // Download the file
+      XLSX.writeFile(wb, filename);
+      
+      toast({
+        title: "Success",
+        description: `Current positions exported successfully (${result.count} positions)`
+      });
+    } catch (error) {
+      console.error('Error downloading current positions:', error);
+      toast({
+        title: "Error",
+        description: "Failed to download current positions",
+        variant: "destructive",
+      });
+    }
+  };
+
   // Function to download reversed positions as Excel
   const downloadReversedPositions = async () => {
     try {
@@ -406,31 +918,47 @@ const FOHoldings = () => {
 
       <div className="p-6 space-y-6">
         {/* Action buttons section */}
-        <div className="flex justify-end gap-2">
-          <Button 
-            onClick={downloadReversedPositions}
-            variant="outline"
-            className="flex items-center gap-2"
-          >
-            <Package className="w-4 h-4" />
-            Download Reversed Trades
-          </Button>
+        <div className="flex justify-between items-center">
+          <div className="flex gap-2">
+            <Button 
+              onClick={downloadCurrentPositions}
+              variant="outline"
+              className="flex items-center gap-2"
+            >
+              <Download className="w-4 h-4" />
+              Download Current Positions
+            </Button>
+          </div>
           
-          <Button 
-            onClick={handleClearPositions}
-            variant="outline"
-            className="flex items-center gap-2 bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
-            disabled={isLoading}
-          >
-            Clear All Positions {confirmationStep > 0 ? `(${confirmationStep}/3)` : ''}
-          </Button>
+          <div className="flex gap-2">
+            <Button 
+              onClick={downloadReversedPositions}
+              variant="outline"
+              className="flex items-center gap-2"
+            >
+              <Package className="w-4 h-4" />
+              Download Reversed Trades
+            </Button>
+            
+            <Button 
+              onClick={handleClearPositions}
+              variant="outline"
+              className="flex items-center gap-2 bg-red-50 text-red-700 border-red-200 hover:bg-red-100"
+              disabled={isLoading}
+            >
+              Clear All Positions {confirmationStep > 0 ? `(${confirmationStep}/3)` : ''}
+            </Button>
+          </div>
         </div>
         {/* Filter Section */}
         <div className="bg-gradient-to-r from-purple-50 to-fuchsia-50 rounded-lg border border-purple-200 p-6">
           <div className="flex items-center justify-between gap-8">
             <div className="space-y-2">
               <label className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Filter by Client</label>
-              <Select value={selectedParty} onValueChange={setSelectedParty}>
+              <Select value={selectedParty} onValueChange={(value) => {
+                console.log("Party filter changed from", selectedParty, "to", value);
+                setSelectedParty(value);
+              }}>
                 <SelectTrigger className="w-72 h-10 bg-white border-gray-300 shadow-sm">
                   <SelectValue placeholder="Select client" />
                 </SelectTrigger>
@@ -482,7 +1010,7 @@ const FOHoldings = () => {
           <div className="flex items-end gap-2">
             <Button 
               onClick={() => {
-                // Trigger refresh with new date filters
+                // Trigger refresh with all current filters (party, dates)
                 if (activeTab === "positions") {
                   fetchPositions();
                 } else {
@@ -585,7 +1113,18 @@ const FOHoldings = () => {
         {/* Long Positions Table */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Long Positions (Buy)</CardTitle>
+            <div className="flex justify-between items-center">
+              <CardTitle className="text-lg">Long Positions (Buy)</CardTitle>
+              <Button 
+                onClick={handlePrintPositions}
+                variant="outline"
+                className="flex items-center gap-2"
+                disabled={isLoading}
+              >
+                <Printer className="w-4 h-4" />
+                Print Positions
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             {isLoading ? (
@@ -889,13 +1428,26 @@ const FOHoldings = () => {
           <TabsContent value="broker" className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Broker Holdings Summary</CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  View holdings aggregated by broker across all clients
-                </p>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <CardTitle className="text-lg">Broker Holdings Summary</CardTitle>
+                    <p className="text-sm text-muted-foreground">
+                      View holdings aggregated by broker across all clients
+                    </p>
+                  </div>
+                  <Button 
+                    onClick={handlePrintBrokerHoldings}
+                    variant="outline"
+                    className="flex items-center gap-2"
+                    disabled={isLoadingBrokerHoldings}
+                  >
+                    <Printer className="w-4 h-4" />
+                    Print Broker Holdings
+                  </Button>
+                </div>
               </CardHeader>
               
-              {/* Date Filters */}
+              {/* Filters */}
               <div className="px-6 pb-4 flex flex-wrap gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="broker-holdings-from-date" className="text-xs font-semibold uppercase tracking-wide">
@@ -920,6 +1472,24 @@ const FOHoldings = () => {
                     onChange={(e) => setToDate(e.target.value)}
                     className="w-40"
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="broker-filter" className="text-xs font-semibold uppercase tracking-wide">
+                    Broker
+                  </Label>
+                  <Select value={selectedBroker} onValueChange={setSelectedBroker}>
+                    <SelectTrigger className="w-48">
+                      <SelectValue placeholder="All Brokers" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Brokers</SelectItem>
+                      {brokers.map((broker) => (
+                        <SelectItem key={broker.id} value={broker.id}>
+                          {broker.broker_code} - {broker.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="flex items-end gap-2">
                   <Button onClick={fetchBrokerHoldings} disabled={isLoadingBrokerHoldings}>
@@ -1049,7 +1619,18 @@ const FOHoldings = () => {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-lg">Transaction History (Date-wise Buy/Sell)</CardTitle>
+                <div className="flex justify-between items-center">
+                  <CardTitle className="text-lg">Transaction History (Date-wise Buy/Sell)</CardTitle>
+                  <Button 
+                    onClick={handlePrintTransactions}
+                    variant="outline"
+                    className="flex items-center gap-2"
+                    disabled={isLoadingTransactions}
+                  >
+                    <Printer className="w-4 h-4" />
+                    Print Transactions
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {/* Party filter inside Transactions tab */}
@@ -1156,6 +1737,8 @@ const FOHoldings = () => {
           </TabsContent>
         </Tabs>
       </div>
+      
+
     </div>
   );
 };

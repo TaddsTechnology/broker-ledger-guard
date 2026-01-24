@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Plus, Pencil, Trash2, Save, X, List, Search, Calendar, IndianRupee, Eye, Wallet } from "lucide-react";
+import { Plus, Pencil, Trash2, Save, X, List, Search, Calendar, IndianRupee, Eye, Wallet, Printer } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useFormNavigation, useBusinessKeyboard } from "@/hooks/useBusinessKeyboard";
 import { billQueries, partyQueries } from "@/lib/database";
@@ -10,6 +10,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { FOBillView } from "@/components/fo/FOBillView";
 import { FOBrokerBillView } from "@/components/fo/FOBrokerBillView";
 import { FOBillEditor } from "@/components/FOBillEditor";
+import { FOLedgerPrintView } from "@/components/fo/FOLedgerPrintView";
 import {
   Table,
   TableBody,
@@ -75,6 +76,7 @@ const FOBills = () => {
   const [billViewOpen, setBillViewOpen] = useState(false);
   const [brokerBillViewOpen, setBrokerBillViewOpen] = useState(false);
   const [viewingBrokerBill, setViewingBrokerBill] = useState<Bill | null>(null);
+  const [printViewOpen, setPrintViewOpen] = useState(false);
   const { toast } = useToast();
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -424,6 +426,16 @@ const FOBills = () => {
     }
   };
 
+  // Handle print functionality
+  const handlePrint = () => {
+    setPrintViewOpen(true);
+  };
+
+  // Handle print view close
+  const handlePrintViewClose = () => {
+    setPrintViewOpen(false);
+  };
+
   // Business keyboard shortcuts
   useBusinessKeyboard({
     onNew: () => {
@@ -696,6 +708,18 @@ const FOBills = () => {
         description="Generate and manage billing"
         action={
           <div className="flex gap-2">
+            <Button
+              onClick={handlePrint}
+              variant="outline"
+              className="group relative flex items-center gap-2"
+              disabled={bills.length === 0}
+            >
+              <Printer className="w-4 h-4" />
+              Print Ledger
+              <kbd className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]">
+                Ctrl+P
+              </kbd>
+            </Button>
             <div className="relative">
               <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
@@ -999,6 +1023,37 @@ const FOBills = () => {
         bill={viewingBrokerBill}
         open={brokerBillViewOpen}
         onOpenChange={setBrokerBillViewOpen}
+      />
+      
+      {/* Print View */}
+      <FOLedgerPrintView
+        ledgerEntries={bills.map(bill => ({
+          id: bill.id,
+          party_id: bill.party_id,
+          party_code: bill.party_code,
+          party_name: bill.party_name,
+          entry_date: bill.bill_date,
+          particulars: `${bill.bill_type === 'broker' ? 'Broker Bill' : 'Party Bill'} - ${bill.bill_number}`,
+          debit_amount: bill.total_amount,
+          credit_amount: bill.paid_amount,
+          balance: bill.total_amount - bill.paid_amount,
+          created_at: bill.created_at,
+          bill_number: bill.bill_number,
+          bill_id: bill.id,
+          reference_type: bill.bill_type
+        }))}
+        selectedPartyId=""
+        parties={parties}
+        selectedBrokerId=""
+        printDate={new Date().toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })}
+        open={printViewOpen}
+        onOpenChange={handlePrintViewClose}
       />
     </>
   );

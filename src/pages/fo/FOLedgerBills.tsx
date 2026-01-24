@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Eye, Search, IndianRupee } from "lucide-react";
+import { Eye, Search, IndianRupee, Printer } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { partyQueries } from "@/lib/database";
 import {
@@ -24,6 +24,7 @@ import {
 import { FOBillView } from "@/components/fo/FOBillView";
 import { FOBrokerBillView } from "@/components/fo/FOBrokerBillView";
 import { PaymentDialog } from "@/components/PaymentDialog";
+import { FOLedgerBillsPrintView } from "@/components/fo/FOLedgerBillsPrintView";
 
 interface Party {
   id: string;
@@ -102,6 +103,8 @@ const FOLedgerBills = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filteredEntries, setFilteredEntries] = useState<LedgerEntry[]>([]);
   const [viewBillId, setViewBillId] = useState<string | null>(null);
+  const [showPrintView, setShowPrintView] = useState(false);
+  const [printViewOpen, setPrintViewOpen] = useState(false);
 
   // FO bill generation controls
   const [fromDate, setFromDate] = useState<string>("");
@@ -433,13 +436,91 @@ const FOLedgerBills = () => {
     fetchParties();
   };
 
+  // Helper function to get entries for printing
+  const getEntriesForPrinting = () => {
+    // Priority: filtered entries > ledger entries > empty array
+    return filteredEntries.length > 0 ? filteredEntries : ledgerEntries;
+  };
+
+  // Function to handle printing
+  const handlePrint = async () => {
+    // First ensure we have data
+    const entriesToPrint = getEntriesForPrinting();
+    
+    if (entriesToPrint.length === 0) {
+      // If no data, try to load it
+      if (ledgerEntries.length === 0) {
+        toast({
+          title: "Loading Data",
+          description: "Please wait while ledger data loads...",
+          variant: "default",
+        });
+        
+        // Try to fetch data
+        await fetchLedgerEntries();
+        
+        // Check again after loading
+        setTimeout(() => {
+          const refreshedEntries = getEntriesForPrinting();
+          if (refreshedEntries.length === 0) {
+            toast({
+              title: "Warning",
+              description: "No ledger entries available to print.",
+              variant: "destructive",
+            });
+            return;
+          }
+          
+          setPrintViewOpen(true);
+        }, 1000);
+        return;
+      } else {
+        toast({
+          title: "Warning",
+          description: "No ledger entries to print.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+    
+    if (entriesToPrint.length === 0) {
+      toast({
+        title: "Warning",
+        description: "No ledger entries to print.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    setPrintViewOpen(true);
+  };
+
+  // Handle print view close
+  const handlePrintViewClose = () => {
+    setPrintViewOpen(false);
+  };
+
   const renderListView = () => (
-    <div className="flex-1 overflow-auto">
+    <div className="flex-1 flex flex-col overflow-hidden">
       <PageHeader
         title="Ledger Bills"
         description="View ledger entries with associated bill details"
         action={
           <div className="flex gap-2">
+
+            <Button
+              onClick={handlePrint}
+              variant="outline"
+              className="group relative"
+              disabled={isLoading || (ledgerEntries.length === 0 && filteredEntries.length === 0)}
+            >
+              <Printer className="w-4 h-4 mr-2" />
+              Print Ledger
+              <kbd className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]">
+                Ctrl+P
+              </kbd>
+            </Button>
             <div className="flex gap-2">
               <Select
                 value={selectedPartyId}
@@ -494,7 +575,7 @@ const FOLedgerBills = () => {
         }
       />
 
-      <div className="p-6 space-y-4">
+      <div className="flex-1 overflow-auto p-6 space-y-4">
         {/* FO Bill Generation From Contracts */}
         <Card className="border-purple-200">
           <CardHeader className="py-3 flex flex-row items-center justify-between gap-4">
@@ -732,6 +813,23 @@ const FOLedgerBills = () => {
           onPaymentSuccess={handlePaymentSuccess}
         />
       )}
+      
+      {/* Print View Modal */}
+      <FOLedgerBillsPrintView
+        ledgerEntries={getEntriesForPrinting()}
+        selectedPartyId={selectedPartyId}
+        parties={parties}
+        selectedBrokerId={selectedBrokerId}
+        printDate={new Date().toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })}
+        open={printViewOpen}
+        onOpenChange={handlePrintViewClose}
+      />
     </div>
   );
 

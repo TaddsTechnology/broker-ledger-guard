@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Plus, Save, X, List, Search, Calendar, IndianRupee, Pencil, Trash2 } from "lucide-react";
+import { Plus, Save, X, List, Search, Calendar, IndianRupee, Pencil, Trash2, Printer } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useFormNavigation, useBusinessKeyboard } from "@/hooks/useBusinessKeyboard";
 import { ledgerQueries, partyQueries } from "@/lib/database";
@@ -19,6 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { FOLedgerPrintView } from "@/components/fo/FOLedgerPrintView";
 import {
   Select,
   SelectContent,
@@ -61,6 +62,7 @@ const FOLedger = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filteredEntries, setFilteredEntries] = useState<LedgerEntry[]>([]);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const [printViewOpen, setPrintViewOpen] = useState(false);
   const { toast } = useToast();
   const firstInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -398,7 +400,7 @@ const FOLedger = () => {
   // Update the form title to reflect edit mode
   // Render form view
   const renderFormView = () => (
-    <div className="flex-1 overflow-auto">
+    <div className="flex-1 flex flex-col overflow-hidden">
       <PageHeader
         title={editingEntry ? "Edit Ledger Entry" : "Ledger - New Entry"}
         description={editingEntry ? "Update ledger entry" : "Create new ledger entry"}
@@ -432,7 +434,7 @@ const FOLedger = () => {
         }
       />
       
-      <div className="p-6">
+      <div className="flex-1 overflow-auto p-6">
         <form ref={formRef} onSubmit={handleSubmit} className="space-y-8">
           {/* Ledger Entry Information Section */}
           <Card>
@@ -588,15 +590,37 @@ const FOLedger = () => {
     </div>
   );
 
+  // Handle print functionality
+  const handlePrint = () => {
+    setPrintViewOpen(true);
+  };
+
+  // Handle print view close
+  const handlePrintViewClose = () => {
+    setPrintViewOpen(false);
+  };
+
   // Add edit button to list view
   // Render list view
   const renderListView = () => (
-    <div className="flex-1 overflow-auto">
+    <div className="flex-1 flex flex-col overflow-hidden">
       <PageHeader
         title="F&O Ledger"
         description="Account ledger and transaction history"
         action={
           <div className="flex gap-2">
+            <Button
+              onClick={handlePrint}
+              variant="outline"
+              className="group relative flex items-center gap-2"
+              disabled={ledgerEntries.length === 0}
+            >
+              <Printer className="w-4 h-4" />
+              Print Ledger
+              <kbd className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px]">
+                Ctrl+P
+              </kbd>
+            </Button>
             <div className="flex gap-2">
               <Select
                 value={selectedPartyId}
@@ -675,7 +699,7 @@ const FOLedger = () => {
         }
       />
 
-      <div className="p-6">
+      <div className="flex-1 overflow-auto p-6">
         <div className="rounded-lg border border-border bg-card overflow-hidden">
           <Table>
             <TableHeader>
@@ -995,6 +1019,22 @@ const FOLedger = () => {
   return (
     <>
       {currentView === 'form' ? renderFormView() : renderListView()}
+      {/* Print View */}
+      <FOLedgerPrintView
+        ledgerEntries={filteredEntries}
+        selectedPartyId={selectedPartyId}
+        parties={parties}
+        selectedBrokerId=""
+        printDate={new Date().toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })}
+        open={printViewOpen}
+        onOpenChange={handlePrintViewClose}
+      />
       <ConfirmDialog
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
