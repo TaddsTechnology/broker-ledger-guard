@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -731,7 +731,7 @@ const FOHoldings = () => {
     };
   };
 
-  const totals = calculateTotals();
+  const totals = useMemo(() => calculateTotals(), [positions]);
   
   const handleClearPositions = async () => {
     try {

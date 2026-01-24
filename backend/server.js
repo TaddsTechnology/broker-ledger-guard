@@ -2447,6 +2447,8 @@ app.get('/api/holdings/party/:partyId', async (req, res) => {
       )
       SELECT 
         h.*,
+        p.party_code,
+        p.name as party_name,
         c.company_code,
         c.name as company_name,
         c.nse_code,
@@ -2454,6 +2456,7 @@ app.get('/api/holdings/party/:partyId', async (req, res) => {
         tx.broker_codes,
         tx.broker_qty_breakdown
       FROM stock_holdings h
+      LEFT JOIN party_master p ON h.party_id = p.id
       LEFT JOIN company_master c ON h.company_id = c.id
       LEFT JOIN tx ON tx.party_id = h.party_id AND tx.company_code = c.company_code
       WHERE h.party_id = $1
@@ -7476,6 +7479,16 @@ app.get('/api/fo/positions', async (req, res) => {
       LEFT JOIN tx ON tx.party_id = p.party_id AND tx.instrument_id = p.instrument_id
       LEFT JOIN contract_brokers cb ON cb.party_id = p.party_id AND cb.instrument_id = p.instrument_id
       WHERE ABS(p.quantity) > 0.01
+    `;
+    const params = [];
+    
+    // Add party_id if exists
+    if (party_id) {
+      params.push(party_id);
+      query += ` AND p.party_id = $${params.length}`;
+    }
+    
+    query += `
       GROUP BY
         p.party_id,
         i.symbol,
@@ -7490,16 +7503,7 @@ app.get('/api/fo/positions', async (req, res) => {
         tx.broker_qty_breakdown,
         cb.contract_broker_codes,
         cb.contract_broker_qty_breakdown
-    `;
-    const params = [];
-    
-    // Add party_id if exists
-    if (party_id) {
-      params.push(party_id);
-      query += ` AND p.party_id = $1`;
-    }
-    
-    query += ` ORDER BY MAX(p.last_updated) DESC`;
+      ORDER BY MAX(p.last_updated) DESC`;
     
     const result = await pool.query(query, params);
     res.json(result.rows || []);
@@ -7576,8 +7580,8 @@ app.get('/api/fo/positions/export-reversed', async (req, res) => {
     
     // Add party_id if exists
     if (party_id) {
-      query += ` AND p.party_id = $${paramIndex}`;
       params.push(party_id);
+      query += ` AND p.party_id = $${params.length}`;
       paramIndex += 1;
     }
     

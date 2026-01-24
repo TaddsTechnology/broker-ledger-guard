@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Eye, Search, IndianRupee } from "lucide-react";
+import { Eye, Search, IndianRupee, Printer } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ledgerQueries, partyQueries, billQueries } from "@/lib/database";
 import {
@@ -25,6 +25,7 @@ import {
 import { BillView } from "@/components/BillView";
 import { BrokerBillView } from "@/components/BrokerBillView";
 import { PaymentDialog } from "@/components/PaymentDialog";
+import { LedgerBillsPrintView } from "@/components/LedgerBillsPrintView";
 
 interface Party {
   id: string;
@@ -68,6 +69,7 @@ const LedgerBills = () => {
   const [viewBillData, setViewBillData] = useState<any>(null);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
   const [selectedPartyForPayment, setSelectedPartyForPayment] = useState<{id: string, code: string, balance: number} | null>(null);
+  const [printViewOpen, setPrintViewOpen] = useState(false);
   const { toast } = useToast();
   const searchInputRef = useRef<HTMLInputElement>(null);
   
@@ -105,14 +107,12 @@ const LedgerBills = () => {
     try {
       let result;
       
-      // If "None" is selected for broker filter, show only party entries
-      if (selectedBrokerId === "none") {
-        // Fetch only party ledger entries (exclude broker entries)
-        result = await ledgerQueries.getAll(fromDate || undefined, toDate || undefined);
-        result = result.filter(entry => entry.party_id);
-      } else if (selectedPartyId && selectedPartyId !== "" && selectedPartyId !== "all") {
+      // If a specific party is selected, fetch only that party's entries
+      if (selectedPartyId && selectedPartyId !== "" && selectedPartyId !== "all") {
         // Fetch party ledger entries with date filters
         result = await ledgerQueries.getByPartyId(selectedPartyId, fromDate || undefined, toDate || undefined);
+        // Ensure we only get entries with party_id (exclude broker entries)
+        result = result.filter(entry => entry.party_id);
       } else if (selectedBrokerId && selectedBrokerId !== "" && selectedBrokerId !== "all") {
         // Fetch broker ledger entries (entries with null party_id that belong to broker accounts)
         // Include both main broker bills (broker_brokerage) and sub-broker profit entries
@@ -128,6 +128,10 @@ const LedgerBills = () => {
         } else if (selectedBrokerId === 'sub-broker') {
           result = result.filter(entry => entry.reference_type === 'sub_broker_profit');
         }
+      } else if (selectedBrokerId === "none") {
+        // Show only party entries (exclude broker entries)
+        result = await ledgerQueries.getAll(fromDate || undefined, toDate || undefined);
+        result = result.filter(entry => entry.party_id);
       } else {
         // Fetch all ledger entries with date filters
         result = await ledgerQueries.getAll(fromDate || undefined, toDate || undefined);
@@ -243,6 +247,24 @@ const LedgerBills = () => {
     fetchParties();
   };
 
+  // Handle print functionality for Ledger Bills
+  const handlePrint = () => {
+    if (filteredEntries.length === 0) {
+      toast({
+        title: "Warning",
+        description: "No ledger entries to print.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    setPrintViewOpen(true);
+  };
+
+  // Handle print view close
+  const handlePrintViewClose = () => {
+    setPrintViewOpen(false);
+  };
   const handleViewBill = async (entry: LedgerEntry) => {
     if (entry.bill_id) {
       // Determine bill type from entry based on reference_type
@@ -344,6 +366,15 @@ const LedgerBills = () => {
         description="View ledger entries with associated bill details"
         action={
           <div className="flex gap-2">
+            <Button
+              onClick={handlePrint}
+              variant="outline"
+              className="flex items-center gap-2"
+              disabled={filteredEntries.length === 0}
+            >
+              <Printer className="w-4 h-4" />
+              Print Ledger
+            </Button>
             <Select
               value={selectedPartyId}
               onValueChange={(value) => {
@@ -650,6 +681,23 @@ const LedgerBills = () => {
           onPaymentSuccess={handlePaymentSuccess}
         />
       )}
+      
+      {/* Print View Modal */}
+      <LedgerBillsPrintView
+        ledgerEntries={filteredEntries}
+        selectedPartyId={selectedPartyId}
+        parties={parties}
+        selectedBrokerId={selectedBrokerId}
+        printDate={new Date().toLocaleDateString('en-IN', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit'
+        })}
+        open={printViewOpen}
+        onOpenChange={handlePrintViewClose}
+      />
     </div>
   );
 
